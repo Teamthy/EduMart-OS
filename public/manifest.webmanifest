@@ -1,0 +1,21 @@
+{
+  "name": "Edumart — Practice, assess and improve",
+  "short_name": "Edumart",
+  "description": "JAMB, WAEC, NECO and Post-UTME practice, timed mock examinations, classroom assessments and learning publications.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8f7f4",
+  "theme_color": "#0a4630",
+  "categories": ["education"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Start practice", "url": "/practice" },
+    { "name": "Mock exams", "url": "/exam" },
+    { "name": "Progress", "url": "/progress" }
+  ]
+}
