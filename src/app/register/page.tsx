@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { AuthFrame } from "@/components/AuthFrame";
 
 type Pathway = { id: string; key: string; name: string; body: string };
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  const params = useSearchParams();
   const [pathways, setPathways] = useState<Pathway[]>([]);
   const [form, setForm] = useState({
     displayName: "",
@@ -21,6 +24,12 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+
+  // Referral links (/register?ref=CODE) pre-fill attribution so the inviter is credited on sign-up.
+  useEffect(() => {
+    const ref = params.get("ref");
+    if (ref) setForm((current) => ({ ...current, referralCode: ref }));
+  }, [params]);
 
   useEffect(() => {
     fetch("/api/v1/exam-pathways")
@@ -173,5 +182,13 @@ export default function RegisterPage() {
         </p>
       </form>
     </AuthFrame>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="auth-wrap"><div className="auth-main"><div className="auth-card"><div className="skeleton" style={{ height: 320 }} /></div></div></div>}>
+      <RegisterForm />
+    </Suspense>
   );
 }
