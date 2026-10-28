@@ -1,49 +1,51 @@
-# Edumart — Backlog and delivery status
+# Backlog
 
-Mapped to the PRD's engineering backlog. "Built" means implemented and exercised in this repository;
-"Next" means the boundary exists but production work remains; "Deferred" follows the PRD's staged scope.
+Ordered by what would break a real launch first. Each item names the seam that already exists, so it
+is a change, not a rewrite.
 
-## P0 — launchable core
+## P0 — before any real learner data exists
 
-| ID | Deliverable | Status | Implementation notes |
-| --- | --- | --- | --- |
-| FOUND-01 | Personas, research, launch metrics | Deferred (product work) | metric definitions documented in PRD only |
-| FOUND-02 | Architecture decisions & domain boundaries | **Built** | `docs/ARCHITECTURE.md`, module layout |
-| FOUND-03 | Design system and responsive shell | **Built** | tokens + primitives in `globals.css`, role-aware shell, mobile tab bar |
-| SEC-01 | Threat model & data classification | Partial | controls in `docs/PRODUCTION_READINESS.md`; formal threat model outstanding |
-| AUTH-01 | Registration, verification, sessions, recovery | **Built** | scrypt, cookie sessions, revocation, reset tokens, rate limits. Email verification flow queued, not delivered |
-| AUTH-02 | Role and tenant authorization | **Built** | role + org/class scope checks; 404 for cross-tenant probes |
-| CONTENT-01 | Taxonomy & publishing workflow | **Built** | pathways/subjects/topics/syllabus version; publish requires provenance |
-| CONTENT-02 | Question authoring & import | Partial | review queue and decisions built; bulk CSV import with row-level errors is next |
-| LEARN-01 | Practice sessions and scoring | **Built** | snapshot per attempt, deterministic scoring, explanations after submit |
-| EXAM-01 | Timed exam state machine and snapshots | **Built** | server deadlines, immutable snapshots, terminal states |
-| EXAM-02 | Idempotent autosave and recovery UX | **Built** | versioned writes, retry replay, offline queue with visible state |
-| RESULT-01 | Results and topic analytics | **Built** | breakdown, topic accuracy, trend, weak-topic recommendations |
-| OPS-01 | Observability and alerting | Partial | audit + event tables, request ids; metrics/traces/alert routing next |
-| OPS-02 | Backup, PITR, restore drill | Next | blocked on PostgreSQL; runbook written |
-| REL-01 | CI/CD, migration, rollback | Partial | build/typecheck/tests; pipeline definition and migrations next |
-| TEACH-01 | Classes, invitations, assignments | **Built** | codes, expiring/limited links, scheduled assessment, class rollup |
-| PAY-01 | Verified payment and webhook processing | **Built (sandbox)** | signature verification, dedupe, amount checks, idempotent fulfilment |
-| MKT-01 | Digital catalogue and entitlements | **Built** | private keys, signed links, refund revocation |
-| LEDGER-01 | Separate points and commission ledgers | **Built** | append-only, idempotency keys, compensating reversals, payouts disabled |
-| AI-01 | Approved-source AI tutor | Deferred | feature-flagged, not built per PRD staging |
+1. **PostgreSQL as the only production dialect.** The schema mirrors SQLite today. Move timestamps to
+   `timestamptz`, money to `numeric(14,2)` or keep integer minor units with a `CHECK`, and add a real
+   migration runner (the embedded `IF NOT EXISTS` bootstrap is not a migration strategy).
+2. **Webhook provider integration.** `commerce.HandleWebhook` is provider-agnostic. Add a Paystack
+   adapter (signature header + payload mapping), and reject events older than a replay window.
+3. **Session hardening.** Session rotation on privilege change, absolute + idle expiry, a
+   "signed-in devices" list in Settings, and rate limiting moved to Redis (`httpx.Limiter` is the seam).
+4. **Backups and restore drills.** Daily PostgreSQL snapshots, PITR, and a documented restore test.
+5. **Observability.** Structured logs exist (`slog` JSON with request ids). Add metrics
+   (`/metrics`: request latency, attempt finalisations, webhook outcomes) and tracing across the
+   Next.js → Go hop.
 
-## Next sprint candidates (dependency ordered)
+## P1 — launch completeness
 
-1. **PostgreSQL adapter + migrations** — unblocks backups, PITR, real load testing.
-2. **Email/notification worker** — verification, reset, deadline reminders; retries and dead-letter view.
-3. **Provider integration** — replace the sandbox with a Nigerian provider; add refund execution and
-   settlement reconciliation report.
-4. **Authoring depth** — CSV import with row-level validation, duplicate detection, version compare.
-5. **Observability** — structured log shipping, request metrics, exam save/submit success SLOs, alerts.
-6. **MFA + access review** — TOTP for privileged roles, quarterly permission review export.
-7. **Teacher exports** — authorized CSV of class results with audit entry.
-8. **Study planner** — daily plan from weak topics and target date; reminders.
+6. **Teacher authoring UI.** The API accepts assessment definitions with items; there is no screen to
+   compose a mock. This is the largest remaining product gap.
+7. **Notifications.** Exam countdown and "your mock is due" reminders. `job_queue_items` exists;
+   nothing drains it. Email provider + native push tokens are missing.
+8. **Payments beyond the sandbox.** Refunds, partial refunds, disputes, and a reconciliation report
+   that compares `provider_events` with `orders`.
+9. **Content volume.** 50 seeded questions is a demo. The review queue, provenance and licence fields
+   are ready; the editorial pipeline is not.
+10. **Full offline mode.** The PWA caches the shell and the runner retries writes, but questions are
+    deliberately not cached. A proper offline attempt (pre-fetched snapshot, signed deadline) needs a
+    product decision about the clock.
+11. **Accessibility audit.** WCAG 2.2 AA is designed in (focus rings, aria-live save states, 44px
+    targets, reduced motion). It has not been verified with a screen reader on a real device.
 
-## Deferred by PRD policy
+## P2 — growth and polish
 
-* Institution billing and seat plans (validate willingness to pay with pilot institutions).
-* Publisher self-service portal, royalties and settlement statements.
-* Monetary payouts, transfers or stored value — requires legal, accounting, provider and fraud sign-off.
-* Native applications — PWA evidence first.
-* AI tutor — grounded retrieval, evaluation harness and privacy review before any release.
+12. **Study plan generation.** `study_plans` stores intent; nothing derives a week-by-week plan from
+    topic performance.
+13. **Leaderboards and class analytics.** `topic_performance` and roster averages exist; the
+    comparison views do not.
+14. **Publisher portal.** Product/payout management for third parties.
+15. **Localisation.** Copy is en-NG only; the design tokens and formatting helpers are centralised,
+    so adding a second locale is contained.
+16. **PDF/print result sheets** for parents and schools.
+
+## Explicit non-goals for now
+
+- Native web push for the PWA (browser support is uneven in the target market).
+- A separate admin SPA: the staff surfaces live in the same Next.js app behind role checks.
+- Multi-region deployments: one region, one primary database.

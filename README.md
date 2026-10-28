@@ -1,155 +1,162 @@
 # Edumart OS
 
-A working, production-shaped implementation of the Edumart platform described in [`edumart-prd`](./edumart-prd):
-exam preparation and timed CBT, classroom assessments, a digital publications library with verified
-payments, learning analytics, rewards with separate ledgers, and an operations console.
+Exam preparation for Nigerian learners: timed mocks, adaptive practice, class assessments, a
+verified-payment store, learning analytics and an operations console.
 
-The product is built as a **modular monolith**: one deployable, with explicit domain modules, a versioned
-REST API (`/v1`), and a server-authoritative assessment engine. Progressive Web App shell with offline
-handling, mobile-first design system, and 23 automated tests covering the invariants the PRD calls out.
+Three deliverables, one product:
+
+| Surface | Stack | Path |
+| --- | --- | --- |
+| **API** | Go 1.24+, chi router, SQLite (dev/CI) or PostgreSQL (prod) | `apps/api` |
+| **Web / PWA** | Next.js 15 App Router, Tailwind CSS v4, shadcn/ui primitives | `apps/web` |
+| **Mobile app** | React Native + Expo (Router), shipping alongside the PWA | `apps/mobile` |
+| **Shared contract** | TypeScript wire types, validation, design tokens | `packages/shared` |
+
+The server owns session state, the deadline, scoring and authorisation. Both shells are thin clients
+of the same versioned REST API (`/v1`), which is what lets the web app and the native app ship from
+one commit without drifting.
 
 ---
 
 ## Quick start
 
+Requirements: **Go 1.24+**, **Node 20.11+**. No database server is needed — SQLite is embedded.
+
 ```bash
-npm install
-cp .env.example .env       # optional; sensible defaults are built in
-npm run dev                # http://localhost:3000
+npm install                 # web + shared workspaces
+npm run dev:api             # http://localhost:8080  (seeds demo content on first boot)
+npm run dev                 # http://localhost:3000  (proxies /v1 to the API)
 ```
 
-The database schema and demo content load automatically on first request. To start clean:
+The web app proxies `/v1/*` to the Go API, so the session cookie stays first-party and the browser
+never needs to know the API origin.
+
+For the native app:
 
 ```bash
-npm run db:reset           # deletes the local SQLite file; it is recreated and reseeded automatically
+npm run install:mobile      # installs Expo's dependencies into apps/mobile
+npm run dev:mobile          # Expo dev server (simulator or Expo Go)
 ```
 
 ### Demo accounts
 
+Seeded by `EDUMART_SEED=true` (the default in development).
+
 | Role | Email | Password |
 | --- | --- | --- |
-| Student (with history) | `student@edumart.ng` | `Student123!` |
-| Teacher / institution admin | `teacher@edumart.ng` | `Teacher123!` |
-| Platform admin | `admin@edumart.ng` | `Admin123!` |
+| Student | `student@edumart.ng` | `Student123!` |
+| Teacher | `teacher@edumart.ng` | `Teacher123!` |
 | Content editor | `editor@edumart.ng` | `Editor123!` |
+| Platform admin | `admin@edumart.ng` | `Admin123!` |
 
-The login screen has a "Use a demo account" shortcut that fills these in.
-
-### Useful commands
-
-```bash
-npm run dev         # development server on 0.0.0.0:3000
-npm run build       # production build
-npm start           # serve the production build
-npm run typecheck   # TypeScript, no emit
-npm test            # vitest: domain + assessment-engine integration tests
-npm run sweep       # POST /api/v1/jobs/sweep — expire overdue attempts and drain queued jobs
-```
+Other seeded handles: class join code `LEKKI24`, referral code `AMARA-2026`.
 
 ---
 
-## What is implemented
+## What is actually enforced
 
-| Area | Status | Notes |
+These are the invariants the product depends on; each has a test.
+
+| Invariant | Where | Test |
 | --- | --- | --- |
-| Identity & sessions | ✅ | scrypt hashes, HttpOnly cookie sessions, revocation, single-use reset tokens, login/registration rate limits, account-enumeration-safe responses |
-| Roles & tenant isolation | ✅ | global roles + organization/class scopes; server-side checks on every protected handler; cross-tenant attempts return 404 |
-| Exam taxonomy & content | ✅ | 4 pathways, 17 subjects, 68 topics, 104 reviewed questions with source/licence metadata and explanations |
-| Question lifecycle | ✅ | draft → in review → approved/published, immutability of published versions, publish blocked without provenance, audited decisions |
-| Practice | ✅ | subject/topic/difficulty selection, immutable snapshot per attempt, autosave, scoring, explanations after submission, history |
-| Timed CBT | ✅ | server-owned deadline with grace window, versioned retry-safe answer writes, offline queue with visible sync state, duplicate-submit-safe finalization, auto-expiry |
-| Results & analytics | ✅ | score breakdown, per-topic accuracy, trend, weak-topic recommendations, rebuildable derived tables |
-| Classroom | ✅ | class creation, join codes, expiring/limited-use hashed invitations, scheduled assessments, class rollup reports |
-| Publications & commerce | ✅ | catalogue, private file keys, server-calculated totals, signed short-lived access links, refunds that revoke entitlements |
-| Payments | ✅ (sandbox) | HMAC-verified webhooks, event dedupe, amount/currency validation, idempotent entitlement grant, reconciliation counter |
-| Rewards | ✅ (payouts disabled) | separate points and commission ledgers, versioned rules, referral attribution with self-referral and cap controls, compensating reversals |
-| Operations console | ✅ | moderation queue, content reports, order/refund review, support queue, provider events, audit trail |
-| PWA | ✅ | manifest, app icons, service worker (network-first navigations, no caching of assessment data), offline page |
-| Observability | ◻︎ partial | structured audit + learning events and a job table exist; external metrics/tracing/paging are documented, not wired |
+| The server sets the deadline; the client only displays it | `assessment.CanAcceptAnswer`, `DeadlineAt` | `TestCanAcceptAnswer`, `TestAttemptsExpireAtTheServerDeadline` |
+| Answer saves are idempotent and version-checked | `assessment.SaveResponse` | `TestPracticeFlowHidesAnswerKeyUntilReveal` |
+| Answer keys never travel before release | `assessment.ViewFor` + `domain.ResultReleased` | same, plus the web `AttemptRunner` test |
+| Attempts are served from an immutable snapshot | `assessment_sessions.snapshot_json` | `TestPracticeFlow…`, `TestScoringPolicyVersionIsRecorded` |
+| Scoring is deterministic and versioned | `domain.ScoreAttempt`, `scoring_policy_json` | `TestScoreAttemptDeterministic` |
+| Points and commission are separate append-only ledgers | `points_ledger_entries`, `commission_ledger_entries` | `TestPracticeFlow…` (duplicate submit award), `rewards` service |
+| Payment truth comes only from a verified webhook | `commerce.HandleWebhook` | `TestWebhookIsTheOnlySourceOfPaymentTruth` |
+| Money is integer minor units | schema + `ServerApi` + `formatMoney` | `formatMoney` tests |
+| Authorisation is server-side and tenant-scoped | `auth.RequireRole`, `assessment.owned`, `classroom.Roster` | `TestTenantAndRoleAuthorisation` |
+| Signup progress is server-persisted across five pages | `signup_drafts` + `POST/PATCH /v1/signup-drafts` | `TestSignupWizardResumesFromServerState` |
 
-Legend: ✅ implemented and exercised in this repository · ◻︎ foundation present, production integration pending.
-
----
-
-## Architecture at a glance
-
-```
-Next.js App Router (PWA)             — presentation, interaction state, offline queue
-        │  fetch /v1 (JSON, cookie session)
-        ▼
-Versioned REST API route handlers    — validation, authorization, error envelope, rate limits
-        ▼
-Domain services (src/lib/server)     — assessment engine, commerce, rewards, classes, insights
-        ▼
-SQLite (node:sqlite) → PostgreSQL    — transactions, constraints, append-only ledgers
-```
-
-* `src/lib/domain/` — pure, testable rules: scoring, timed-exam state machine, timer maths.
-* `src/lib/server/` — use cases and data access. Modules never reach across boundaries implicitly;
-  cross-module effects go through service functions inside one transaction.
-* `src/app/api/v1/` — the documented HTTP contract (see [`docs/API.md`](./docs/API.md)).
-* `src/app/` — server-rendered screens with client islands for interactive flows.
-
-Read [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for component boundaries, consistency
-decisions and the path to managed PostgreSQL.
-
----
-
-## The invariants this build protects
-
-1. **Server owns assessment time.** The deadline is computed from `started_at + duration` and stored;
-   the client countdown is derived from a measured clock offset. Changing a device clock changes nothing.
-2. **An answer is not "saved" until the server says so.** Writes are versioned, acknowledged, and
-   retried; a retried write replays the acknowledgement instead of duplicating or conflicting.
-3. **Submission finalizes once.** Explicit submission and server expiry share one finalization
-   function, guarded by a status check inside a transaction and a unique points idempotency key.
-4. **Answer keys never leak early.** Session projections omit `answerOptionId` and explanations until
-   the result-release policy allows them.
-5. **A browser redirect is not payment.** Only an HMAC-verified, deduplicated provider event with a
-   matching amount and currency can mark an order paid.
-6. **Money and points are different assets.** Separate append-only ledgers, integer minor units,
-   compensating reversals, idempotency keys on every entry.
-7. **Tenant boundaries are enforced in queries.** Class and organization reads are scoped by
-   membership; unauthorized access is a 404, not a filtered list.
-
----
-
-## Testing
+Run everything:
 
 ```bash
-npm test
+npm test                    # Go tests + web tests
+npm run typecheck           # shared, web (and mobile when its deps are installed)
 ```
 
-* `tests/domain.test.ts` — scoring determinism, negative marking, policy parsing, deadline grace
-  window, terminal-state immutability, result release, seeded shuffle.
-* `tests/engine.test.ts` — real database integration: snapshot immutability and answer-key
-  withholding, acknowledged writes, retry replay without duplication, stale-write rejection,
-  cross-user denial, single finalization with single points award, expiry sweeping, attempt limits.
+Current status: **Go 31 tests**, **web 21 tests**, `go vet` clean, `tsc --noEmit` clean on web,
+shared and mobile, `next build` clean.
 
 ---
 
-## Documentation
+## Repository layout
 
-| Document | Contents |
-| --- | --- |
-| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | component boundaries, data flows, CAP decisions, deployment topology, roadmap to PostgreSQL |
-| [`docs/DATA_MODEL.md`](./docs/DATA_MODEL.md) | entity reference, state machines, constraints, ledger rules |
-| [`docs/API.md`](./docs/API.md) | endpoint catalogue, request/response contracts, error codes, idempotency |
-| [`docs/BACKLOG.md`](./docs/BACKLOG.md) | epics mapped to PRD IDs with built / next / deferred status |
-| [`docs/PRODUCTION_READINESS.md`](./docs/PRODUCTION_READINESS.md) | security, privacy, observability, backup, DR and launch gates |
+```
+apps/
+  api/                      Go service
+    cmd/api/                entrypoint (HTTP server + expiry worker)
+    internal/
+      domain/               pure rules: scoring, deadlines, release policy
+      assessment/           practice + timed attempts, answer writes, finalisation
+      auth/                 identities, sessions (PBKDF2), roles
+      signup/               server-persisted multi-step signup drafts
+      content/              pathways, subjects, topics
+      classroom/            classes, join codes, rosters, assignments
+      commerce/             products, orders, webhook-verified payments, entitlements
+      rewards/              dual ledgers, referral qualification
+      insights/             dashboard, analytics, study plan (read models)
+      admin/                content review, support cases, metrics
+      httpx/                error envelope, request ids, rate limiting, middleware
+      store/                connection, migrations (SQLite + PostgreSQL), helpers
+      seed/                 idempotent demo content (`content.json`)
+  web/                      Next.js app
+    app/                    routes; `app/(app)` is the authenticated shell
+    components/ui/          vendored shadcn/ui primitives
+    components/attempt/     the attempt runner (save states, countdown, submit)
+    lib/                    server API client, session, signup actions
+  mobile/                   Expo app (Router) — same steps, same contract
+packages/shared/            wire types, API client, signup definition, design tokens
+legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
+docs/                       architecture, API, data model, signup flow, mobile, readiness
+```
 
 ---
 
-## Scope boundaries in this build
+## Configuration
 
-Deliberately **not** production-complete, and clearly marked as such in the code:
+Copy `.env.example` to `.env` for local overrides; both services read environment variables only.
 
-* Payment provider is a signed **sandbox** stand-in; wire a real provider behind the same webhook contract.
-* Payouts, cash-out and stored value are disabled pending legal, accounting and fraud sign-off.
-* Notifications run through a durable job table but no email/SMS provider is connected.
-* Object storage returns a reader manifest instead of streaming a protected file.
-* SQLite is a local/CI system of record; PostgreSQL is the production target (see architecture doc).
-* Multi-factor authentication and full analytics pipeline are designed and specified, not implemented.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | API listen port |
+| `EDUMART_DRIVER` | `sqlite3` | `sqlite3` or `postgres` |
+| `EDUMART_DSN` | `data/edumart.db` | Database path or connection string |
+| `EDUMART_SEED` | `true` | Load taxonomy, products and demo accounts |
+| `EDUMART_WEBHOOK_SECRET` | `dev_sandbox_webhook_secret` | HMAC secret for payment webhooks |
+| `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
+| `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
+| `EDUMART_API_URL` | `http://127.0.0.1:8080` | Where the Next.js server proxies `/v1` |
+| `EXPO_PUBLIC_API_URL` | `http://localhost:8080` | Absolute API base for the native app |
 
-Content in the demo bank is original practice material written for this repository, not reproduced
-past-examination papers.
+---
+
+## Payments in development
+
+An order is created as `pending_payment`. Nothing on the client can mark it paid:
+
+1. `POST /v1/orders` → order + provider reference.
+2. The provider calls `POST /v1/webhooks/payments/sandbox` with `x-edumart-signature`
+   (HMAC-SHA256 of the raw body).
+3. The API verifies the signature, checks the amount and currency against the order, records the
+   event in `provider_events` (unique per provider + event id) and only then flips the order to
+   `paid` and grants entitlements.
+
+In development the checkout screen offers **Simulate provider webhook (sandbox)**, which signs a
+real event through the same code path, so the demo can never diverge from production behaviour.
+
+---
+
+## Deployment notes
+
+- The API is a single static binary: `npm run build:api` → `dist/edumart-api`.
+- The web app is a standard Next.js build (`npm run build`); it needs `EDUMART_API_URL` at runtime.
+- PostgreSQL is the production system of record. Apply `apps/api/internal/store/migrations/postgres`,
+  then set `EDUMART_DRIVER=postgres` and `EDUMART_DSN`.
+- Run at least one API instance with the expiry sweep enabled (it is built into `cmd/api`); it closes
+  attempts that passed their deadline even when nobody is polling.
+- The mobile app is built with EAS (`apps/mobile/eas.json`); see `docs/MOBILE.md`.
+
+See `docs/PRODUCTION_READINESS.md` for the honest list of what is and is not ready.

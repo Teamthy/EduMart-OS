@@ -1,45 +1,114 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: ["main", "arena/**"]
+  pull_request:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  api:
+    name: API (Go)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      DATABASE_URL: file:./db/ci.db
-      SESSION_TTL_HOURS: "168"
-      PAYMENT_WEBHOOK_SECRET: ci_only_secret
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: apps/api/go.sum
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -race -count=1
+      - name: Build
+        run: go build -o /tmp/edumart-api ./cmd/api
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
           cache: npm
       - run: npm ci
-      - name: Type check
-        run: npm run typecheck
-      - name: Unit and integration tests
-        run: npm test
-      - name: Production build
-        run: npm run build
-      - name: Start server and smoke test the API
+      - name: Typecheck shared
+        run: npm run typecheck --workspace @edumart/shared
+      - name: Typecheck web
+        run: npm run typecheck --workspace @edumart/web
+      - name: Unit tests
+        run: npm run test --workspace @edumart/web
+      - name: Build
+        run: npm run build --workspace @edumart/web
+        env:
+          EDUMART_API_URL: http://127.0.0.1:8080
+
+  mobile:
+    name: Mobile (Expo)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install workspace dependencies
+        working-directory: .
+        run: npm ci
+      - name: Install Expo dependencies
+        run: npm install --legacy-peer-deps
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  e2e-smoke:
+    name: End-to-end smoke
+    runs-on: ubuntu-latest
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: apps/api/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Start API
+        working-directory: apps/api
         run: |
-          npm start &
-          for i in $(seq 1 40); do
-            if curl -sf http://localhost:3000/api/v1/exam-pathways > /dev/null; then break; fi
-            sleep 1
-          done
-          curl -sf -c cookies.txt -X POST http://localhost:3000/api/v1/auth/login \
-            -H 'content-type: application/json' \
+          go build -o /tmp/edumart-api ./cmd/api
+          EDUMART_DSN=/tmp/ci.db PORT=8080 /tmp/edumart-api & echo $! > /tmp/api.pid
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/healthz && break; sleep 1; done
+      - name: Verify the learner journey over HTTP
+        run: |
+          set -euo pipefail
+          B=http://localhost:8080/v1
+          curl -sf -c /tmp/c.txt -X POST $B/auth/login -H 'content-type: application/json' \
             -d '{"email":"student@edumart.ng","password":"Student123!"}' > /dev/null
-          curl -sf -b cookies.txt http://localhost:3000/api/v1/me | grep -q "student@edumart.ng"
-          curl -sf -b cookies.txt http://localhost:3000/api/v1/me/learning-summary > /dev/null
-          echo "smoke test passed"
+          SUBJECT=$(curl -sf $B/subjects | python3 -c "import sys,json;print(json.load(sys.stdin)['subjects'][0]['id'])")
+          curl -sf -b /tmp/c.txt -X POST $B/practice-sessions -H 'content-type: application/json' \
+            -d "{\"subjectId\":\"$SUBJECT\",\"count\":3}" > /tmp/session.json
+          python3 - <<'PY'
+          import json
+          session = json.load(open('/tmp/session.json'))['session']
+          assert session['status'] == 'in_progress'
+          assert 'answerOptionId' not in json.dumps(session), 'answer key leaked before reveal'
+          assert session['remaining_seconds'] > 0
+          open('/tmp/sid','w').write(session['session_id'])
+          PY
+      - name: Stop API
+        if: always()
+        run: kill "$(cat /tmp/api.pid)" || true

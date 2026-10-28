@@ -22,12 +22,12 @@ type Pathway struct {
 
 // Subject belongs to exactly one pathway and owns topics.
 type Subject struct {
-	ID           string `json:"id"`
-	Key          string `json:"key"`
-	Name         string `json:"name"`
-	Icon         string `json:"icon"`
-	PathwayKey   string `json:"pathwayKey"`
-	QuestionCount int   `json:"questionCount"`
+	ID            string `json:"id"`
+	Key           string `json:"key"`
+	Name          string `json:"name"`
+	Icon          string `json:"icon"`
+	PathwayKey    string `json:"pathwayKey"`
+	QuestionCount int    `json:"questionCount"`
 }
 
 // Topic is a syllabus unit within a subject.

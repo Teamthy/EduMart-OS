@@ -44,19 +44,19 @@ func ParsePolicy(raw string) ScoringPolicy {
 // SnapQuestion is the immutable per-attempt copy of a question. Answer keys live here (and only
 // here), so a later correction to the source question cannot rewrite a completed attempt.
 type SnapQuestion struct {
-	QvID          string     `json:"qvId"`
-	QuestionID    string     `json:"questionId"`
-	SubjectID     string     `json:"subjectId,omitempty"`
-	SubjectName   string     `json:"subjectName,omitempty"`
-	TopicID       string     `json:"topicId,omitempty"`
-	TopicName     string     `json:"topicName,omitempty"`
-	Stem          string     `json:"stem"`
-	Options       []Option   `json:"options"`
-	AnswerOption  string     `json:"answerOptionId"`
-	Explanation   string     `json:"explanation,omitempty"`
-	Difficulty    string     `json:"difficulty,omitempty"`
-	Points        int        `json:"points"`
-	Position      int        `json:"position"`
+	QvID         string   `json:"qvId"`
+	QuestionID   string   `json:"questionId"`
+	SubjectID    string   `json:"subjectId,omitempty"`
+	SubjectName  string   `json:"subjectName,omitempty"`
+	TopicID      string   `json:"topicId,omitempty"`
+	TopicName    string   `json:"topicName,omitempty"`
+	Stem         string   `json:"stem"`
+	Options      []Option `json:"options"`
+	AnswerOption string   `json:"answerOptionId"`
+	Explanation  string   `json:"explanation,omitempty"`
+	Difficulty   string   `json:"difficulty,omitempty"`
+	Points       int      `json:"points"`
+	Position     int      `json:"position"`
 }
 
 // Option is a single answer choice in presentation order.

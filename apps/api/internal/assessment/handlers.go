@@ -198,15 +198,15 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) error {
 	defer rows.Close()
 
 	type historyItem struct {
-		ID         string  `json:"id"`
-		Mode       string  `json:"mode"`
-		Status     string  `json:"status"`
-		ScoreRaw   *int    `json:"scoreRaw"`
-		ScoreMax   *int    `json:"scoreMax"`
-		ScorePercent *int  `json:"scorePercent"`
-		StartedAt  string  `json:"startedAt"`
-		SubmittedAt *string `json:"submittedAt"`
-		Title      string  `json:"title"`
+		ID           string  `json:"id"`
+		Mode         string  `json:"mode"`
+		Status       string  `json:"status"`
+		ScoreRaw     *int    `json:"scoreRaw"`
+		ScoreMax     *int    `json:"scoreMax"`
+		ScorePercent *int    `json:"scorePercent"`
+		StartedAt    string  `json:"startedAt"`
+		SubmittedAt  *string `json:"submittedAt"`
+		Title        string  `json:"title"`
 	}
 	items := []historyItem{}
 	for rows.Next() {

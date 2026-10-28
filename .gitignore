@@ -35,3 +35,8 @@ apps/mobile/android/
 .DS_Store
 .idea/
 .vscode/
+
+# local databases (the legacy prototype keeps its schema, never its data)
+*.db
+*.db-shm
+*.db-wal

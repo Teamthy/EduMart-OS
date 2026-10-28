@@ -18,6 +18,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
+	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -30,17 +31,18 @@ type Config struct {
 
 // Deps are the constructed services the router needs.
 type Deps struct {
-	Store      *store.Store
-	Auth       *auth.Service
-	Items      *content.Service
-	Exams      *assessment.Service
-	Classes    *classroom.Service
-	Shop       *commerce.Service
-	Rewards    *rewards.Service
-	Insights   *insights.Service
-	Staff      *admin.Service
-	Logger     *slog.Logger
-	Config     Config
+	Store    *store.Store
+	Auth     *auth.Service
+	Items    *content.Service
+	Exams    *assessment.Service
+	Classes  *classroom.Service
+	Shop     *commerce.Service
+	Rewards  *rewards.Service
+	Insights *insights.Service
+	Staff    *admin.Service
+	Signup   *signup.Service
+	Logger   *slog.Logger
+	Config   Config
 }
 
 // NewRouter builds the complete handler tree.
@@ -56,6 +58,7 @@ func NewRouter(d Deps) http.Handler {
 	rewardsHandlers := rewards.NewHandlers(d.Rewards)
 	insightsHandlers := insights.NewHandlers(d.Insights)
 	staffHandlers := admin.NewHandlers(d.Staff)
+	signupHandlers := signup.NewHandlers(d.Signup)
 
 	r.Use(httpx.RequestIDMiddleware)
 	r.Use(httpx.Recover(d.Logger))
@@ -91,6 +94,11 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/auth/password/forgot", wrap(authHandlers.Forgot))
 			g.Post("/auth/password/reset", wrap(authHandlers.Reset))
 		})
+		// Anonymous signup wizard: progress is persisted server-side before an account exists.
+		v1.Get("/signup-drafts/current", wrap(signupHandlers.Current))
+		v1.Post("/signup-drafts", wrap(signupHandlers.Create))
+		v1.Patch("/signup-drafts/current", wrap(signupHandlers.Update))
+
 		v1.Get("/me", wrap(authHandlers.Me))
 		v1.Patch("/me", wrap(authHandlers.UpdateMe))
 

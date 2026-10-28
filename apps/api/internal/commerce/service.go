@@ -269,13 +269,13 @@ func (s *Service) Library(ctx context.Context, userID string) ([]Product, error)
 
 // WebhookEvent is the provider payload after signature verification.
 type WebhookEvent struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Reference     string `json:"reference"`
-	AmountMinor   int    `json:"amountMinor"`
-	Currency      string `json:"currency"`
-	Status        string `json:"status"`
-	OccurredAt    string `json:"occurredAt"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Reference   string `json:"reference"`
+	AmountMinor int    `json:"amountMinor"`
+	Currency    string `json:"currency"`
+	Status      string `json:"status"`
+	OccurredAt  string `json:"occurredAt"`
 }
 
 // VerifySignature checks the HMAC-SHA256 hex digest of the raw body.

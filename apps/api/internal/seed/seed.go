@@ -29,11 +29,11 @@ type bankQuestion struct {
 }
 
 type bankSubject struct {
-	Key      string         `json:"key"`
-	Name     string         `json:"name"`
-	Icon     string         `json:"icon"`
-	Pathway  string         `json:"pathway"`
-	Topics   []bankTopic    `json:"topics"`
+	Key       string         `json:"key"`
+	Name      string         `json:"name"`
+	Icon      string         `json:"icon"`
+	Pathway   string         `json:"pathway"`
+	Topics    []bankTopic    `json:"topics"`
 	Questions []bankQuestion `json:"questions"`
 }
 
@@ -57,8 +57,8 @@ type bankProduct struct {
 }
 
 type contentFile struct {
-	Subjects []bankSubject  `json:"subjects"`
-	Products []bankProduct  `json:"products"`
+	Subjects []bankSubject `json:"subjects"`
+	Products []bankProduct `json:"products"`
 }
 
 // DemoUsers are the documented logins. They exist only when seeding is enabled.

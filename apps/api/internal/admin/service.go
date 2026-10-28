@@ -17,32 +17,32 @@ import (
 
 // ReviewItem is a question version awaiting editorial approval.
 type ReviewItem struct {
-	QvID        string `json:"qvId"`
-	QuestionID  string `json:"questionId"`
-	Version     int    `json:"version"`
-	Stem        string `json:"stem"`
-	SubjectName string `json:"subjectName"`
-	TopicName   string `json:"topicName"`
-	Difficulty  string `json:"difficulty"`
-	ReviewState string `json:"reviewState"`
-	SourceName  string `json:"sourceName"`
+	QvID         string `json:"qvId"`
+	QuestionID   string `json:"questionId"`
+	Version      int    `json:"version"`
+	Stem         string `json:"stem"`
+	SubjectName  string `json:"subjectName"`
+	TopicName    string `json:"topicName"`
+	Difficulty   string `json:"difficulty"`
+	ReviewState  string `json:"reviewState"`
+	SourceName   string `json:"sourceName"`
 	LicenseBasis string `json:"licenseBasis"`
-	Attribution string `json:"attribution"`
-	CreatedAt   string `json:"createdAt"`
+	Attribution  string `json:"attribution"`
+	CreatedAt    string `json:"createdAt"`
 }
 
 // Metrics is the staff overview.
 type Metrics struct {
-	Users          int `json:"users"`
-	ActiveLearners int `json:"activeLearners"`
-	Attempts       int `json:"attempts"`
-	AttemptsToday  int `json:"attemptsToday"`
-	PaidOrders     int `json:"paidOrders"`
-	RevenueMinor   int `json:"revenueMinor"`
-	Currency       string `json:"currency"`
-	PendingReview  int `json:"pendingReview"`
-	OpenCases      int `json:"openCases"`
-	PublishedQuestions int `json:"publishedQuestions"`
+	Users              int    `json:"users"`
+	ActiveLearners     int    `json:"activeLearners"`
+	Attempts           int    `json:"attempts"`
+	AttemptsToday      int    `json:"attemptsToday"`
+	PaidOrders         int    `json:"paidOrders"`
+	RevenueMinor       int    `json:"revenueMinor"`
+	Currency           string `json:"currency"`
+	PendingReview      int    `json:"pendingReview"`
+	OpenCases          int    `json:"openCases"`
+	PublishedQuestions int    `json:"publishedQuestions"`
 }
 
 // SupportCase is a learner request for help.

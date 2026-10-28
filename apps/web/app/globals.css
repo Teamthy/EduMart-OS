@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+/*
+  Tailwind v4 theme, generated from the shared design tokens.
+  shadcn/ui components read the CSS variables below (--background, --primary, …), so the same
+  token set drives both the vendored primitives and bespoke screens.
+*/
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand-50: #eff7f2;
+  --color-brand-100: #dff0e7;
+  --color-brand-500: #1a9a73;
+  --color-brand-600: #137a5c;
+  --color-brand-700: #0d5c46;
+  --color-brand-800: #0a4630;
+  --color-brand-900: #06301f;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+}
+
+:root {
+  --radius: 0.75rem;
+
+  --background: #f8f7f4;
+  --foreground: #12181d;
+  --card: #ffffff;
+  --card-foreground: #12181d;
+  --popover: #ffffff;
+  --popover-foreground: #12181d;
+  --primary: #0d5c46;
+  --primary-foreground: #ffffff;
+  --secondary: #eff7f2;
+  --secondary-foreground: #0a4630;
+  --muted: #f1efea;
+  --muted-foreground: #667079;
+  --accent: #dff0e7;
+  --accent-foreground: #0a4630;
+  --destructive: #b0303f;
+  --destructive-foreground: #ffffff;
+  --success: #0f7b4f;
+  --success-foreground: #ffffff;
+  --warning: #c98508;
+  --warning-foreground: #12181d;
+  --border: #e4e1da;
+  --input: #d3cfc6;
+  --ring: #1a9a73;
+
+  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* WCAG 2.2 AA: focus is always visible and never removed without replacement. */
+  :focus-visible {
+    outline: 3px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-serif);
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+
+  /* Respect the OS reduced-motion setting. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility container-page {
+  width: 100%;
+  margin-inline: auto;
+  max-width: 76rem;
+  padding-inline: 1rem;
+}
+
+@media (min-width: 768px) {
+  .container-page {
+    padding-inline: 1.5rem;
+  }
+}
+
+/* Skip link: visible only when focused, lets keyboard users bypass the shell navigation. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 0.75rem 1rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-radius: 0 0 0.5rem 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}

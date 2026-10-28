@@ -29,14 +29,14 @@ type Entry struct {
 
 // Summary is the learner-facing rewards snapshot.
 type Summary struct {
-	PointsBalance   int     `json:"pointsBalance"`
-	PointsEarned    int     `json:"pointsEarned"`
-	ReferralCode    string  `json:"referralCode"`
-	Referrals       int     `json:"referrals"`
-	QualifiedReferrals int  `json:"qualifiedReferrals"`
-	CommissionMinor int     `json:"commissionMinor"`
-	Currency        string  `json:"currency"`
-	Entries         []Entry `json:"entries"`
+	PointsBalance      int     `json:"pointsBalance"`
+	PointsEarned       int     `json:"pointsEarned"`
+	ReferralCode       string  `json:"referralCode"`
+	Referrals          int     `json:"referrals"`
+	QualifiedReferrals int     `json:"qualifiedReferrals"`
+	CommissionMinor    int     `json:"commissionMinor"`
+	Currency           string  `json:"currency"`
+	Entries            []Entry `json:"entries"`
 }
 
 // Service reads and writes the ledgers.
@@ -216,11 +216,11 @@ func (h *Handlers) ReferralCode(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"code":      summary.ReferralCode,
-		"referrals": summary.Referrals,
-		"qualified": summary.QualifiedReferrals,
+		"code":            summary.ReferralCode,
+		"referrals":       summary.Referrals,
+		"qualified":       summary.QualifiedReferrals,
 		"commissionMinor": summary.CommissionMinor,
-		"currency":  summary.Currency,
+		"currency":        summary.Currency,
 	})
 	return nil
 }

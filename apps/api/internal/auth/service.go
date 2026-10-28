@@ -36,19 +36,19 @@ const sessionTTL = 7 * 24 * time.Hour
 
 // User is the authenticated principal attached to a request.
 type User struct {
-	ID            string   `json:"id"`
-	Email         string   `json:"email"`
-	DisplayName   string   `json:"displayName"`
-	Status        string   `json:"status"`
-	ExamPathwayID *string  `json:"examPathwayId"`
-	TargetDate    *string  `json:"targetDate"`
-	Timezone      string   `json:"timezone"`
-	DailyMinutes  int      `json:"dailyMinutes"`
-	OnboardingStep int     `json:"onboardingStep"`
-	OnboardingDone bool    `json:"onboardingComplete"`
-	Roles         []string `json:"roles"`
-	Subjects      []string `json:"subjectIds"`
-	CreatedAt     string   `json:"createdAt"`
+	ID             string   `json:"id"`
+	Email          string   `json:"email"`
+	DisplayName    string   `json:"displayName"`
+	Status         string   `json:"status"`
+	ExamPathwayID  *string  `json:"examPathwayId"`
+	TargetDate     *string  `json:"targetDate"`
+	Timezone       string   `json:"timezone"`
+	DailyMinutes   int      `json:"dailyMinutes"`
+	OnboardingStep int      `json:"onboardingStep"`
+	OnboardingDone bool     `json:"onboardingComplete"`
+	Roles          []string `json:"roles"`
+	Subjects       []string `json:"subjectIds"`
+	CreatedAt      string   `json:"createdAt"`
 }
 
 // HasRole reports whether the principal holds role (platform admins hold everything).

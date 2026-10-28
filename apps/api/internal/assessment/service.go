@@ -24,22 +24,22 @@ import (
 
 // Session is one attempt at a practice set or assessment.
 type Session struct {
-	ID             string
-	UserID         string
-	DefinitionID   *string
-	ClassID        *string
-	Mode           string
-	AttemptNo      int
-	Status         domain.SessionStatus
-	StartedAt      time.Time
-	DeadlineAt     time.Time
-	SubmittedAt    *time.Time
-	ScoreRaw       *int
-	ScoreMax       *int
-	ScorePercent   *int
-	Snapshot       Snapshot
-	ReleaseAt      *time.Time
-	ReleaseMode    string
+	ID              string
+	UserID          string
+	DefinitionID    *string
+	ClassID         *string
+	Mode            string
+	AttemptNo       int
+	Status          domain.SessionStatus
+	StartedAt       time.Time
+	DeadlineAt      time.Time
+	SubmittedAt     *time.Time
+	ScoreRaw        *int
+	ScoreMax        *int
+	ScorePercent    *int
+	Snapshot        Snapshot
+	ReleaseAt       *time.Time
+	ReleaseMode     string
 	AvailabilityEnd *time.Time
 }
 
@@ -53,8 +53,6 @@ type Snapshot struct {
 type Service struct {
 	DB *store.Store
 }
-
-
 
 // New builds the assessment service.
 func New(db *store.Store) *Service { return &Service{DB: db} }
@@ -166,7 +164,7 @@ func (s *Service) StartPractice(ctx context.Context, userID, subjectID string, t
 func (s *Service) StartDefinition(ctx context.Context, userID string, roles []string, definitionID string) (*Session, error) {
 	var (
 		classID, availabilityStart, availabilityEnd, policyJSON, defType, status string
-		duration, attemptLimit                                                  int
+		duration, attemptLimit                                                   int
 	)
 	err := s.DB.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(class_id,''), COALESCE(availability_start,''), COALESCE(availability_end,''),
@@ -281,7 +279,7 @@ func (s *Service) StartDefinition(ctx context.Context, userID string, roles []st
 // Get loads one attempt, including the definition's release policy when there is one.
 func (s *Service) Get(ctx context.Context, sessionID string) (*Session, error) {
 	var (
-		row                       sessionRow
+		row sessionRow
 	)
 	err := s.DB.DB.QueryRowContext(ctx, `
 		SELECT s.id, s.user_id, s.definition_id, s.class_id, s.mode, s.attempt_no, s.status,
@@ -309,22 +307,22 @@ func (s *Service) Get(ctx context.Context, sessionID string) (*Session, error) {
 }
 
 type sessionRow struct {
-	ID             string
-	UserID         string
-	DefinitionID   sql.NullString
-	ClassID        sql.NullString
-	Mode           string
-	AttemptNo      int
-	Status         string
-	StartedAt      string
-	DeadlineAt     string
-	SubmittedAt    sql.NullString
-	ScoreRaw       sql.NullInt64
-	ScoreMax       sql.NullInt64
-	ScorePercent   sql.NullInt64
-	SnapshotJSON   string
-	ReleaseAt      sql.NullString
-	ReleaseMode    string
+	ID              string
+	UserID          string
+	DefinitionID    sql.NullString
+	ClassID         sql.NullString
+	Mode            string
+	AttemptNo       int
+	Status          string
+	StartedAt       string
+	DeadlineAt      string
+	SubmittedAt     sql.NullString
+	ScoreRaw        sql.NullInt64
+	ScoreMax        sql.NullInt64
+	ScorePercent    sql.NullInt64
+	SnapshotJSON    string
+	ReleaseAt       sql.NullString
+	ReleaseMode     string
 	AvailabilityEnd sql.NullString
 }
 
@@ -470,7 +468,7 @@ func (s *Service) SaveResponse(ctx context.Context, userID, sessionID, qvID stri
 		if sameValue && (sameSequence || replayOfLast) {
 			return &SaveResult{
 				Saved: true, ServerSavedAt: store.Now(), Version: currentVersion,
-				SessionStatus: string(session.Status),
+				SessionStatus:    string(session.Status),
 				RemainingSeconds: domain.RemainingSeconds(session.DeadlineAt, now),
 			}, nil
 		}
@@ -521,7 +519,7 @@ func (s *Service) SaveResponse(ctx context.Context, userID, sessionID, qvID stri
 
 	return &SaveResult{
 		Saved: true, ServerSavedAt: savedAt, Version: nextVersion,
-		SessionStatus: string(session.Status),
+		SessionStatus:    string(session.Status),
 		RemainingSeconds: domain.RemainingSeconds(session.DeadlineAt, now),
 	}, nil
 }
@@ -707,12 +705,12 @@ type QuestionView struct {
 
 // ReviewItem reveals the key and explanation once the release policy permits.
 type ReviewItem struct {
-	QvID             string `json:"qvId"`
-	AnswerOptionID   string `json:"answerOptionId"`
-	Explanation      string `json:"explanation"`
-	TopicName        string `json:"topicName,omitempty"`
-	TopicID          string `json:"topicId,omitempty"`
-	Difficulty       string `json:"difficulty,omitempty"`
+	QvID           string `json:"qvId"`
+	AnswerOptionID string `json:"answerOptionId"`
+	Explanation    string `json:"explanation"`
+	TopicName      string `json:"topicName,omitempty"`
+	TopicID        string `json:"topicId,omitempty"`
+	Difficulty     string `json:"difficulty,omitempty"`
 }
 
 // View is the serialised attempt returned to clients.

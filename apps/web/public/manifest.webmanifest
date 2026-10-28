@@ -1,0 +1,22 @@
+{
+  "name": "Edumart — exam practice for Nigeria",
+  "short_name": "Edumart",
+  "description": "Timed mocks, adaptive practice and verified results for JAMB, WAEC and NECO.",
+  "start_url": "/dashboard?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8f7f4",
+  "theme_color": "#0d5c46",
+  "lang": "en-NG",
+  "dir": "ltr",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Start practice", "url": "/practice", "description": "Begin a practice set" },
+    { "name": "Progress", "url": "/progress", "description": "See your scores" }
+  ]
+}

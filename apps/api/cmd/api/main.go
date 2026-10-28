@@ -25,6 +25,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/insights"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
+	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -64,6 +65,7 @@ func main() {
 		Rewards:  rewards.New(db),
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
+		Signup:   signup.New(db),
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:    splitList(env("EDUMART_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")),

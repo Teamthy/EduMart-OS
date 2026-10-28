@@ -16,37 +16,37 @@ import (
 
 // Class is a teaching group.
 type Class struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
 	SubjectID   *string `json:"subjectId"`
-	JoinCode    string `json:"joinCode"`
-	Role        string `json:"role"`
-	Members     int    `json:"members"`
-	Assignments int    `json:"assignments"`
-	CreatedAt   string `json:"createdAt"`
+	JoinCode    string  `json:"joinCode"`
+	Role        string  `json:"role"`
+	Members     int     `json:"members"`
+	Assignments int     `json:"assignments"`
+	CreatedAt   string  `json:"createdAt"`
 }
 
 // Member is a roster row.
 type Member struct {
-	UserID     string `json:"userId"`
-	DisplayName string `json:"displayName"`
-	Email      string `json:"email"`
-	Role       string `json:"role"`
-	JoinedAt   string `json:"joinedAt"`
-	Attempts   int    `json:"attempts"`
-	AveragePercent *int `json:"averagePercent"`
+	UserID         string `json:"userId"`
+	DisplayName    string `json:"displayName"`
+	Email          string `json:"email"`
+	Role           string `json:"role"`
+	JoinedAt       string `json:"joinedAt"`
+	Attempts       int    `json:"attempts"`
+	AveragePercent *int   `json:"averagePercent"`
 }
 
 // Assignment links a class to an assessment definition.
 type Assignment struct {
-	DefinitionID string  `json:"definitionId"`
-	Title        string  `json:"title"`
-	DueAt        *string `json:"dueAt"`
-	Status       string  `json:"status"`
-	DurationSeconds int  `json:"durationSeconds"`
-	Submissions  int     `json:"submissions"`
-	Roster       int     `json:"roster"`
-	MyStatus     string  `json:"myStatus,omitempty"`
+	DefinitionID    string  `json:"definitionId"`
+	Title           string  `json:"title"`
+	DueAt           *string `json:"dueAt"`
+	Status          string  `json:"status"`
+	DurationSeconds int     `json:"durationSeconds"`
+	Submissions     int     `json:"submissions"`
+	Roster          int     `json:"roster"`
+	MyStatus        string  `json:"myStatus,omitempty"`
 }
 
 // Service implements classroom use cases.

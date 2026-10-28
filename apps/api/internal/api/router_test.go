@@ -25,6 +25,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/insights"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
+	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -59,6 +60,7 @@ func newHarness(t *testing.T) *harness {
 		Rewards:  rewards.New(db),
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
+		Signup:   signup.New(db),
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:  []string{"http://localhost:3000"},
@@ -628,3 +630,106 @@ func TestPasswordResetInvalidatesSessions(t *testing.T) {
 	}
 }
 
+func TestSignupWizardResumesFromServerState(t *testing.T) {
+	h := newHarness(t)
+
+	// Step 1: starting the wizard creates a server-side draft.
+	status, body := h.do("POST", "/v1/signup-drafts", "", map[string]any{"referralCode": "amara-2026"})
+	if status != http.StatusCreated {
+		t.Fatalf("create draft: %d %v", status, body)
+	}
+	token := body["token"].(string)
+	if body["step"] != "pathway" || int(body["stepIndex"].(float64)) != 1 {
+		t.Fatalf("a new draft should start at step 1, got %v / %v", body["step"], body["stepIndex"])
+	}
+
+	// The draft token is an opaque bearer credential for the wizard.
+	patch := func(payload map[string]any) map[string]any {
+		req, _ := http.NewRequest("PATCH", h.server.URL+"/v1/signup-drafts/current", nil)
+		raw, _ := json.Marshal(payload)
+		req.Body = io.NopCloser(bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("patch draft: %v", err)
+		}
+		defer res.Body.Close()
+		parsed := map[string]any{}
+		responseRaw, _ := io.ReadAll(res.Body)
+		_ = json.Unmarshal(responseRaw, &parsed)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("patch draft: %d %v", res.StatusCode, parsed)
+		}
+		return parsed
+	}
+
+	// Step 1 answer survives a "refresh" and the draft advances.
+	subjectID := h.subjectID("physics")
+	body = patch(map[string]any{
+		"currentStep": "subjects", "examPathwayKey": "jamb", "subjectIds": []string{subjectID},
+		"targetDate": "2026-08-01", "dailyMinutes": 60,
+	})
+	if body["step"] != "subjects" || int(body["stepIndex"].(float64)) != 2 {
+		t.Fatalf("draft should advance to step 2, got %v", body["step"])
+	}
+
+	// A fresh read (as after a page reload) returns the same answers.
+	req, _ := http.NewRequest("GET", h.server.URL+"/v1/signup-drafts/current", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("read draft: %v", err)
+	}
+	defer res.Body.Close()
+	readBody := map[string]any{}
+	rawResponse, _ := io.ReadAll(res.Body)
+	_ = json.Unmarshal(rawResponse, &readBody)
+
+	draft := readBody["draft"].(map[string]any)
+	if draft["targetDate"] != "2026-08-01" || draft["dailyMinutes"].(float64) != 60 {
+		t.Fatalf("draft answers were not persisted: %v", draft)
+	}
+	if len(draft["subjectIds"].([]any)) != 1 {
+		t.Fatalf("subject selection was not persisted: %v", draft["subjectIds"])
+	}
+
+	// Step 4 collects the account fields into the same draft.
+	body = patch(map[string]any{
+		"currentStep": "confirm",
+		"displayName": "Wizard Learner",
+		"email":       "wizard@example.com",
+	})
+	if body["step"] != "confirm" || int(body["stepIndex"].(float64)) != 5 {
+		t.Fatalf("draft should reach the confirm step, got %v", body["step"])
+	}
+
+	// The final step creates the account from the persisted draft.
+	status, body = h.do("POST", "/v1/auth/register", "", map[string]any{
+		"displayName":    "Wizard Learner",
+		"email":          "wizard@example.com",
+		"password":       "Password123!",
+		"targetDate":     draft["targetDate"],
+		"dailyMinutes":   draft["dailyMinutes"],
+		"subjectIds":     draft["subjectIds"],
+		"onboardingStep": 5,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("register from draft: %d %v", status, body)
+	}
+
+	// Sensible guardrails: a step the API does not recognise is refused.
+	req, _ = http.NewRequest("PATCH", h.server.URL+"/v1/signup-drafts/current", nil)
+	raw, _ := json.Marshal(map[string]any{"currentStep": "invented-step"})
+	req.Body = io.NopCloser(bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rejected, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch draft: %v", err)
+	}
+	defer rejected.Body.Close()
+	if rejected.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown step should be rejected, got %d", rejected.StatusCode)
+	}
+}

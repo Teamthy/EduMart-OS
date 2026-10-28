@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS user_subjects (
   PRIMARY KEY (user_id, subject_id)
 );
 
+-- Anonymous signup drafts: the wizard's progress exists on the server before an account does,
+-- so a refresh, a lost connection or a switch to the mobile app resumes at the same step.
+CREATE TABLE IF NOT EXISTS signup_drafts (
+  id                TEXT PRIMARY KEY,
+  token_hash        TEXT NOT NULL UNIQUE,
+  draft_json        TEXT NOT NULL DEFAULT '{}',
+  current_step      TEXT NOT NULL DEFAULT 'pathway',
+  referral_code     TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  completed_user_id TEXT,
+  completed_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS organizations (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,

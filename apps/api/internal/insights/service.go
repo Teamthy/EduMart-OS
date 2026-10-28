@@ -38,21 +38,21 @@ type RecentAttempt struct {
 
 // Dashboard is the single payload the home screen needs.
 type Dashboard struct {
-	DisplayName      string          `json:"displayName"`
-	DaysToExam       *int            `json:"daysToExam"`
-	TargetDate       *string         `json:"targetDate"`
-	ExamPathway      string          `json:"examPathway"`
-	PointsBalance    int             `json:"pointsBalance"`
-	StreakDays       int             `json:"streakDays"`
-	AttemptsCompleted int            `json:"attemptsCompleted"`
-	AveragePercent   *int            `json:"averagePercent"`
-	StudyMinutes     int             `json:"studyMinutesThisWeek"`
-	RecentAttempts   []RecentAttempt `json:"recentAttempts"`
-	WeakTopics       []TopicStat     `json:"weakTopics"`
-	StrongTopics     []TopicStat     `json:"strongTopics"`
-	ActiveSessionID  *string         `json:"activeSessionId"`
-	ActiveSessionDeadline *string    `json:"activeSessionDeadline"`
-	Recommendation   string          `json:"recommendation"`
+	DisplayName           string          `json:"displayName"`
+	DaysToExam            *int            `json:"daysToExam"`
+	TargetDate            *string         `json:"targetDate"`
+	ExamPathway           string          `json:"examPathway"`
+	PointsBalance         int             `json:"pointsBalance"`
+	StreakDays            int             `json:"streakDays"`
+	AttemptsCompleted     int             `json:"attemptsCompleted"`
+	AveragePercent        *int            `json:"averagePercent"`
+	StudyMinutes          int             `json:"studyMinutesThisWeek"`
+	RecentAttempts        []RecentAttempt `json:"recentAttempts"`
+	WeakTopics            []TopicStat     `json:"weakTopics"`
+	StrongTopics          []TopicStat     `json:"strongTopics"`
+	ActiveSessionID       *string         `json:"activeSessionId"`
+	ActiveSessionDeadline *string         `json:"activeSessionDeadline"`
+	Recommendation        string          `json:"recommendation"`
 }
 
 // LearningSummary is the analytics screen payload.

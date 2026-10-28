@@ -11,8 +11,8 @@ import (
 const GraceWindow = 5 * time.Second
 
 var (
-	ErrSessionClosed  = errors.New("this attempt is already closed")
-	ErrSessionExpired = errors.New("the deadline has passed for this attempt")
+	ErrSessionClosed    = errors.New("this attempt is already closed")
+	ErrSessionExpired   = errors.New("the deadline has passed for this attempt")
 	ErrSessionCancelled = errors.New("this attempt was cancelled")
 )
 
