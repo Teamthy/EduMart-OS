@@ -67,9 +67,14 @@ jobs:
         working-directory: .
         run: npm ci
       - name: Install Expo dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Bundle the app (Android + iOS + web)
+        run: |
+          npx expo export --platform android --output-dir /tmp/export-android
+          npx expo export --platform ios --output-dir /tmp/export-ios
+          npx expo export --platform web --output-dir /tmp/export-web
 
   e2e-smoke:
     name: End-to-end smoke
@@ -93,22 +98,7 @@ jobs:
           EDUMART_DSN=/tmp/ci.db PORT=8080 /tmp/edumart-api & echo $! > /tmp/api.pid
           for i in $(seq 1 30); do curl -sf http://localhost:8080/healthz && break; sleep 1; done
       - name: Verify the learner journey over HTTP
-        run: |
-          set -euo pipefail
-          B=http://localhost:8080/v1
-          curl -sf -c /tmp/c.txt -X POST $B/auth/login -H 'content-type: application/json' \
-            -d '{"email":"student@edumart.ng","password":"Student123!"}' > /dev/null
-          SUBJECT=$(curl -sf $B/subjects | python3 -c "import sys,json;print(json.load(sys.stdin)['subjects'][0]['id'])")
-          curl -sf -b /tmp/c.txt -X POST $B/practice-sessions -H 'content-type: application/json' \
-            -d "{\"subjectId\":\"$SUBJECT\",\"count\":3}" > /tmp/session.json
-          python3 - <<'PY'
-          import json
-          session = json.load(open('/tmp/session.json'))['session']
-          assert session['status'] == 'in_progress'
-          assert 'answerOptionId' not in json.dumps(session), 'answer key leaked before reveal'
-          assert session['remaining_seconds'] > 0
-          open('/tmp/sid','w').write(session['session_id'])
-          PY
+        run: python3 scripts/smoke.py http://localhost:8080
       - name: Stop API
         if: always()
         run: kill "$(cat /tmp/api.pid)" || true

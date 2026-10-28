@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install dev dev-api dev-web dev-mobile test test-api test-web typecheck build build-api fmt vet clean
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-web typecheck assets smoke build build-api fmt vet clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -33,6 +33,12 @@ test-web: ## Vitest
 
 typecheck: ## Typecheck shared + web (+ mobile when installed)
 	npm run typecheck
+
+smoke: ## Walk the learner journey against a running API (BASE=http://localhost:8080)
+	python3 scripts/smoke.py $(or $(BASE),http://localhost:8080)
+
+assets: ## Regenerate the app icons and splash
+	python3 scripts/render-assets.py
 
 fmt: ## Format Go sources
 	cd apps/api && gofmt -w .

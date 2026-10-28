@@ -16,7 +16,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Money handling | Integer minor units end to end; formatting tested |
 | Error contract | One envelope, request ids on every response, mapped statuses |
 | Seedable, reproducible environments | Idempotent deterministic seed; a fresh DB boots to a working product |
-| CI | Go format/vet/test/build, web typecheck/test/build, mobile typecheck, HTTP smoke of the learner journey |
+| CI | Go format/vet/test/build, web typecheck/test/build, mobile typecheck + Metro bundle for Android/iOS/web, HTTP smoke of the learner journey |
 
 ## Partially ready
 
@@ -28,7 +28,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Payments | Only the sandbox provider is wired; no live adapter, refunds or reconciliation |
 | Offline | Shell cached; attempts require connectivity by design |
 | Accessibility | Designed to WCAG 2.2 AA; not verified with assistive technology on real devices |
-| Mobile builds | Source + EAS profiles only; no artefacts are produced in this environment (no SDK) |
+| Mobile builds | Bundles verified for all three platforms; signed `.apk`/`.aab`/`.ipa` still come from EAS (no SDK or signing identity here) |
 
 ## Not ready
 

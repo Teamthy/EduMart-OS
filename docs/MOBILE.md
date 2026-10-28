@@ -9,6 +9,8 @@ only the shell differs.
 apps/mobile/
   app.config.ts          Expo config (bundle ids, scheme, plugins, API base per profile)
   eas.json               build + submit profiles
+  metro.config.js        watches packages/shared (a symlink outside the app root)
+  assets/                icon, adaptive icon, splash, favicon (generated)
   app/
     _layout.tsx          stack + AuthProvider
     index.tsx            session restore → tabs or sign-in
@@ -21,14 +23,18 @@ apps/mobile/
   src/auth.tsx           session context
   src/components/ui.tsx  themed primitives (44pt targets, accessible roles)
   src/theme.ts           tokens re-exported from @edumart/shared
+scripts/
+  render-assets.py       draws the icons + splash with the standard library only
+  smoke.py               HTTP journey shared with CI
 ```
 
 ## Running
 
 ```bash
 npm run install:mobile       # Expo deps are not part of the root workspace install
-cd apps/mobile
-EXPO_PUBLIC_API_URL=http://192.168.1.20:8080 npx expo start
+npm run dev:mobile           # expo start
+# or, with an explicit API host for a physical device:
+cd apps/mobile && EXPO_PUBLIC_API_URL=http://192.168.1.20:8080 npx expo start
 ```
 
 On a physical device `localhost` is the phone, not your laptop — use your machine's LAN address (or
@@ -56,14 +62,16 @@ Profiles in `eas.json`:
 | `production` | `https://api.edumart.ng` | Store submission |
 
 Before the first store build, replace in `app.config.ts`/`eas.json`: the EAS `projectId`, the iOS
-`ascAppId` and Apple ID, and add the Play service-account key at `secrets/` (git-ignored). Generate
-the binary icons with `apps/mobile/assets/README.md`.
+`ascAppId` and Apple ID, and add the Play service-account key at `secrets/` (git-ignored). The icons
+and splash are already committed; regenerate them from the shared mark with `npm run assets`.
 
-## What cannot be done in this repository
+## What is verified here, and what is not
 
-This checkout has no Android SDK or Xcode installed, so there are no `.apk`/`.ipa` artefacts here:
-the deliverable is **source + configuration + build profiles**, which is what a build service
-consumes. `npx expo start` requires the simulator/device to be present.
+`npx expo export` bundles the app for Android, iOS and web from this checkout, so the JavaScript and
+every native module import are known to resolve — CI runs that for all three platforms on every
+push. What this repository cannot produce is a signed binary: there is no Android SDK, Xcode or
+signing identity here, so `.apk`/`.aab`/`.ipa` artefacts come from EAS using `eas.json`. A
+simulator or device is still needed to click through the UI.
 
 ## Known gaps (see BACKLOG.md)
 

@@ -75,7 +75,10 @@ Run everything:
 
 ```bash
 npm test                    # Go tests + web tests
-npm run typecheck           # shared, web (and mobile when its deps are installed)
+npm run typecheck           # shared + web
+npm run typecheck:mobile    # Expo app (after npm run install:mobile)
+npm run smoke               # learner journey against a running API
+npm run assets              # regenerate the app icons + splash
 ```
 
 Current status: **Go 33 tests**, **web 25 tests**, `go vet` clean, `tsc --noEmit` clean on web,
