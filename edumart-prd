@@ -1,0 +1,1410 @@
+Edumart — Full Product Requirements Document (PRD)
+Scope: Greenfield development, from product discovery and system design through implementation, security, testing, deployment, and post-launch scaling.
+
+The objective is to build Edumart as a production-grade education platform, not simply an MVP that will need to be rebuilt when usage grows.
+
+The PRD will cover the complete product lifecycle: the initial launch, subsequent feature releases, institutional adoption, monetization, platform reliability, and long-term expansion.
+Product direction
+Edumart will bring together five connected product areas:
+1. Learning and examination preparation — JAMB/UTME, WAEC, NECO, Post-UTME, practice questions, timed examinations, explanations, and performance tracking.
+2. Classroom and institutional management — teachers, classes, cohorts, invitations, assessments, student progress, and institutional reporting.
+3. Digital publications and marketplace — educational books, learning resources, publisher listings, purchases, and controlled access to digital content.
+4. Rewards and referrals — learning points, streaks, achievements, referral attribution, and separately managed eligible monetary commissions.
+5. Platform administration and insights — content moderation, user and institution management, payment reconciliation, analytics, support tools, security auditing, and operational monitoring.
+The platform will launch as a mobile-first Progressive Web App (PWA), with native mobile applications considered later. The architecture should support growth without introducing distributed-system complexity before it is justified.
+1. Document control and product governance
+Field	Definition
+Product	Edumart
+Document	Full Product Requirements Document
+Status	Working baseline for stakeholder approval
+Market	Nigeria-first, with future regional expansion
+Delivery approach	Incremental releases with production-grade foundations
+Primary platform	Responsive web and PWA
+Native apps	Later, subject to product evidence
+Accountable product owner	To be assigned
+Technical owner	To be assigned
+Security owner	To be assigned
+
+This PRD is the product baseline. Before implementation, the team must validate assumptions, assign owners, and convert the requirements into engineering tickets and acceptance tests.
+2. Product goals and non-goals
+2.1 Goals
+Edumart must:
+- Deliver a reliable exam-preparation and assessment experience.
+- Help learners understand their strengths, weaknesses, and progress.
+- Enable teachers to organize classes and assign assessments.
+- Give institutions controlled access to staff, students, classes, and reports.
+- Enable authorized publishers to distribute educational digital products.
+- Support student subscriptions, institution subscriptions, and digital-content sales.
+- Maintain separate learning-point and monetary-commission systems.
+- Protect student data and preserve exam, payment, and financial records.
+- Support ongoing development without requiring a major rewrite after the first launch.
+2.2 Non-goals for the initial launch
+The initial launch should not include:
+- An unrestricted social network or public messaging platform.
+- Autonomous AI grading for high-stakes examinations.
+- Native iOS and Android apps before the PWA has demonstrated sufficient demand.
+- Blockchain-based records or tokens without a validated business requirement.
+- A large microservices architecture introduced solely to anticipate hypothetical scale.
+- Unverified examination content or unsupported claims of affiliation with examination bodies.
+3. Users and permissions
+User role	Main capabilities
+Student	Practice, take mock exams, review results, manage goals, purchase resources
+Teacher/tutor	Create classes, assign assessments, review authorized student progress
+Institution owner	Manage institution settings, staff, billing, and organizational access
+Institution administrator	Manage users, classes, cohorts, schedules, and reports within assigned permissions
+Publisher	Manage approved listings, publication metadata, prices, and sales reporting
+Content editor	Create, review, correct, approve, publish, or withdraw educational content
+Support agent	Investigate cases through restricted support tools
+Finance operator	Review orders, refunds, settlements, commissions, and reconciliation exceptions
+Platform administrator	Manage platform configuration and access under privileged controls
+
+Security rule: A user may have multiple roles, but each role must have an explicit scope. A teacher's access to one class must not automatically grant access to every class in the institution.
+4. Product modules and requirements
+4.1 Identity and account management
+Priority: P0 — required for launch
+
+Requirements:
+- Registration, sign-in, sign-out, and contact verification.
+- Secure account recovery.
+- Session management and session revocation.
+- Profile and learning-preference management.
+- Role assignment and permission enforcement.
+- Account deactivation and deletion workflows under an approved retention policy.
+- Rate limits for login, recovery, verification, and sensitive actions.
+- Multi-factor authentication for privileged staff and institution administrators.
+- Auditing of role changes and sensitive account operations.
+Acceptance criteria:
+1. Expired or replayed verification tokens are rejected.
+2. Privileged operations require the appropriate permissions.
+3. Revoked sessions stop working within the documented enforcement window.
+4. Passwords, access tokens, and secrets never appear in logs.
+5. Automated tests attempt unauthorized access to other users' records.
+4.2 Learner onboarding and dashboard
+Priority: P0
+
+The onboarding experience should capture only the information required to personalize learning.
+
+Required capabilities:
+- Select target examination types.
+- Select subjects and optional study goals.
+- Set an optional examination date.
+- View recent activity, continue-learning actions, recommended practice, assignments, and results.
+- View progress and weak-topic summaries.
+- Manage preferences without losing historical attempts.
+The dashboard must have deliberate loading, empty, offline, stale-data, permission-denied, and error states.
+4.3 Examination catalog and syllabus
+Priority: P0
+
+The catalog should support:
+- JAMB/UTME.
+- WAEC.
+- NECO.
+- Post-UTME.
+- Other examination types added through administration rather than hard-coded application logic.
+The exact supported examinations, years, and content must be validated before launch.
+
+Requirements:
+- Manage examination types, years, subjects, topics, subtopics, and syllabus versions.
+- Filter questions by examination, subject, topic, difficulty, and available year.
+- Maintain content provenance and licensing information.
+- Support content drafts, reviews, approvals, publication, archival, and withdrawal.
+- Preserve historical question versions used in past attempts.
+4.4 Question bank and editorial tools
+Priority: P0
+
+Each question must support:
+- Stable question ID and immutable version ID.
+- Examination and syllabus mapping.
+- Subject, topic, subtopic, and difficulty.
+- Question stem and answer options.
+- Correct answer and explanation.
+- Source/provenance and licensing status.
+- Reviewer and approval history.
+- Optional images, diagrams, or other approved media.
+- Publication status and correction history.
+The administration interface must support:
+- Question creation and editing.
+- Preview before publication.
+- Bulk import with row-level validation errors.
+- Duplicate detection where practical.
+- Review and approval workflows.
+- Reports from learners.
+- Corrections, archival, and withdrawal.
+- Content-quality metrics.
+Acceptance criteria
+- Unapproved content cannot be served through learner APIs.
+- Correct answers are not exposed before the permitted reveal time.
+- A correction does not silently rewrite the history of completed attempts.
+- The team can identify the source and version of any question used in an exam.
+4.5 Practice mode
+Priority: P0
+
+Learners should be able to:
+1. Select an examination.
+2. Choose a subject or topic.
+3. Configure question count and supported difficulty filters.
+4. Start a practice session.
+5. Answer and navigate questions.
+6. Receive feedback according to the practice mode.
+7. Review explanations when permitted.
+8. See their results and topic-level progress.
+9. Revisit past attempts.
+Every attempt must be recorded separately. The system must not merge repeat attempts in a way that misrepresents a learner's progress.
+4.6 Timed mock examinations and CBT
+Priority: P0 — critical integrity requirement
+
+The timed-examination module is one of Edumart's most important systems.
+
+Required functionality:
+- Exam templates and schedules.
+- Duration and deadline configuration.
+- Question selection and immutable exam snapshots.
+- Configurable navigation rules.
+- Attempt limits.
+- Versioned scoring rules.
+- Server-authoritative start and end times.
+- Autosave with idempotent writes.
+- Final submission and durable submission receipts.
+- Deterministic scoring.
+- Results and review policies.
+- Audited administrative overrides.
+- Recovery and dispute-investigation workflows.
+Required answer-saving protocol
+1. The learner answers or changes an answer.
+2. The client assigns a unique mutation ID.
+3. The client sends the answer, attempt ID, and expected answer version to the server.
+4. The server validates ownership, attempt state, deadline, and question membership.
+5. The server commits the accepted answer and mutation receipt.
+6. The server returns the canonical answer version and server timestamp.
+7. The interface displays Saved on server only after acknowledgement.
+If connectivity is lost, the interface must distinguish between a local draft, a pending synchronization operation, and a failed save.
+
+A timeout after a server commit must not result in duplicate answer records when the client retries.
+Submission protocol
+Final submission must be a server-side state transition. The server must validate the attempt, enforce the deadline policy, persist the final state, and issue a durable receipt.
+
+Historical scoring must remain reproducible using the original question snapshots and scoring-rule versions.
+CBT acceptance tests
+- Changing the device clock does not extend an exam.
+- Duplicate submissions do not create duplicate results.
+- Acknowledged answer writes survive refresh and the documented failover test.
+- Conflicting concurrent answer updates are handled deterministically.
+- Expired or submitted attempts cannot be silently reopened.
+- Failed synchronization is visible to the learner.
+- A database or worker failure does not silently discard an acknowledged submission.
+4.7 Results and analytics
+Priority: P0 for core results; advanced analytics can follow
+
+Required features:
+- Score and answer breakdown.
+- Correct, incorrect, and unanswered counts.
+- Time used where applicable.
+- Explanation review according to exam policy.
+- Attempt history.
+- Topic-level accuracy.
+- Progress trends.
+- Weak-topic identification.
+- Recommendations for subsequent practice.
+Analytics may be eventually consistent, but they must be rebuildable from authoritative assessment records.
+
+Every result must use a defined scoring method. If a score is corrected, the platform must retain an audit trail showing the reason, actor, and recalculation.
+4.8 Study planner and engagement
+Priority: P1
+- Personal study plans.
+- Study goals and target dates.
+- Topic-based practice recommendations.
+- Reminders and notification preferences.
+- Streaks and achievements.
+- Goal adjustment and plan history.
+Streak rules must be documented, timezone-aware, and protected against duplicate events.
+4.9 Teacher and classroom management
+Priority: P1, with a basic version included in the launch plan
+
+Requirements:
+- Create classes and cohorts.
+- Invite students using expiring and revocable links or codes.
+- Assign approved question sets and assessments.
+- Configure availability, deadlines, attempts, and result visibility.
+- Monitor assignment completion.
+- Review class-level performance.
+- Access individual student details only within authorized classes.
+- Provide feedback.
+- Export permitted reports.
+- Reuse templates without changing existing assessment snapshots.
+Teacher membership changes, assessment overrides, exports, and ownership changes must be audited.
+4.10 Institution management
+Priority: P1
+
+Requirements:
+- Institution profile and settings.
+- Staff invitations and role assignments.
+- Student enrolment.
+- Classes, cohorts, and optional campus or department structures.
+- Institution-specific assessment policies.
+- Reports and exports.
+- Subscription and entitlement management.
+- Staff offboarding and access revocation.
+- Audit history.
+Institution data must be isolated at the authorization and data-access layers. Merely filtering records in the frontend is insufficient.
+4.11 Digital library and marketplace
+Priority: P1/P2, depending on launch economics
+
+Requirements:
+- Educational book and resource listings.
+- Publisher profiles and onboarding.
+- Product descriptions, previews, formats, prices, and currencies.
+- Content licensing and rights records.
+- Checkout and order history.
+- Secure digital-content access.
+- Refund and dispute workflows.
+- Publisher sales reports.
+- Settlement tracking.
+- Content versioning and takedown processes.
+Purchased access must be granted by the backend after authoritative payment confirmation. Private files must not be exposed through predictable public URLs.
+4.12 Payments and subscriptions
+Priority: P1 if paid functionality is part of the first commercial release
+
+Requirements:
+- Payment intent and order creation.
+- Provider callback and webhook verification.
+- Idempotent payment processing.
+- Entitlement management.
+- Subscription lifecycle.
+- Failed payments and delayed confirmation.
+- Refunds and chargebacks.
+- Provider reconciliation.
+- Finance reporting.
+The backend must never trust a frontend redirect as proof of payment.
+
+Money must use integer minor units or fixed-precision decimal types, not binary floating-point calculations.
+4.13 Rewards and referrals
+Priority: P2
+
+Edumart must maintain two distinct systems:
+
+Learning points
+- Earned through eligible learning activity.
+- Used for engagement or approved non-cash benefits.
+- Governed by published earning and redemption rules.
+Monetary commissions
+- Earned only from explicitly eligible business events.
+- Recorded in a separate financial ledger.
+- Subject to fraud controls, eligibility checks, payout policies, and applicable legal requirements.
+Every financial event must have a unique business event ID. Ledgers must be append-only; corrections should use compensating entries rather than rewriting history.
+
+Monetary payouts should remain disabled until provider, legal, accounting, and fraud controls have been approved.
+4.14 Notifications
+Priority: P1
+
+Support:
+- Account verification and security notifications.
+- Assignment deadlines.
+- Results availability.
+- Payment receipts.
+- Important service notifications.
+- User notification preferences.
+Notification delivery should be asynchronous and idempotent. A notification-provider outage must not block exam submissions or payment transactions.
+4.15 Administration, moderation, and support
+Priority: P0 for core operations
+
+Administrative tools should support:
+- User and institution management.
+- Content review and correction.
+- Question reports and takedowns.
+- Payment and entitlement investigation.
+- Support cases.
+- Audit history.
+- Restricted exports.
+- Fraud and abuse investigation.
+High-risk operations should require reason codes and, where appropriate, dual approval.
+4.16 AI-assisted learning
+Priority: P2/P3 — later stage
+
+Potential capabilities:
+- AI-assisted explanations.
+- Study recommendations.
+- Curriculum-grounded tutoring.
+- Question discovery.
+- Personalized study planning.
+- Teacher assistance.
+Requirements:
+- Use approved educational sources.
+- Provide source references where possible.
+- Defend against prompt injection and unauthorized data retrieval.
+- Apply rate limits, cost limits, output validation, and abuse monitoring.
+- Evaluate factual accuracy and curriculum alignment.
+- Keep AI-generated advice separate from authoritative exam results.
+- Do not allow autonomous AI to change official scores or make high-impact disciplinary decisions.
+5. UX and design requirements
+The design team must deliver a complete responsive design system, not only individual screens.
+
+Required design coverage:
+- Authentication and onboarding.
+- Learner dashboard.
+- Examination catalog.
+- Practice and timed-exam interfaces.
+- Results and analytics.
+- Teacher dashboard.
+- Class and assignment management.
+- Institution administration.
+- Digital library and purchase flows.
+- User settings and notifications.
+- Content administration.
+- Finance and support operations.
+Every major workflow must include loading, empty, success, error, offline/pending, permission-denied, and destructive-action states where relevant.
+
+Accessibility target: WCAG 2.2 AA, subject to testing.
+
+The PWA should prioritize mobile performance, low bandwidth, safe form recovery, readable text, keyboard access, and clear status communication.
+6. Data model requirements
+The logical domain model should include the following entities or equivalent structures:
+Domain	Core records
+Identity	User, credential, session, role assignment, consent
+Taxonomy	Exam type, subject, topic, syllabus version
+Content	Question, question version, source, review, content report
+Assessment	Exam template, snapshot, attempt, answer mutation, submission receipt, score
+Learning	Study plan, goal, streak event, topic performance
+Classroom	Institution, membership, class, invitation, assignment
+Commerce	Publisher, listing, order, payment, refund, entitlement, settlement
+Rewards	Points ledger, commission ledger, referral, payout
+Operations	Audit event, support case, moderation case, incident
+
+Database integrity rules
+- Use primary keys, foreign keys, unique constraints, and appropriate check constraints.
+- Use database transactions for multi-record business operations.
+- Use versioning or locking where concurrent writes can conflict.
+- Preserve historical exam and scoring versions.
+- Keep monetary calculations in fixed precision.
+- Use explicit state machines for payments, submissions, entitlements, and payouts.
+- Keep analytics rebuildable from source-of-truth records.
+- Use an expand-migrate-contract strategy for database changes.
+7. Technical architecture
+7.1 Recommended baseline
+Layer	Recommended approach
+Frontend	Next.js and TypeScript
+Backend	Go with a team-standard HTTP framework
+Primary database	Managed PostgreSQL
+Cache	Redis only where justified by measured need
+Object storage	Private managed object storage
+Asynchronous processing	Durable job/queue system and transactional outbox
+API contracts	OpenAPI or equivalent
+Infrastructure	Managed cloud services and infrastructure as code
+Observability	Structured logs, metrics, traces, and alerts
+AI retrieval	Optional later-stage capability
+
+The Go backend and Next.js frontend are recommendations, not irreversible decisions. The technical lead must approve the final stack after reviewing team capability, hosting constraints, operating cost, and required integrations.
+7.2 Architecture principle
+Start with a modular monolith or a small number of deployable components.
+
+Establish boundaries for identity, content, assessment, classroom, commerce, rewards, and operations. Extract services only when a real need exists for independent scaling, deployment, ownership, or fault isolation.
+
+Do not introduce Kubernetes, Kafka, multiple databases, or multi-region write architectures simply because the platform may eventually grow.
+8. CAP theorem and data-loss prevention
+CAP describes the trade-off between consistency and availability during a network partition. It is not a backup strategy.
+
+Edumart should make explicit consistency decisions for each domain.
+Workflow	Required policy
+Exam answer writes	Strong consistency and durable acknowledgement
+Final exam submission	Authoritative server-side state transition
+Deadlines	Server-authoritative time
+Scoring	Deterministic, versioned calculations
+Payments	Verified provider state and transactional integrity
+Entitlements	Authoritative state with idempotent processing
+Points and commissions	Strong consistency and immutable ledgers
+Institution permissions	Server-side authorization
+Public catalog browsing	Caching permitted when safe
+Analytics	Eventual consistency acceptable if rebuildable
+
+Essential data-protection controls
+1. Idempotency keys for retryable critical operations.
+2. Database transactions and constraints for critical invariants.
+3. Autosave with explicit server acknowledgement.
+4. Safe pending-sync and conflict-reconciliation workflows.
+5. Automated database backups.
+6. Point-in-time recovery where supported.
+7. Independent backup storage with restricted access.
+8. Restore drills that verify real application workflows.
+9. Monitoring for backup failures, database health, queue lag, and reconciliation mismatches.
+10. Documented recovery objectives and tested incident procedures.
+Replication is not a backup. It can replicate accidental deletion or corrupted data.
+
+Define a recovery point objective (RPO) and recovery time objective (RTO) for each critical data class. Do not promise literal zero data loss without a technically validated guarantee.
+9. Security and privacy engineering
+Security must be part of the architecture and delivery process from the beginning.
+9.1 Required controls
+- Multi-factor authentication for privileged users.
+- Least-privilege authorization.
+- Server-side tenant isolation.
+- Secure password hashing and session management.
+- Secret management and restricted production credentials.
+- Encryption in transit and at rest.
+- Input validation and output encoding.
+- Protection against injection, XSS, applicable CSRF risks, SSRF, and unsafe uploads.
+- Rate limiting and abuse detection.
+- Dependency, source-code, container, infrastructure, and secret scanning.
+- Protected branches and peer-reviewed deployments.
+- Restricted production access and audited emergency access.
+- Security audit records for privileged actions.
+- Incident response procedures.
+9.2 Privacy requirements
+- Collect only necessary personal data.
+- Define data retention and deletion rules.
+- Restrict access to learner records by purpose and role.
+- Review third-party analytics and AI providers before transmitting user data.
+- Publish clear privacy, terms, content, refund, and reward policies.
+- Implement additional safeguards if minors may use the service.
+Obtain qualified legal review for applicable Nigerian data-protection requirements, consumer protection, payment and payout arrangements, copyright, tax, and child-related obligations. This PRD is not a legal compliance certification.
+10. Non-functional requirements
+Area	Requirement
+Performance	Define and test API latency budgets under representative load
+Reliability	Health checks, bounded retries, timeouts, graceful degradation
+Durability	Transactions, backups, recovery, idempotency, reconciliation
+Security	Threat modeling, least privilege, encryption, security testing
+Accessibility	WCAG 2.2 AA target
+Compatibility	Support documented current mobile and desktop browsers
+Scalability	Horizontal scaling and measured bottleneck removal
+Maintainability	Modular code, tests, documented contracts and architecture decisions
+Observability	Logs, metrics, traces, business-level alerts
+Cost control	Budgets and alerts for compute, storage, messaging, payment fees, and AI
+
+Initial availability and recovery targets should be treated as hypotheses until validated. A reasonable starting point for discussion is 99.5% monthly availability for the learner API, with a major-incident recovery target under four hours. The team must test and formally approve any targets before making commitments to customers.
+11. Analytics and measurement
+Instrument key events such as:
+- Registration and verification.
+- Onboarding completion.
+- Practice start and completion.
+- Answer-save acknowledgement and failure.
+- Mock submission and result availability.
+- Class and assignment creation.
+- Assignment completion.
+- Checkout, payment confirmation, and entitlement grant.
+- Refund and payout completion.
+- Content issue reporting.
+- Support case creation.
+Critical payment, submission, and financial metrics must come from authoritative backend records, not only browser analytics.
+
+Define metrics consistently and avoid putting unnecessary personal data or secrets into event payloads.
+12. Quality assurance and testing
+The QA plan must include:
+Test type	Required coverage
+Unit	Scoring, permissions, state machines, deadlines, rewards, money arithmetic
+Integration	Database constraints, transactions, webhooks, queues, object access
+End-to-end	Registration, practice, mock exams, assignments, purchases, refunds
+Authorization	Cross-user access, cross-tenant leakage, privilege escalation
+Concurrency	Duplicate submissions, concurrent answer updates, ledger races
+Resilience	Timeouts, process termination, queue outages, provider outages
+Recovery	Backup restoration, PITR, object recovery, runbook execution
+Performance	Concurrent exam starts, autosave bursts, deadline spikes
+PWA	Offline/pending sync, refresh, low storage, reconnect
+Accessibility	Keyboard, screen reader, contrast, focus, zoom
+User acceptance	Students, teachers, institution admins, support, finance
+
+Mandatory release gates
+- No unresolved critical security findings.
+- Cross-tenant authorization tests pass.
+- Critical exam flows pass automated and end-to-end tests.
+- Payment verification and reconciliation are tested if commerce is enabled.
+- Backup restoration has been demonstrated.
+- Deployment and recovery procedures are documented.
+- Load tests meet the approved target.
+- Monitoring and alerts are live.
+- Content rights and required policies are approved.
+- Product owners sign off on critical workflows.
+13. DevOps and deployment
+13.1 Environments
+Maintain separate environments for:
+1. Local development.
+2. Continuous integration.
+3. Staging and user acceptance testing.
+4. Production.
+Production credentials and real user data must not be casually copied into development or staging.
+13.2 CI/CD pipeline
+Every release should follow this process:
+1. Engineer opens a reviewed pull request linked to a requirement or ticket.
+2. Automated formatting, linting, type checks, tests, and security scans run.
+3. Required peer review is completed.
+4. Integration and contract tests run.
+5. An immutable versioned artifact is built.
+6. The artifact is deployed to staging.
+7. Smoke tests, migration checks, and relevant end-to-end tests run.
+8. Release approval is obtained.
+9. Production deployment proceeds gradually where supported.
+10. Errors, latency, database health, and business metrics are monitored.
+11. Rollback or forward-fix procedures are executed if necessary.
+12. Release notes and deployment records are retained.
+Use backward-compatible database migrations and feature flags for risky capabilities. Do not execute destructive production migrations without an approved recovery plan.
+14. Monitoring and incident response
+Monitor:
+- API errors, latency, throughput, and availability.
+- Database connections, slow queries, storage, locks, and replication lag.
+- Answer-save failures and exam submission failures.
+- Result-generation delays.
+- Queue depth, retry counts, and dead-letter events.
+- Payment errors and reconciliation mismatches.
+- Backup completion and restore-test results.
+- Suspicious logins, permission changes, and unusual exports.
+- Infrastructure and AI costs.
+Use a defined incident severity model with named incident leadership and escalation paths.
+
+Run tabletop exercises for account takeover, data leakage, payment fraud, database failure, and accidental destructive migrations.
+15. Backup and disaster recovery
+The operations team must:
+- Define RPO/RTO by data class.
+- Enable automated database backups and point-in-time recovery where supported.
+- Store independent backups in a separate security or failure boundary.
+- Protect backups with restricted access and MFA.
+- Retain required object-storage files and metadata.
+- Test restoration in an isolated environment.
+- Verify data integrity and critical user workflows after restoration.
+- Maintain runbooks for failover, restore, credential compromise, provider outage, and bad migrations.
+- Conduct a disaster-recovery exercise before launch and at an agreed recurring interval.
+A backup dashboard showing success is not sufficient evidence that the application can be recovered.
+16. Content quality and governance
+The content team must maintain:
+- Approved sources and provenance.
+- Rights and licensing records.
+- Editorial review standards.
+- Question and explanation version history.
+- A learner reporting mechanism.
+- A correction and withdrawal workflow.
+- A takedown and rights-dispute process.
+- Quality metrics and review SLAs.
+Do not scrape, reproduce, or sell examination material without confirming the rights to do so.
+17. Business model and commercial controls
+Potential revenue streams:
+- Student subscriptions.
+- Institution subscriptions.
+- Digital publication sales.
+- Publisher marketplace fees.
+- Later-stage tutoring, integrations, and approved AI features.
+Each paid feature needs a defined price, entitlement rule, refund/cancellation policy, support process, and financial owner.
+
+Before activating monetary commissions or payouts, validate the legal, accounting, provider, fraud, and settlement requirements.
+18. Risks and mitigations
+Risk	Mitigation
+Unlicensed content	Rights register, provenance, legal review, takedown process
+Lost exam answers	Idempotent autosave, acknowledgement, recovery UX, backup and fault testing
+Cross-tenant data leakage	Server-side scope enforcement and automated tests
+Payment mismatch	Verified webhooks, idempotency, reconciliation
+Referral fraud	Separate ledger, eligibility checks, caps, review and payout holds
+Scope creep	Staged releases, explicit non-goals and change control
+Overengineering	Modular monolith first; extract only when justified
+Low-bandwidth constraints	PWA performance budgets, resilient forms, device testing
+AI errors	Approved retrieval, evaluation, privacy controls, feature flag
+Poor content quality	Editorial governance, reporting, versioning and correction SLAs
+Provider outage	Clear degraded states, monitoring and recovery runbooks
+Unsustainable costs	Pilot pricing, unit economics and cost monitoring
+
+19. Delivery roadmap: discovery to deployment
+The durations below are planning estimates, not commitments.
+Phase	Indicative duration	Deliverables
+0. Discovery	2–4 weeks	Research, personas, assumptions, content rights, business hypotheses
+1. Product and design	2–4 weeks, overlapping	Information architecture, design system, responsive flows
+2. Technical foundation	2–4 weeks, overlapping	Architecture decisions, environments, CI/CD, auth, data model
+3. Core learning	4–8 weeks	Catalog, question bank, practice, timed exams, autosave, scoring, results
+4. Classroom	3–6 weeks	Classes, invitations, assignments, teacher reports
+5. Hardening	2–4 weeks	Security, load, accessibility, recovery, support and launch readiness
+6. Controlled launch	2–4 weeks	Limited cohort, monitoring, support and iteration
+7. Expansion	Quarterly planning	Institution billing, commerce, rewards, AI, native apps when justified
+
+Actual delivery depends on team size, content readiness, integrations, design maturity, legal review, and implementation quality.
+20. Team ownership
+Workstream	Accountable owner
+Product	Product owner or PM
+Design	Design lead
+Frontend/PWA	Frontend lead
+Backend/domain	Backend lead
+Infrastructure and DevOps	Platform lead
+Security and privacy	Named security owner, with legal support
+Content	Content/editorial lead
+QA	QA lead
+Finance	Finance/operations owner
+Customer support	Support lead
+
+Every critical feature must have one accountable owner. Shared responsibility without a named owner is not sufficient for launch readiness.
+21. Initial engineering backlog
+ID	Deliverable	Priority
+FOUND-01	Validated personas, research, and launch metrics	P0
+FOUND-02	Architecture decisions and domain boundaries	P0
+FOUND-03	Design system and responsive shell	P0
+SEC-01	Threat model and data classification	P0
+AUTH-01	Registration, verification, sessions, recovery	P0
+AUTH-02	Role and tenant authorization	P0
+CONTENT-01	Taxonomy and content publishing workflow	P0
+CONTENT-02	Question authoring and import	P0
+LEARN-01	Practice sessions and scoring	P0
+EXAM-01	Timed exam state machine and snapshots	P0
+EXAM-02	Idempotent autosave and recovery UX	P0
+RESULT-01	Results and topic analytics	P0
+OPS-01	Observability and alerting	P0
+OPS-02	Backup, PITR, and restore drill	P0
+REL-01	CI/CD, migration, and rollback procedures	P0
+TEACH-01	Classes, invitations, assignments	P1
+PAY-01	Verified payment and webhook processing	P1
+MKT-01	Digital catalog and entitlements	P1
+LEDGER-01	Separate points and commission ledgers	P1
+AI-01	Approved-source AI tutor prototype	P2
+
+22. Production launch checklist
+Do not launch until the accountable owners can verify that:
+- [ ] Product and design owners accept the critical user journeys.
+- [ ] Authentication and privileged access have been reviewed.
+- [ ] Protected endpoints enforce authorization and tenant boundaries.
+- [ ] Exam writes are idempotent and server-acknowledged.
+- [ ] Submission and scoring are reproducible.
+- [ ] Payment processing, if enabled, uses verified provider state and reconciliation.
+- [ ] Content provenance and rights are documented.
+- [ ] Required terms, privacy notices, refund policies, and support channels are published.
+- [ ] Critical security findings are closed.
+- [ ] Backups, point-in-time recovery, and restoration have been tested.
+- [ ] Monitoring, alerting, incident response, and deployment recovery are operational.
+- [ ] Load tests meet the agreed concurrent-exam target.
+- [ ] Support staff have playbooks for access problems, exam disputes, payment mismatches, content complaints, and suspected fraud.
+- [ ] The release owner has signed off on known risks and outstanding limitations.
+23. Post-launch operating model
+Daily during controlled launch: review errors, exam-save failures, submission failures, payment mismatches, security alerts, and support volume.
+
+Weekly: review activation, retention, learning engagement, content quality, institution adoption, and operating cost.
+
+Monthly: review backup evidence, access permissions, dependency updates, and incident trends.
+
+Quarterly: conduct a disaster-recovery exercise, privacy and retention review, and architecture/cost assessment.
+
+Every significant incident affecting data integrity, security, payments, or exam outcomes must result in a documented post-incident review.
+24. Decisions required before implementation
+These decisions need named owners before the relevant work begins.
+Decision	Recommended default
+Backend	Go with a team-approved HTTP framework
+Frontend	Next.js and TypeScript
+Primary database	Managed PostgreSQL
+Hosting	Choose after cost, residency, operational capability, and managed-service review
+Authentication provider	Choose after recovery, security, pricing, and regional-delivery review
+Payment provider	Validate supported methods, fees, settlement, refunds, and webhook guarantees
+Question content	No publication without rights/provenance approval
+RPO/RTO	Define per data class and validate through testing
+Institution pricing	Pilot and validate willingness to pay
+Monetary commissions	Keep disabled until controls and legal review are complete
+AI tutor	Later release, behind a feature flag
+Native applications	Defer until demand justifies the investment
+
+25. Definition of Ready and Definition of Done
+Definition of Ready
+A ticket is ready when:
+- The user problem and target persona are stated.
+- Scope and non-goals are clear.
+- Acceptance criteria cover success and failure paths.
+- Design covers loading, empty, error, denied, and responsive states.
+- Security, authorization, privacy, and data implications have been considered.
+- Dependencies, migrations, analytics, and operational signals are identified.
+- A test strategy and owner are assigned.
+Definition of Done
+A feature is done when:
+- It meets accepted requirements.
+- It has peer review and appropriate automated tests.
+- Authorization and failure behavior are verified.
+- API and data contracts are documented.
+- Security, accessibility, and performance checks are complete at the appropriate level.
+- Relevant logging, metrics, alerts, and runbooks exist.
+- Migration and rollback/forward-fix behavior is documented.
+- The product owner accepts it in staging.
+- Known limitations are recorded.
+Final recommendation
+Edumart should be built as a long-term platform through disciplined releases. Establish identity, content governance, exam integrity, tenant isolation, data durability, observability, and deployment discipline at the foundation. Launch the learner value loop and core teacher workflow first. Add institution billing, digital commerce, and monetary rewards only when their business rules, rights, financial controls, and support operations are ready.
+
+The next practical step is to turn this PRD into four implementation artifacts:
+1. System architecture document — component boundaries, deployment topology, data flows, and CAP decisions.
+2. Database and API specification — entity relationships, constraints, state machines, and API contracts.
+3. Epics and sprint backlog — dependency-ordered tickets with acceptance criteria and owners.
+4. Production readiness plan — security, QA, observability, backup, disaster recovery, deployment, and launch gates.
+The PRD defines what Edumart must become. Those four artifacts will define how the team builds and operates it.
+
+
+
+
+
+EDUMART
+Greenfield Implementation Blueprint
+Product requirements • Architecture • Data model • API contracts • UX • Delivery • Quality • Launch
+
+Document field	Baseline
+Product	Edumart — Nigerian education and educational-commerce platform
+Delivery posture	Production-oriented MVP with long-term growth in mind
+Team	Frontend, backend and design team; product/QA/DevOps responsibilities must be explicitly assigned
+Mobile strategy	Progressive Web App (PWA) first; native apps only when validated by user needs and economics
+Architecture	Modular monolith, API-first boundaries, PostgreSQL as system of record
+Planning baseline	16-week initial plan; estimate must be recalibrated against team size, content readiness and integrations
+Status	Working blueprint — decisions marked as assumptions require validation before implementation
+
+Purpose: provide one shared execution contract for product, design, frontend, backend, QA and operations. This is not a claim that every feature should ship in the first release. P0 defines the launchable core; later modules are gated by evidence, operational readiness and compliance review.
+ 
+1. Executive direction
+Edumart should be built as a learning platform first, with commerce and rewards reinforcing the learning loop rather than becoming the product’s primary identity. The core value proposition is: help students prepare effectively, help teachers run assessments and understand performance, and help institutions manage structured learning and reporting.
+The principal engineering risk is not CRUD complexity. It is correctness across timed assessments, intermittent connectivity, permissions, content quality, payment state, and financial/reward ledgers. These areas need explicit invariants, tests and operational ownership from the start.
+1.1 Product pillars
+Pillar	Purpose	Initial scope	Later expansion
+Edumart CBT	Exam practice and readiness	Topic practice, timed mocks, scoring, explanations, history	More exam pathways, adaptive plans, richer analytics
+Edumart Classroom	Teacher-led and institution-led assessments	Classes, invitations, scheduled CBTs, reports	School administration, cohort management, institutional plans
+Edumart Publications	Trusted learning resources	Catalogue, detail pages, free/paid digital materials, entitlement checks	Publisher portal, bundles, royalties, physical products
+Edumart Insights	Turn activity into actionable learning feedback	Scores, topic strengths/weaknesses, progress history	Readiness forecasting and study-plan recommendations
+Rewards Network	Reward legitimate learning and qualifying referrals	Referral attribution, learning points, auditable commission rules	Payouts/withdrawals after financial, fraud and legal controls
+Operations Console	Operate the product safely	Question review, user/org support, order reconciliation, audit log	Advanced moderation, publisher operations, fraud tooling
+
+1.2 Non-goals for the first launch
+•	Microservices, Kubernetes, Kafka or a complex event platform without measured need.
+•	Cash withdrawals or peer-to-peer transfers from rewards balances by default.
+•	A fully open marketplace with unrestricted seller onboarding before moderation, refunds, tax and settlement workflows are ready.
+•	An AI tutor that can invent unsupported answers; any later AI feature must be grounded in approved content and disclose uncertainty.
+•	Offline operation that promises zero data loss. Offline support must state what is saved locally, what is syncing and what the server has confirmed.
+•	Native iOS and Android apps in parallel with the PWA unless a validated requirement justifies the cost.
+2. Product Requirements Document (PRD)
+2.1 Problem statement
+Students often prepare using disconnected materials and lack reliable feedback about weak topics or exam readiness. Teachers need a practical way to assign assessments and review class performance. Institutions need consistent assessment workflows and visibility. Publishers and educational creators need a trusted way to distribute legitimate materials. Edumart brings these jobs into one product while preserving clear permissions and auditable commerce.
+2.2 Product goals
+1.	Help a new student complete a first useful practice session quickly, ideally in the first visit after onboarding.
+2.	Deliver correct, explainable, recoverable assessments with server-authoritative timing and scoring.
+3.	Let a teacher create a class, invite students and run a scheduled assessment without manual result compilation.
+4.	Provide students and teachers with meaningful progress insights, not decorative dashboards.
+5.	Support legitimate paid educational content with reliable payment confirmation and entitlement enforcement.
+6.	Implement reward mechanics that are transparent, fraud-resistant and financially auditable.
+7.	Establish production operations: monitoring, backups, restore tests, support workflows, access controls and incident response.
+2.3 Success metrics
+Metric	Definition	Initial target / guardrail	Owner
+Activation	New registered students completing first practice	≥50% of activated new users complete first practice; validate baseline in pilot	Product + frontend
+Assessment completion	Eligible started sessions submitted or auto-submitted	≥70%, excluding valid cancellation and clearly classified interruptions	Product + backend
+Assessment correctness	Scoring and timing defects	Zero known critical timing/scoring defects at launch	Backend + QA
+Content trust	Published questions with required review/source metadata	100% of published questions meet content checklist	Content operations
+Financial integrity	Unexplained payment/ledger discrepancies	Zero unexplained discrepancies before launch	Backend + finance ops
+Reliability	Availability and critical journey success	Set SLOs after pilot baseline; alert on assessment submission failures	Backend + operations
+Retention	D7 and D30 returning learners	Establish cohort baseline; improve by experiment, not vanity targets	Product
+Institution adoption	Invited learners who join and complete an assigned assessment	Track by institution/cohort; set target after pilot	Product + partnerships
+Support quality	Time to acknowledge critical learner/payment issues	Define staffed support window and severity SLA before launch	Operations
+
+Targets above are proposed initial guardrails, not external benchmarks. The product owner should approve metric definitions, event names, exclusions and dashboard ownership before analytics implementation.
+2.4 Personas and jobs-to-be-done
+Persona	Primary job	Key needs	Main risks
+Student / candidate	Prepare for an exam and understand readiness	Low-friction access, mobile usability, affordable packages, reliable timer, explanations, progress history	Lost answers, incorrect questions, confusing purchases, privacy exposure
+Teacher	Create assessments and understand student performance	Fast class setup, invitations, scheduling, result summaries, export/reporting	Accidental exposure of student records, confusing permissions, unreliable scheduled starts
+Institution administrator	Manage staff, cohorts, seats and reporting	Organization roles, enrollment, usage/assessment reports, billing visibility	Cross-tenant data leakage, unclear account ownership
+Publisher / content provider	Distribute approved materials and receive accurate sales reporting	Catalogue metadata, licensing proof, sales statements, takedown process	Unauthorized copying, unclear commissions, disputed sales
+Platform operator	Keep content, payments and users safe	Admin tools, audit trails, moderation queues, reconciliation, support visibility	Overpowered admin access, irreversible actions, missing evidence
+Parent/guardian (later, where appropriate)	Understand progress without overreaching into student privacy	Consent, scoped reports, transparent access	Sensitive data disclosure and consent failures
+
+2.5 P0 launch scope and acceptance criteria
+Capability	P0 requirement	Acceptance criteria
+Identity	Registration, login, recovery, profile, session management	Rate limits, secure password/session handling, verification/recovery flows, server-side authorization
+Roles	Student, teacher, institution admin, platform admin; one identity may have multiple roles	Permissions checked on every protected API; organization membership scoped by tenant
+Content taxonomy	Exam pathway, exam body, syllabus version, subject, topic	Versioned taxonomy; content cannot be published without required metadata
+Question bank	MCQ questions, options, answer key, explanation, source/license, review status	Draft → review → approved → published lifecycle; answer key hidden from unauthorized clients
+Practice	Topic practice, answer submission, feedback when permitted	Progress persisted; duplicate writes safe; scoring uses approved version
+Timed mock	Start, question snapshot, autosave, submit/expire, results	Server-authoritative deadlines; safe retries; consistent final score
+Classroom CBT	Create class, invite/enroll, schedule assessment, review reports	Only authorized class members can access; scheduled release enforced by server
+Insights	History, score trends, topic performance	Derived from completed assessment records; definitions documented
+Publications	Catalogue, product detail, purchase, entitlement-protected access	Paid content accessible only after verified payment and entitlement creation
+Payments	Payment initiation, webhook confirmation, status, refund state	Webhook signature verification, idempotency, reconciliation and no client-only payment confirmation
+Rewards	Referral codes, learning points, eligible commission records	Separate ledgers; transparent rules; no commission solely for recruiting a referrer
+Operations	Question moderation, user/org support, order/payment review, audit log	Sensitive actions require authorization, reason capture and auditable actor/time
+PWA	Responsive app shell, installability, update handling, safe offline states	No stale app shell may silently corrupt assessment state; sync status is visible
+
+2.6 User journeys
+Student journey
+8.	Discover Edumart and review available exam pathways.
+9.	Register or sign in; choose exam pathway, subjects and target date where relevant.
+10.	Complete a short diagnostic or choose a topic.
+11.	Start practice or a timed mock; receive clear timer and save-state feedback.
+12.	Submit or allow the server to expire/auto-submit the session.
+13.	Review score, explanations and topic-level strengths/weaknesses.
+14.	Continue with a recommended next practice or access eligible purchased materials.
+Teacher journey
+15.	Create or join an institution and verify appropriate role.
+16.	Create a class/cohort and invite learners using controlled links/codes.
+17.	Build an assessment from approved content and set duration, start time, availability window and attempt rules.
+18.	Preview the student experience and publish/schedule it.
+19.	Monitor participation without exposing answer keys prematurely.
+20.	Review class and individual results according to permissions; export only authorized data.
+Commerce journey
+21.	Browse a publication or package and see price, format, access duration and seller/publisher terms.
+22.	Initiate checkout and redirect or open the payment provider securely.
+23.	Treat browser return as informational only; await verified server-side payment confirmation.
+24.	Create entitlement once the payment state is verified and idempotently processed.
+25.	Show order receipt and content access; provide support/refund path.
+3. Architecture and technical decisions
+3.1 Recommended baseline
+Layer	Recommendation	Reason / guardrail
+Web/PWA	Next.js, React, TypeScript	Responsive web first, shared design system, server-rendering where useful, installable PWA
+Backend	Go HTTP API using a maintained router/framework selected by the backend lead	Strong concurrency and explicit service boundaries; avoid framework-driven architecture
+API style	Versioned REST/JSON, OpenAPI as contract source	Easy web integration, testability and future mobile clients
+System of record	PostgreSQL	Transactional integrity for assessments, access control, orders and ledgers
+Cache / ephemeral state	Redis only when a concrete use case is measured	Rate limits, short-lived coordination or caching; never the only record of submitted answers or money
+Object storage	S3-compatible storage with private buckets and signed URLs	Publication files, images, exports; access must be entitlement-checked
+Background work	Database-backed job table or managed queue initially	Emails, report generation, payment reconciliation, scheduled tasks; retry-safe handlers
+Realtime	Polling initially; WebSocket/SSE only where experience requires it	Avoid realtime complexity until teacher monitoring or synchronized events justify it
+Hosting	Managed application runtime and managed PostgreSQL, separate staging/production	Reduce operational burden; document regions, backups, cost limits and exit strategy
+Observability	Structured logs, metrics, traces, error reporting, alerts	Instrument critical journeys before public launch
+CI/CD	Automated checks, migrations, staging promotion, rollback plan	Repeatable release process and auditable changes
+
+3.2 High-level system shape
+Student / Teacher / Institution Admin / Platform Admin
+                    |
+             Next.js PWA
+                    |
+          HTTPS / REST API v1
+                    |
+     Go modular monolith (single deployable)
+     ├── Identity & Access
+     ├── Organizations & Classes
+     ├── Learning Content & Review
+     ├── Assessment Engine
+     ├── Learning Analytics
+     ├── Publications & Entitlements
+     ├── Payments & Orders
+     ├── Rewards & Commission Ledger
+     └── Operations & Audit
+                    |
+       ┌────────────┼─────────────┐
+   PostgreSQL   Object Storage   Job Worker
+       |                           |
+   transactional                email, exports,
+   records                      reconciliation
+       |
+ optional Redis / managed queue when justified
+3.3 Modular monolith rules
+•	One deployable backend can contain independently owned modules with explicit package boundaries.
+•	Modules must not write directly into another module’s tables except through an explicitly agreed shared transaction boundary. Prefer module services and documented ownership.
+•	Each module owns its schema/tables, invariants, migrations and tests. Cross-module read models may be built intentionally.
+•	Do not split into services until there is a demonstrated need: independent scaling, isolation, team ownership, regulatory boundary or deployment bottleneck.
+•	Keep synchronous business-critical operations in one database transaction when consistency requires it; use an outbox/job pattern for reliable external side effects.
+•	Do not introduce Kafka, Kubernetes, service mesh or a distributed cache layer solely for perceived sophistication.
+3.4 Critical invariants
+26.	The server owns assessment start time, deadline, attempt eligibility, submission state and score.
+27.	An assessment session uses an immutable snapshot of its questions, options, scoring policy and relevant content versions.
+28.	A client retry must not create duplicate responses, attempts, orders, ledger entries or payment effects.
+29.	Correct answers and hidden explanations must not be exposed before policy permits them.
+30.	A successful browser redirect is not proof of payment; verified provider evidence is required.
+31.	Learning points and monetary commissions are different assets with different rules and ledgers.
+32.	Every financial state transition is traceable to a business event and external provider reference where applicable.
+33.	Every tenant-scoped read/write checks organization membership and permission server-side.
+34.	Published content has provenance, licensing/permission metadata, review status and version history.
+35.	A restore test must prove that backups are usable; a green backup status alone is insufficient.
+3.5 Environments and release flow
+•	Local: containerized dependencies or documented developer setup; seeded synthetic data only.
+•	CI: formatting, linting, type checks, unit tests, security/dependency checks, migration validation, API contract checks.
+•	Preview/staging: production-like configuration, isolated payment sandbox, test email provider, synthetic data, end-to-end smoke tests.
+•	Production: least-privilege secrets, restricted admin access, backups, alerts, audit logs, release approvals and rollback procedure.
+•	Use expand/contract database migrations for changes that overlap with rolling deploys; never rely on destructive migrations during the same release that removes old code paths.
+•	Feature flags should protect risky rollouts, but must have an owner, expiry/review date and documented fallback.
+4. Domain model and database design
+Use UUID primary keys (or another consistent opaque ID strategy), UTC timestamps, explicit status enums/check constraints, foreign keys, unique constraints and indexes that match actual query patterns. Store money as integer minor units with currency code; never use floating point for money. Add created_at/updated_at and actor/audit metadata where operationally relevant.
+4.1 Core tables
+Domain	Tables / key fields	Important constraints
+Identity	users(id, email_normalized, phone_e164, password_hash or identity_provider_id, status, email_verified_at, created_at); user_profiles(user_id, display_name, avatar_key, locale, timezone)	Unique normalized email/phone where applicable; never store plaintext passwords; account status enforced
+Access	roles(id, key); permissions(id, key); role_permissions(role_id, permission_id); user_global_roles(user_id, role_id); sessions(id, user_id, expires_at, revoked_at)	Role grants do not replace resource-level authorization; revoke sessions on security events
+Organizations	organizations(id, name, slug, status); organization_memberships(id, organization_id, user_id, role_id, status, joined_at); classes(id, organization_id, owner_user_id, name, status); class_memberships(class_id, user_id, role, status)	Unique org slug; unique active membership; every class query scoped by organization
+Invitations	invitations(id, organization_id, class_id nullable, token_hash, invited_by, intended_role, expires_at, accepted_at, max_uses, use_count)	Store token hash, not raw token; expire/revoke; limit uses; audit acceptance
+Taxonomy	exam_pathways(id, key, name); exam_bodies(id, key, name); syllabus_versions(id, exam_body_id, version, effective_from, status); subjects(id, key, name); topics(id, subject_id, parent_topic_id, syllabus_version_id, name, sort_order)	Version taxonomy; do not silently rewrite historical exam references
+Questions	questions(id, subject_id, topic_id, type, status, difficulty, created_by); question_versions(id, question_id, version, stem_json, options_json, answer_key_json, explanation, source_id, review_state, published_at); content_sources(id, source_name, source_url, license_basis, permission_evidence_key, attribution_text)	Immutable published versions; answer keys protected; source/licensing and reviewer required before publish
+Review	question_reviews(id, question_version_id, reviewer_id, decision, notes, reviewed_at); content_reports(id, question_version_id, reported_by, reason, status, resolution)	Reviewer identity and decision retained; changes create a new version
+Assessment definitions	assessment_definitions(id, owner_user_id, organization_id nullable, title, type, duration_seconds, availability_start, availability_end, attempt_limit, scoring_policy_json, status); assessment_items(id, assessment_definition_id, question_version_id, points, position)	Published definitions immutable or versioned; validation of duration and availability
+Assessment sessions	assessment_sessions(id, user_id, assessment_definition_id, attempt_no, status, started_at, deadline_at, submitted_at, score_raw, score_max, score_percent, snapshot_json, idempotency_key)	Unique attempt number per user/definition; immutable snapshot; server-calculated deadline; idempotent start
+Responses	assessment_responses(id, session_id, question_version_id, answer_json, is_correct nullable, awarded_points, saved_at, version)	Unique(session_id, question_version_id); upsert/version conflict policy; score only on server
+Learning analytics	learning_events(id, user_id, event_type, entity_type, entity_id, occurred_at, metadata_json); topic_performance(user_id, topic_id, attempts, correct_count, last_practiced_at, computed_at)	Event metadata minimized; derived tables rebuildable; analytics never the sole record of assessment results
+Products	products(id, product_type, title, description, status, owner_user_id, publisher_id nullable); product_versions(id, product_id, version, file_key, checksum, access_policy_json); product_prices(id, product_id, currency, amount_minor, active_from, active_to)	Private file keys; explicit license/ownership; price history retained
+Commerce	orders(id, user_id, status, currency, subtotal_minor, discount_minor, total_minor, created_at); order_items(id, order_id, product_id, product_version_id, quantity, unit_amount_minor); payment_attempts(id, order_id, provider, provider_reference, status, amount_minor, currency, idempotency_key)	Amounts are integer minor units; unique provider references; state transitions validated
+Payments	provider_events(id, provider, event_id, received_at, signature_valid, processing_status, payload_hash, processed_at); refunds(id, order_id, payment_attempt_id, amount_minor, reason, status)	Unique(provider,event_id); raw payload storage minimized/protected; webhook replay safe
+Entitlements	entitlements(id, user_id, product_id, order_item_id, status, starts_at, expires_at, revoked_at)	Created only after verified payment or explicit free grant; authorization checks entitlement on every download/read
+Rewards	referral_codes(id, owner_user_id, code, status); referral_attributions(id, referred_user_id, referral_code_id, attributed_at, qualifying_event_id, status); reward_rules(id, version, rule_type, conditions_json, effective_from, effective_to, status)	One attribution policy per referred user; versioned rules; abuse controls and transparent terms
+Ledgers	points_accounts(id, user_id); points_ledger_entries(id, account_id, amount, entry_type, source_type, source_id, rule_version, idempotency_key, created_at); commission_accounts(id, user_id, currency); commission_ledger_entries(id, account_id, amount_minor, currency, entry_type, source_type, source_id, status, idempotency_key)	Append-only entries; unique idempotency key; corrections via compensating entries; never merge points and money
+Payouts (later)	payout_requests(id, user_id, amount_minor, currency, status, destination_ref, risk_review_status); payout_attempts(id, payout_request_id, provider_ref, status)	Do not activate without compliance review, KYC where required, approvals, reconciliation and fraud controls
+Operations	audit_logs(id, actor_user_id, action, resource_type, resource_id, reason, request_id, before_hash, after_hash, occurred_at); support_cases(id, opened_by, category, priority, status, assigned_to)	Append-only audit trail; restrict sensitive data; record privileged actions
+
+4.2 Relationships and cardinality
+•	One user can hold multiple roles and belong to multiple organizations; a role is not a separate account.
+•	An organization owns classes and organization-level assessments; class membership is distinct from referral attribution.
+•	A question can have many immutable versions; assessment items point to a specific published question version.
+•	An assessment definition can have many sessions; each session captures the exact definition/question/scoring snapshot used.
+•	An order can have multiple items and payment attempts; one verified payment can create one or more entitlements according to the order policy.
+•	A qualifying transaction may generate a commission ledger entry; points events are separate and may have different expiry/redemption rules.
+•	Audit logs refer to resource identifiers and safe metadata; avoid copying sensitive student answers or payment credentials into logs.
+4.3 Indexes and data integrity
+•	Unique index on lowercased/normalized email; normalized phone if phone login is enabled.
+•	Indexes on organization_memberships(user_id, status), classes(organization_id, status), class_memberships(class_id, status).
+•	Questions: index on subject_id/topic_id/status; published question versions on review_state/published_at.
+•	Sessions: index on user_id/started_at, assessment_definition_id/status, and deadline_at/status for expiry jobs.
+•	Responses: unique(session_id, question_version_id); index on session_id.
+•	Orders: index on user_id/created_at and status/created_at; provider events unique(provider,event_id).
+•	Ledger entries: unique(idempotency_key), index(account_id, created_at), and source_type/source_id.
+•	Use foreign keys and check constraints for nonnegative amounts, valid status fields and allowed time ranges; use transactions for multi-row state transitions.
+•	Partition only after observed table growth and query evidence justify the operational complexity.
+4.4 Data retention and privacy
+•	Classify personal, student, assessment, payment-reference, support and analytics data; document purpose and access.
+•	Collect only data needed for the product. Avoid unnecessary date of birth, precise location, sensitive profile fields or public student rankings.
+•	Define retention/deletion/anonymization policies with legal/privacy review, especially for minors and institution-managed accounts.
+•	Keep payment card data with the payment provider; store provider references and state, not raw card details.
+•	Provide account export/deletion processes consistent with legal retention obligations and audit requirements.
+•	Use synthetic or masked data in development and staging; do not copy production student records into test environments.
+5. API contracts
+All endpoints are under /v1. Use JSON, consistent error envelopes, pagination, request IDs, explicit authorization, schema validation and OpenAPI. Exact names can change during design, but contract changes require frontend/backend review.
+5.1 API conventions
+•	Authentication: secure HttpOnly cookies for same-site browser sessions where practical, or short-lived bearer access tokens with a documented refresh strategy. Protect state-changing cookie-authenticated endpoints against CSRF.
+•	Authorization: server-side role + resource + tenant checks on every protected request.
+•	Idempotency: accept Idempotency-Key for assessment start/submission, order creation, payment initiation and other retry-sensitive writes.
+•	Concurrency: use resource version/ETag or version fields where concurrent updates matter; return 409 on stale/conflicting writes.
+•	Pagination: cursor-based for large/rapidly changing lists; include next_cursor and has_more.
+•	Errors: {"error":{"code":"VALIDATION_ERROR","message":"...","request_id":"...","details":[]}}. Do not expose stack traces or secrets.
+•	Time: ISO-8601 UTC timestamps in API payloads; client localizes display only.
+•	Money: {"amount_minor":150000,"currency":"NGN"}; define provider-specific minor-unit rules explicitly and never use floating point.
+•	OpenAPI schema and generated client/types should be checked in CI to detect drift.
+5.2 Endpoint catalogue
+Area	Method + path	Purpose / authorization
+Identity	POST /v1/auth/register	Create account; rate-limited; validate verification workflow
+Identity	POST /v1/auth/login	Authenticate; rate-limit and detect abuse
+Identity	POST /v1/auth/logout	Revoke current session
+Identity	POST /v1/auth/password/forgot	Start recovery without account enumeration
+Identity	POST /v1/auth/password/reset	Consume one-time reset token
+Identity	GET /v1/me	Current user/profile/available roles
+Identity	PATCH /v1/me	Update permitted profile fields
+Organizations	POST /v1/organizations	Create organization subject to ownership/verification policy
+Organizations	POST /v1/organizations/{orgId}/invitations	Admin/teacher invites within allowed role limits
+Organizations	POST /v1/invitations/{token}/accept	Accept valid, unexpired invitation
+Classes	POST /v1/organizations/{orgId}/classes	Create class
+Classes	GET /v1/classes/{classId}/members	List only if authorized for class
+Content	GET /v1/exam-pathways	List published exam pathways
+Content	GET /v1/subjects?pathway_id=...	List eligible subjects
+Content	GET /v1/subjects/{subjectId}/topics	List topics for a selected syllabus version
+Practice	POST /v1/practice-sessions	Create practice session from allowed topics/config
+Practice	POST /v1/practice-sessions/{id}/responses	Save answer; idempotent/upsert with version rules
+Assessments	POST /v1/assessment-definitions	Create draft assessment; teacher/org permissions
+Assessments	POST /v1/assessment-definitions/{id}/publish	Validate and publish immutable version
+Assessments	POST /v1/assessment-definitions/{id}/sessions	Start attempt; enforce availability and attempt limits
+Assessments	GET /v1/assessment-sessions/{id}	Return session state and permitted question content
+Assessments	PUT /v1/assessment-sessions/{id}/responses/{questionVersionId}	Save response; ownership and deadline checks
+Assessments	POST /v1/assessment-sessions/{id}/submit	Finalize/score; idempotent
+Assessments	GET /v1/assessment-sessions/{id}/result	Return result after release policy allows
+Insights	GET /v1/me/learning-summary	Student’s own progress summary
+Insights	GET /v1/classes/{classId}/reports	Authorized teacher/admin report
+Publications	GET /v1/products	Published catalogue with filters/pagination
+Publications	GET /v1/products/{productId}	Product detail and active price
+Commerce	POST /v1/orders	Create pending order with server-calculated totals
+Commerce	POST /v1/orders/{orderId}/payment-attempts	Create provider checkout/payment intent
+Commerce	GET /v1/orders/{orderId}	Read own order or authorized institutional order
+Payments	POST /v1/webhooks/{provider}	Verify signature, deduplicate event, process asynchronously if needed
+Entitlements	GET /v1/me/entitlements	List current access rights
+Entitlements	GET /v1/entitlements/{id}/content	Authorize and issue short-lived signed access
+Rewards	GET /v1/me/rewards/summary	Return points and commission summaries separately
+Rewards	GET /v1/me/rewards/ledger	Paginated ledger entries, scoped to current user
+Operations	POST /v1/admin/questions/{id}/review-decision	Privileged moderation with audit reason
+Operations	GET /v1/admin/payments/reconciliation	Restricted operational/finance access
+
+5.3 Assessment session contract example
+Start request:
+POST /v1/assessment-definitions/{definitionId}/sessions
+Idempotency-Key: 6dd8... (client-generated unique key)
+ 
+{
+  "client_context": {
+    "app_version": "web-1.0.0",
+    "timezone": "Africa/Lagos"
+  }
+}
+Illustrative response:
+{
+  "session_id": "uuid",
+  "status": "in_progress",
+  "started_at": "2026-10-26T10:00:00Z",
+  "deadline_at": "2026-10-26T10:45:00Z",
+  "server_time": "2026-10-26T10:00:00Z",
+  "question_count": 40,
+  "next_action": "answer"
+}
+The response should return only question data the learner is permitted to see. Do not send the answer key and rely on hiding it in the UI.
+5.4 Response-save contract example
+PUT /v1/assessment-sessions/{sessionId}/responses/{questionVersionId}
+{
+  "answer": { "selected_option_id": "option-b" },
+  "client_sequence": 12,
+  "expected_version": 3
+}
+ 
+Success:
+{
+  "saved": true,
+  "server_saved_at": "2026-10-26T10:08:12Z",
+  "version": 4,
+  "session_status": "in_progress"
+}
+The backend validates session ownership, session status, deadline, question membership and answer schema. Duplicate requests must not create duplicate records. Define a deliberate policy for stale writes rather than silently overwriting newer responses.
+5.5 Error codes
+Code	HTTP	Meaning / client response
+VALIDATION_ERROR	400	Input is invalid; show field-level feedback
+UNAUTHENTICATED	401	Sign in or refresh session
+FORBIDDEN	403	User lacks permission; do not reveal protected resource details
+NOT_FOUND	404	Resource absent or intentionally hidden
+CONFLICT	409	State/version/idempotency conflict; refresh state
+ASSESSMENT_NOT_OPEN	409	Assessment not yet available or no longer available
+SESSION_EXPIRED	409	Session deadline passed; fetch final status/result
+RATE_LIMITED	429	Back off and retry according to Retry-After
+PAYMENT_PENDING	202/409	Payment not yet verified; poll or wait for notification
+INTERNAL_ERROR	500	Generic message and request ID; never leak stack traces
+
+5.6 Webhook processing
+36.	Receive the provider event over HTTPS and verify signature using the provider’s documented method.
+37.	Validate event type, provider reference, amount and currency against the stored payment attempt.
+38.	Persist a deduplicated provider event keyed by provider + event ID before applying effects.
+39.	Process state transition transactionally and create entitlements/ledger events only once.
+40.	Acknowledge valid events promptly; enqueue slow work when appropriate.
+41.	Reconcile pending/ambiguous payments on a schedule; provide a manual review path.
+42.	Never trust amount, currency, order status or entitlement claims supplied by the browser.
+6. Assessment engine design
+6.1 State machine
+created -> in_progress -> submitted
+                     \-> expired
+                     \-> cancelled (only under defined policy)
+State transitions are server-owned. A submitted or expired session cannot return to in_progress. A result may have a separate release state if teachers need to withhold feedback until an assessment window closes.
+6.2 Required behaviors
+•	Start endpoint checks availability window, membership, attempt limit and eligibility in a transaction.
+•	Store started_at and deadline_at on the server. Client countdown is a display aid, not authority.
+•	Persist a question snapshot or immutable version references before serving the first question.
+•	Autosave on answer change and at a safe interval; use retry with exponential backoff and idempotent writes.
+•	Expose clear save state: Saved, Saving, Offline / waiting to sync, or Save failed — retry required.
+•	On reconnect, fetch authoritative session status before attempting writes; never assume a session remains open.
+•	Submission and auto-expiry use the same finalization function so scoring behavior is consistent.
+•	Scoring is deterministic and versioned. Record score policy and score breakdown used.
+•	If randomized questions/options are used, persist the exact ordering for that attempt.
+•	Support accommodations only through explicit policy and audited configuration, not client-side timer manipulation.
+6.3 Offline policy
+PWA offline support should initially prioritize shell/navigation and safe read-only study resources. For an active timed assessment, the product must clearly disclose whether answers are queued locally, how long they remain, and when server confirmation is received. Use IndexedDB only for a bounded, versioned queue; minimize sensitive content, define device-sharing behavior, and test storage quota/eviction. Never label an answer as saved until the server confirms it. Decide before launch whether high-stakes institutional exams require online-only mode.
+6.4 Exam integrity and abuse
+•	Do not claim browser-based proctoring is foolproof. Document the actual controls and limitations.
+•	Limit answer-key exposure, enforce access windows, log suspicious patterns with privacy controls, and protect question bank endpoints.
+•	Use rate limits and abuse monitoring for account creation, invitation redemption and repeated assessment attempts.
+•	Define policies for reconnects, late joins, deadline races, duplicate tabs, device clock drift and teacher cancellations.
+•	Maintain a content correction workflow. If a published question is defective, record affected sessions and a policy for score correction.
+7. Payments, publications and rewards
+7.1 Commerce principles
+•	Order totals are calculated on the server from active price records and eligible discounts.
+•	Keep order status, payment attempt status and entitlement status separate; they are related but not identical.
+•	Use immutable order-item price snapshots so later price changes do not rewrite past purchases.
+•	Create entitlements idempotently after verified payment or explicit free grant.
+•	Protect publication files in private object storage; issue short-lived signed URLs after entitlement checks.
+•	Implement refund/revocation policy and customer-support evidence before accepting real money.
+•	Keep a daily payment reconciliation report comparing internal records with provider settlement/report data.
+7.2 Suggested order states
+draft -> pending_payment -> paid -> fulfilled
+                      |       \-> partially_refunded -> refunded
+                      \-> payment_failed / cancelled
+The exact state model must match the selected payment provider and refund policy. Do not treat browser navigation to a success page as the paid transition.
+7.3 Rewards policy
+•	Maintain separate balances and ledgers for learning points and monetary commissions.
+•	Version reward rules with effective dates. Each ledger entry records the exact rule version and qualifying source event.
+•	Use pending, eligible, reversed and paid/settled states where a commission depends on a refund window or fraud review.
+•	Do not reward recruitment alone as the economic event. Tie commissions to legitimate, qualifying product transactions or approved outcomes.
+•	Set caps, eligibility rules, self-referral controls, duplicate-account detection, refund reversal rules and dispute windows.
+•	Do not enable cash-out, transfer or stored-value functionality until qualified Nigerian legal/compliance advice and payment-provider review confirm the operating model.
+•	Show users the rule, qualifying event, status, amount, timing and appeal path; do not imply guaranteed income.
+7.4 Content rights and publisher operations
+•	A question or book being available online does not automatically grant commercial reproduction rights.
+•	Record source, author/publisher, license basis, permission evidence, attribution, reviewer and version.
+•	Define takedown, correction, appeal, royalty/commission and content quality workflows before opening a multi-seller marketplace.
+•	Separate content creator permissions from platform-admin permissions; require review before public listing.
+8. UI/UX scope and design system
+8.1 UX principles
+•	Mobile-first and low-bandwidth aware; prioritize readable text, lightweight screens and predictable navigation.
+•	The primary action on each screen must be obvious. Avoid dashboard cards that do not help a user make a decision.
+•	Use progressive disclosure for complex teacher and institution configuration.
+•	Treat empty, loading, error, offline, syncing, expired and permission-denied states as designed screens, not afterthoughts.
+•	Accessibility target: WCAG 2.2 AA where feasible; keyboard navigation, visible focus, contrast, labels, semantic structure and screen-reader status announcements.
+•	Do not expose all modules to every role in a generic dashboard; show role-relevant tasks and a role switcher where users have multiple roles.
+•	Use plain-language payment, timer and reward status. Avoid misleading urgency or income claims.
+8.2 Information architecture
+Surface	Primary navigation	Key screens
+Public	Home, Exam pathways, Publications, Pricing, Help	Landing, pathway detail, product detail, FAQ, terms/privacy
+Student	Home, Practice, Mock exams, Classes, Progress, Library, Rewards, Account	Onboarding, diagnostic, topic picker, question runner, result review, progress insights, entitlements
+Teacher	Overview, Classes, Assessments, Reports, Content, Account	Class list/detail, invite flow, assessment builder, preview, schedule, live status, reports
+Institution admin	Overview, People, Classes, Assessments, Reports, Billing, Settings	Membership/role management, enrollment, usage reports, billing and institution configuration
+Platform admin	Operations, Content review, Users/orgs, Orders/payments, Rewards, Support, Audit	Moderation queue, payment reconciliation, dispute case, access review, service health
+
+8.3 Required design deliverables
+•	Product sitemap and role/permission matrix.
+•	Journey maps and annotated flows for student practice, timed exam, teacher scheduled CBT and paid publication purchase.
+•	Responsive wireframes for mobile, tablet and desktop for each P0 flow.
+•	High-fidelity visual design for core screens plus error/empty/loading/offline/sync states.
+•	Design tokens: color, typography, spacing, radii, elevation, focus, motion and breakpoints.
+•	Reusable components: buttons, inputs, navigation, cards, tables, badges, dialogs, toasts, pagination, status banners, question renderer, timer, progress indicators and charts.
+•	Clickable prototype for student and teacher journeys before implementation is considered complete.
+•	Accessibility annotations and content guidelines.
+•	Handoff notes for responsive behavior, state transitions, loading skeletons, validation and interaction rules.
+8.4 Screen inventory — P0
+Role / area	Screens
+Public/auth	Landing, exam pathway listing/detail, publications listing/detail, register, login, verification, password recovery, terms/privacy
+Student onboarding	Profile/preferences, exam pathway selection, subject selection, diagnostic or first-practice entry
+Student learning	Dashboard, subject/topic browser, practice setup, question runner, pause/exit confirmation, submission confirmation, result breakdown, explanations, history
+Student insights	Progress summary, topic heatmap/strength list, streak/activity view, learning recommendations
+Classroom	Invitation landing, class list/detail, member list, scheduled assessment list, assessment instructions, student assessment runner, result availability
+Teacher	Teacher dashboard, class creation, invite management, assessment builder, question/topic selection, settings/schedule, preview, publish confirmation, participation view, results/report
+Publications/commerce	Catalogue, filters, product detail, checkout, pending payment, payment result, order history, content reader/download access, support/refund request
+Rewards	Referral code/share, reward rules, points summary, commissions summary, ledger history, dispute/help
+Admin	Content review queue, question detail/review, user/org search, order/payment detail, reconciliation, reward exception review, support case, audit log
+
+8.5 Design acceptance
+•	A first-time student can find a subject and begin practice without needing a tutorial.
+•	A student can always tell whether an answer is saved, syncing or failed.
+•	Timer and deadline remain legible on small screens and are not hidden behind menus.
+•	Teacher can preview exactly what the learner will see before publishing.
+•	Role-specific data and actions are not merely hidden in the frontend; backend permission tests confirm enforcement.
+•	Every P0 screen has loading, empty, error, offline and permission-denied states where relevant.
+•	Core flows pass keyboard-only and screen-reader spot checks and meet contrast requirements.
+9. Engineering backlog and prioritization
+Use epics and independently testable vertical slices. The estimates below are sequencing guidance, not committed person-days. The product owner should add story points or effort estimates after technical discovery.
+9.1 Epic backlog
+Priority	Epic	Representative stories / deliverables	Definition of done
+P0	Foundation & delivery	Repositories, local setup, CI, environments, migrations, secrets, feature flags, logging, error tracking	New developer setup documented; CI green; staging deploy and rollback tested
+P0	Identity & access	Register/login/recovery, sessions, profiles, roles, tenant memberships, audit	Security tests for horizontal/vertical privilege escalation; recovery and revocation tested
+P0	Content taxonomy	Exam pathways, syllabus versions, subjects/topics, import validation	Versioned taxonomy; admin can validate and publish approved records
+P0	Question lifecycle	Question editor/import, review workflow, source/license metadata, correction/reporting	Cannot publish without required metadata and review; versions immutable
+P0	Practice vertical slice	Topic browse, question runner, response save, scoring, explanations, history	Student can complete practice end-to-end on mobile; persisted result is repeatable
+P0	Timed assessment engine	Session creation, snapshot, timer, autosave, submit, expiry, scoring	Retries/races/refresh/reconnect tested; server owns final state and score
+P0	Classroom CBT	Class creation, invitation, membership, scheduled assessment, report	Tenant boundaries tested; authorized teacher sees only permitted learner data
+P0	Insights	History, topic performance, summary API and dashboard	Metrics definitions documented; derived analytics reconciled against completed sessions
+P0	Publication catalogue	Product metadata, private file storage, entitlements, reader/download flow	Unauthorized user cannot retrieve paid content or reuse expired signed links
+P0	Payment foundation	Order creation, provider integration, webhook, retries, refunds state, reconciliation	Sandbox and production runbooks; duplicate/out-of-order webhook tests pass
+P0	Rewards foundation	Referral attribution, points ledger, commission ledger, rules, fraud checks	Separate balances; each entry traceable; duplicate events and reversals tested
+P0	Operations console	Content moderation, support lookup, payment reconciliation, audit	Privileged access restricted; sensitive actions require reason and are logged
+P0	PWA & accessibility	Manifest, service worker, install/update, network states, responsive layouts	Install/update tested on supported devices; stale assets and sync failures handled
+P0	Quality & launch	E2E, load, security, backup restore, incident drills, pilot feedback	Launch gates met; known risks accepted by named owner
+P1	Institution plans	Seat plans, billing, organization analytics, renewal workflows	Pricing/seat limits and billing support validated with pilot institutions
+P1	Publisher onboarding	Publisher profiles, review, statements, takedown, royalties	Rights and settlement workflows operational
+P1	Study planning	Target date, daily plan, reminders, revision scheduling	Recommendations measurable and user-controllable
+P2	AI tutor	Retrieval over approved content, citations, evaluation, safety controls	No answer without grounding policy; quality and hallucination evaluations pass
+P2	Native apps	React Native/Expo client if evidence supports it	Clear unmet PWA need and measurable business case approved
+
+9.2 First vertical slice
+Build this before broad parallel feature work: student registers → chooses a subject/topic → receives approved questions → submits an answer → sees explanation/score → result persists → student returns and sees history. This validates the web/API/database contract, authorization, content lifecycle and learning loop in one thin end-to-end path.
+9.3 Definition of ready / done
+•	Ready: user problem and acceptance criteria are clear; design/state cases exist; data/permission implications reviewed; API contract agreed; dependencies identified.
+•	Done: code reviewed; tests added; accessibility/responsive behavior checked; logs/metrics added for critical path; migrations reviewed; documentation/runbook updated; feature works in staging; product owner accepts.
+•	A ticket is not done because the happy path works on one developer’s machine.
+•	Every production bug has severity, impact, reproduction, root cause or investigation owner, and a regression test when feasible.
+10. Milestones and delivery plan
+Planning baseline: 16 weeks for a production-oriented pilot scope. This is not a guarantee. Reforecast after week 2 based on team capacity, content licensing, question volume, payment integration and institutional pilot commitments.
+Weeks	Milestone	Key outputs	Exit criteria
+1–2	Discovery & product contract	PRD sign-off, user journeys, role matrix, question/content policy, reward model, initial threat model, architecture decisions	Product owner approves P0 scope; legal/content risks have named owners; top assumptions tested
+3–4	Engineering foundation	Repos, CI/CD, environments, migrations, auth/access skeleton, observability, design system primitives	Staging deployment works; migrations and rollback approach tested; team setup documented
+5–7	CBT vertical slice	Taxonomy, question review, practice, timed session, response save, scoring, history	Core assessment tests pass; refresh/reconnect/retry and timing edge cases verified
+8–10	Classroom & insights	Classes/invites, scheduled CBT, teacher reports, student progress	Tenant isolation tests pass; teacher pilot can assign and review assessment
+11–12	Commerce & rewards foundation	Catalogue, entitlements, payment integration, reconciliation, points/commission ledgers	Sandbox payment/webhook tests pass; ledger invariants and duplicate-event tests pass
+13–14	Hardening	Security review, accessibility review, load tests, backup restore, failure injection, operational runbooks	No unresolved critical security findings; recovery and rollback exercises succeed
+15	Controlled pilot	Limited cohorts, support coverage, analytics review, defect triage	Critical journey metrics and support volume are understood; no unresolved P0 incidents
+16	Launch decision	Go/no-go review, staged rollout, communications, on-call schedule, rollback readiness	All mandatory gates pass; risk acceptance recorded by named decision-makers
+
+10.1 Release sequencing
+43.	Internal alpha: synthetic content and staff accounts only.
+44.	Closed pilot: limited real learners/teachers, approved content, low transaction limits and support coverage.
+45.	Paid pilot: activate real payments only after reconciliation, refunds, entitlements and support are tested.
+46.	Public launch: gradually increase access with monitoring and rollback controls.
+47.	Expansion: open more exam pathways, publishers and reward functionality only after operational evidence supports it.
+11. Team ownership and operating model
+Assign one directly responsible individual (DRI) to every domain. Titles matter less than explicit decision rights. If there is no dedicated QA, product or DevOps person, assign these responsibilities rather than assuming they will happen informally.
+Role / DRI	Accountability	Required outputs
+Product owner / founder	Scope, prioritization, business model, acceptance, pilot partners, go/no-go	PRD, metric definitions, roadmap, decision log, risk acceptance
+Design lead	Research, information architecture, flows, design system, accessibility, usability validation	Figma source, prototypes, responsive/state specs, component inventory
+Frontend lead	Next.js PWA, typed API client, state handling, responsive UX, accessibility, client telemetry	Component architecture, route map, PWA behavior, E2E ownership
+Backend lead	Go modules, domain invariants, API contracts, PostgreSQL schema, assessment/payment correctness	Architecture decisions, OpenAPI, migrations, integration tests, runbooks
+QA lead / assigned QA DRI	Test strategy, risk-based coverage, exploratory testing, release evidence	Test plan, regression suite, defect severity policy, launch report
+Platform/DevOps DRI	CI/CD, environments, secrets, infrastructure, monitoring, backup/restore, incident response	Infrastructure as code where practical, dashboards, alerts, runbooks, restore evidence
+Content operations DRI	Question sourcing, rights evidence, editorial review, corrections, syllabus mapping	Approved content batches, review checklist, takedown/correction process
+Finance/operations DRI	Payment reconciliation, refund workflow, reward disputes and policy execution	Reconciliation report, exception queue, support playbook, ledger review
+Privacy/security DRI	Data inventory, threat model, access reviews, incident/privacy response	Data map, retention policy, security review, access-control evidence
+
+11.1 Collaboration cadence
+•	Weekly product/design/engineering planning: goals, decisions, risks, dependencies and scope changes.
+•	Twice-weekly short engineering sync during critical integration phases; async status is preferred over status meetings.
+•	Weekly demo in staging with working software, not slideware.
+•	Weekly risk review for content rights, student privacy, assessment correctness, payments and rewards.
+•	Release readiness review before every production rollout; post-release review after significant incidents.
+•	Maintain architecture decision records (ADRs) for decisions with long-term consequences and a decision log for product trade-offs.
+11.2 Ownership boundaries
+•	Frontend owns presentation and local interaction state; backend owns authorization, assessment state, pricing, scoring, payment confirmation and ledger invariants.
+•	Design owns interaction behavior and content hierarchy; product owner resolves trade-offs and accepts scope.
+•	QA is involved during design and story definition, not only after implementation.
+•	Operations owns procedures and exception queues; automated systems must not silently replace human review for high-risk financial/content actions.
+•	A feature is not launch-ready until the operational team knows how to investigate failures and correct legitimate mistakes.
+12. Testing strategy
+12.1 Test pyramid
+Layer	Coverage	Examples
+Unit	Fast, deterministic domain logic	Scoring, timer policy, reward eligibility, order totals, permission policy
+Database/integration	Real PostgreSQL and transaction behavior	Unique constraints, migrations, concurrent submissions, idempotency, ledger transactions
+API contract	OpenAPI schema and frontend/backend compatibility	Request/response validation, error envelopes, pagination, auth requirements
+Component	Interactive UI states	Question selection, timer display, validation, save-state banner, responsive navigation
+End-to-end	Critical user journeys	Register → practice → result; teacher schedule → learner completes → teacher report; purchase → webhook → entitlement
+Security	Abuse and authorization	IDOR, privilege escalation, CSRF/XSS, injection, rate limits, session invalidation, webhook forgery
+Performance	Load and stress at realistic usage	Concurrent assessment starts/submissions, response autosaves, report generation, catalogue queries
+Resilience	Failure/recovery behavior	Network drop, duplicate webhook, queue retry, DB failover, backup restore, deploy rollback
+Accessibility/usability	Real interaction quality	Keyboard-only flows, screen reader status, contrast, mobile device testing, low bandwidth
+
+12.2 Critical test scenarios
+•	Two requests start the same attempt concurrently; only one valid attempt is created.
+•	The client submits twice because the response was lost; score and result are finalized once.
+•	A response write arrives at the deadline boundary; behavior is deterministic and documented.
+•	The client clock is wrong or the user changes device time; server deadline remains authoritative.
+•	A student refreshes, closes the tab or reconnects after a network outage; authoritative session state is recovered.
+•	A user guesses another student’s session, class, order or entitlement ID; access is denied.
+•	A teacher changes a draft assessment after a student starts; the existing session’s snapshot remains stable.
+•	A payment webhook is duplicated, delayed, out of order or invalidly signed; no duplicate entitlement/ledger effect occurs.
+•	A payment succeeds but the browser never returns; server-side processing still fulfills the order.
+•	A refund arrives after a commission was provisionally calculated; a compensating ledger entry/reversal follows policy.
+•	A published question is withdrawn or corrected; existing session history remains auditable and score-correction policy can be applied.
+•	A database migration fails or deploy rolls back; data remains consistent and recovery procedure is tested.
+•	An admin account is compromised or a staff member changes role; session revocation and audit review work.
+12.3 Performance and reliability objectives
+Define SLOs from product impact and pilot data rather than copying arbitrary industry targets. Before launch, choose explicit targets for API availability, assessment response-save success, submission success, p95 latency for key endpoints, recovery time objective (RTO), recovery point objective (RPO) and alert response. Set initial load-test assumptions for concurrent active learners, requests per active learner, question count, and peak exam windows.
+•	Load test the critical assessment path at an agreed multiplier above expected pilot peak.
+•	Measure p50/p95/p99 latency, error rate, database saturation, queue lag and response-save success.
+•	Test bursts at scheduled exam start and end times; averages can hide deadline-related failures.
+•	Test object-storage access, payment provider latency and background-job backlogs separately.
+•	Run a restore exercise against a clean environment and verify data consistency, not just database startup.
+13. Security, privacy and compliance workstream
+13.1 Minimum controls
+•	Threat model before production: account takeover, IDOR, privilege escalation, content theft, payment fraud, referral abuse, insider misuse and denial of service.
+•	Secure password hashing or reputable identity provider; MFA for privileged accounts; short-lived sessions and revocation.
+•	Rate limits for login, password reset, invitations, assessment creation, response writes and public endpoints.
+•	Validate and normalize inputs; parameterized SQL; output encoding; secure headers; CSRF protection where cookie auth is used.
+•	Encrypt traffic in transit and use provider-managed encryption at rest; tightly control secrets and rotate them.
+•	Least privilege for database roles, cloud IAM, admin users and production access; periodically review grants.
+•	Audit privileged operations and sensitive data access; avoid logging passwords, tokens, full payment payloads or unnecessary student responses.
+•	Dependency and container scanning, secret scanning, static analysis and regular patching.
+•	Document incident triage, evidence preservation, notification decisions and recovery responsibilities.
+13.2 Nigeria-specific review items
+Before real-money launch, obtain qualified advice on applicable Nigerian data-protection obligations, student/minor data and consent, consumer protection, tax/invoicing, content intellectual property, publisher contracts and the legal/payment-provider treatment of points, commissions, transfers or withdrawals. This blueprint is not legal advice. The product must not activate cash-out or stored-value-like features merely because a ledger has been implemented.
+13.3 AI later, not a launch dependency
+•	Ground responses in licensed, approved content; cite the relevant content version or source when possible.
+•	Evaluate accuracy, unsupported claims, bias, prompt injection through retrieved content and privacy leakage.
+•	Do not use student performance data for model training without a reviewed legal basis and transparent policy.
+•	Provide an explicit fallback when retrieval confidence is low; route disputed educational answers to human review.
+•	Track cost per successful learning outcome and latency; do not add AI simply to make the product appear modern.
+14. Observability and operations
+14.1 Required telemetry
+•	Structured logs with request_id, trace_id, actor identifier where appropriate, route, status, latency and safe error code.
+•	Metrics for request volume/errors/latency, DB pool usage, slow queries, background-job retries/lag, assessment save/submit success, payment state age, webhook failures and reconciliation differences.
+•	Traces across API → database → queue/provider for high-value workflows.
+•	Business dashboards for activation, assessment completion, content reports, purchases, refunds, rewards exceptions and support backlog.
+•	Alerts must have an owner, severity, runbook and a clear action. Avoid alerts that merely report noise.
+14.2 Runbooks required before launch
+•	Assessment submission failure or widespread latency.
+•	Payment provider outage, delayed webhooks and reconciliation mismatch.
+•	Incorrect question/scoring incident and affected learner review.
+•	Data exposure or suspected account compromise.
+•	Database capacity/availability issue and backup restore.
+•	Bad deployment, rollback and feature-flag disablement.
+•	Content takedown, publisher dispute and referral/commission dispute.
+•	Support escalation and communication to affected schools/learners.
+15. Launch gates and go/no-go checklist
+Gate	Required evidence	Decision owner
+Product	P0 acceptance criteria met; known limitations documented; support and refund paths visible	Product owner
+Content	100% of published questions have source/licensing basis, review status and required explanation/metadata	Content operations
+Assessment correctness	No known critical timer/scoring/submission defects; boundary, retry and concurrency tests pass	Backend lead + QA
+Security	No unresolved critical/high-risk findings without documented risk acceptance; access-control suite passes	Security DRI + product owner
+Privacy	Data inventory, retention, consent/access decisions and incident process reviewed	Privacy DRI
+Payments	Verified webhook path, duplicate-event tests, refund workflow, reconciliation report and provider production setup confirmed	Backend + finance ops
+Rewards	Separate points and commission ledgers; rules, reversal, fraud and dispute processes tested; cash-out disabled unless separately approved	Backend + finance/legal
+Reliability	Load test meets agreed capacity; monitoring and alert ownership set; no critical saturation	Platform DRI
+Recovery	Backup restore test completed; RTO/RPO documented; rollback rehearsed	Platform DRI
+Accessibility	Critical flows reviewed on mobile and keyboard/screen-reader basics; known gaps prioritized	Design + frontend + QA
+Support	Support owner, severity levels, response window, escalation and communication templates ready	Operations
+Release	Staged rollout plan, rollback trigger, on-call roster and final go/no-go recorded	Product owner + engineering leads
+
+15.1 Go/no-go conditions
+•	GO only when all mandatory gates have evidence and an accountable owner.
+•	NO-GO for unresolved critical security issues, known scoring corruption, unexplained ledger discrepancies, untested restore/rollback, or inability to support payment/student incidents.
+•	A risk can be accepted only by a named decision-maker with impact, mitigation, expiry/review date and user-facing consequences recorded.
+•	Launch in cohorts and increase traffic based on evidence; do not make a big-bang release the default.
+16. Risks, assumptions and decisions to validate
+Risk / assumption	Why it matters	Mitigation / decision
+Question content readiness	A platform with thin or untrusted content will not deliver exam value	Inventory target exam pathways, question volume, licensing and review capacity before committing launch date
+Team capacity	A production-grade multi-sided platform can exceed the capacity of a small team	Assign DRIs, protect P0, limit parallel work and reforecast after discovery
+Scope expansion	Marketplace, rewards, classroom and CBT each have substantial edge cases	Keep P0 strict; make P1/P2 explicitly conditional
+Payment provider choice	Fees, settlement, webhook behavior and refunds shape commerce implementation	Choose provider after business/settlement requirements review; test sandbox failure cases
+Rewards regulatory model	Cash-out/transfer may trigger additional obligations and fraud exposure	Start with points and auditable commission accrual; defer withdrawals pending qualified review
+Minors and privacy	Education users may include children and sensitive performance records	Minimize data, review consent/retention and restrict guardian/teacher visibility
+PWA limitations	Browser storage, device behavior and offline sync vary	Test supported browsers/devices; disclose online requirements; define native-app decision criteria
+Exam-window traffic spikes	Concurrent starts and submissions can create correlated load	Capacity test bursts, autoscale where useful, queue noncritical work, monitor DB pool and write latency
+Publisher/content disputes	Unauthorized content can create legal and trust issues	Permission evidence, review, takedown and dispute process before marketplace scale
+AI feature pressure	Premature AI increases cost and educational correctness risk	Keep AI out of P0; add only after content and evaluation foundations exist
+
+16.1 Decisions to record in an ADR / product decision log
+•	Authentication/session approach and account verification requirements.
+•	Initial exam pathways and content licensing/verification policy.
+•	Assessment result release policy and reconnect/late-join rules.
+•	Payment provider, refund rules, tax/invoice needs and settlement workflow.
+•	Reward definitions, qualifying events, reversals, caps and cash-out policy.
+•	Initial hosting provider, deployment model, region, RTO/RPO and cost ceiling.
+•	Data retention/deletion and minors/guardian access policy.
+•	PWA browser/device support matrix and offline assessment policy.
+•	Institution pilot scope and the criteria for moving from closed pilot to public launch.
+17. First 10 working days — execution checklist
+Day	Focus	Concrete output
+1	Kickoff and constraints	Named DRIs, goals, launch hypothesis, capacity and decision-making rules
+2	User and partner discovery	Student/teacher/institution workflows; pilot partner shortlist; top pain points
+3	Scope and metric definitions	P0/P1/P2 backlog, personas, activation and assessment success definitions
+4	Content and rights	Target exam pathways, content inventory, source/licensing checklist, reviewer workflow
+5	Rewards and commerce	Payment provider requirements, order/refund states, reward terms and deferred cash-out decision
+6	Architecture/data model	ADRs, domain boundaries, ERD, permission matrix, threat model draft
+7	API and design contracts	OpenAPI skeleton, student/teacher flows, wireframes and component inventory
+8	Engineering foundation	Repositories, CI, environment plan, migration baseline, logging and secrets
+9	Vertical slice implementation	Register/sign in, choose subject, fetch approved question set, submit answer
+10	Demo and replan	Working staging demo, risks reviewed, updated estimates, next two-sprint plan
+
+18. Final engineering principles
+48.	Correctness before breadth: make the assessment loop dependable before adding many modules.
+49.	Content quality is a product feature. Treat provenance, review and correction as core workflows.
+50.	Server-side authority: permissions, time, scores, price, payment and reward eligibility are not frontend responsibilities.
+51.	Make retries safe: network failures are normal; idempotency is a design requirement.
+52.	Separate ledgers and state machines. Avoid ambiguous balance fields and overloaded status columns.
+53.	Design for operations: every important failure needs visibility, ownership and a recovery path.
+54.	Ship a modular monolith with clear boundaries, then split only when evidence justifies it.
+55.	Measure real learning and business outcomes; do not optimize vanity metrics.
+56.	Keep the PWA lean and accessible; add native apps when measured user needs warrant them.
+57.	Document decisions and teach the team the invariants, not just the code structure.
+Appendix A — Suggested repository layout
+edumart/
+  apps/
+    web/                    # Next.js PWA
+  backend/
+    cmd/api/
+    cmd/worker/
+    internal/
+      identity/
+      access/
+      organizations/
+      content/
+      assessments/
+      learning/
+      commerce/
+      rewards/
+      operations/
+    migrations/
+    openapi/
+  packages/
+    api-client/             # generated/shared typed client if useful
+    design-system/          # shared UI primitives where repo structure warrants
+  infra/
+    environments/
+    dashboards/
+    runbooks/
+  docs/
+    adr/
+    product/
+    security/
+    operations/
+  tests/
+    e2e/
+    load/
+    fixtures/
+The exact monorepo/multirepo choice is less important than repeatable local setup, shared API contracts, protected branches, automated checks and clear ownership. Do not duplicate business rules in frontend and backend; the frontend may mirror validation for usability, but the server remains authoritative.
+Appendix B — Minimum release dashboard
+Dashboard group	Signals
+Learning	Registration-to-first-practice funnel, session starts/completions, submit failures, score/result latency, content reports
+Classroom	Invitations issued/accepted, learners enrolled, scheduled assessments started/completed, report access failures
+Commerce	Orders created, payment attempts by status, webhook lag/failures, refunds, entitlements issued, reconciliation differences
+Rewards	Points issued/redeemed, commission pending/eligible/reversed, duplicate referral flags, disputes and manual adjustments
+Reliability	API latency/error rate, DB connection/pool health, job backlog, storage errors, uptime/availability by critical journey
+Security/operations	Failed login spikes, rate-limit events, privileged actions, open critical incidents, backup/restore status
+
