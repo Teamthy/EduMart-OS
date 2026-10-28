@@ -532,28 +532,8 @@ func (s *Service) Finalize(ctx context.Context, session *Session, reason string)
 		return session, nil // already final: idempotent
 	}
 
-	rows, err := s.DB.DB.QueryContext(ctx, `SELECT question_version_id, selected_option_id
-		FROM assessment_responses WHERE session_id = ?`, session.ID)
+	responses, err := s.loadResponses(ctx, session.ID)
 	if err != nil {
-		return nil, err
-	}
-	responses := []domain.SnapResponse{}
-	for rows.Next() {
-		var qvID string
-		var selected sql.NullString
-		if err := rows.Scan(&qvID, &selected); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		response := domain.SnapResponse{QvID: qvID}
-		if selected.Valid && selected.String != "" {
-			value := selected.String
-			response.SelectedOptionID = &value
-		}
-		responses = append(responses, response)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -826,4 +806,178 @@ func (s *Service) ViewFor(ctx context.Context, session *Session, includeAnswers 
 		}
 	}
 	return view, nil
+}
+
+// loadResponses reads the answers recorded against an attempt. Scoring always runs from these rows
+// rather than from anything the client sends, so a correction and a first-time submit use the exact
+// same code path.
+func (s *Service) loadResponses(ctx context.Context, sessionID string) ([]domain.SnapResponse, error) {
+	return s.responsesFrom(ctx, s.DB.DB, sessionID)
+}
+
+// querier is satisfied by both *sql.DB and *sql.Tx, so a rescore inside a transaction never reaches
+// back to the pool — doing so would block on the write lock that transaction already holds.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Service) responsesFrom(ctx context.Context, q querier, sessionID string) ([]domain.SnapResponse, error) {
+	rows, err := q.QueryContext(ctx, `SELECT question_version_id, selected_option_id
+		FROM assessment_responses WHERE session_id = ?`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	responses := []domain.SnapResponse{}
+	for rows.Next() {
+		var qvID string
+		var selected sql.NullString
+		if err := rows.Scan(&qvID, &selected); err != nil {
+			return nil, err
+		}
+		response := domain.SnapResponse{QvID: qvID}
+		if selected.Valid && selected.String != "" {
+			value := selected.String
+			response.SelectedOptionID = &value
+		}
+		responses = append(responses, response)
+	}
+	return responses, rows.Err()
+}
+
+// EditResponse handles PUT /v1/assessment-sessions/{id}/corrections/{qvId}: a learner fixing an
+// answer after the attempt closed. The original answer version is kept as history through the
+// monotonically increasing answer_version, the score is recomputed from every stored response, and
+// no correctness signal is returned, so an attempt whose results are still sealed stays sealed.
+func (s *Service) EditResponse(ctx context.Context, userID, sessionID, qvID string, in SaveInput) (*SaveResult, error) {
+	session, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.UserID != userID {
+		return nil, httpx.NewError(httpx.CodeForbidden, "This attempt belongs to another learner.")
+	}
+	if session.Status != domain.StatusSubmitted && session.Status != domain.StatusExpired {
+		return nil, httpx.NewError(httpx.CodeConflict, "Answers can only be corrected once the attempt is closed.")
+	}
+	// Only practice attempts accept corrections. Graded assessments are evidence: once submitted the
+	// answers are frozen, otherwise a learner could read the released key and rewrite a score.
+	if session.Mode != "practice" {
+		return nil, httpx.NewError(httpx.CodeConflict,
+			"Graded assessments cannot be corrected after submission. Report the question to your teacher instead.")
+	}
+
+	var question *domain.SnapQuestion
+	for i := range session.Snapshot.Questions {
+		if session.Snapshot.Questions[i].QvID == qvID {
+			question = &session.Snapshot.Questions[i]
+			break
+		}
+	}
+	if question == nil {
+		return nil, httpx.NewError(httpx.CodeForbidden, "That question is not part of this attempt.")
+	}
+	selected := ""
+	if in.SelectedOptionID != nil {
+		selected = *in.SelectedOptionID
+	}
+	if selected != "" {
+		valid := false
+		for _, option := range question.Options {
+			if option.ID == selected {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil, httpx.Validation([]httpx.FieldError{{Field: "selectedOptionId", Message: "That answer option does not exist for this question."}})
+		}
+	}
+
+	var (
+		currentVersion int
+		currentOption  sql.NullString
+		currentSeq     sql.NullInt64
+	)
+	err = s.DB.DB.QueryRowContext(ctx, `SELECT answer_version, selected_option_id, client_sequence
+		FROM assessment_responses WHERE session_id = ? AND question_version_id = ?`, sessionID, qvID).
+		Scan(&currentVersion, &currentOption, &currentSeq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, httpx.NewError(httpx.CodeConflict, "There is no saved answer to correct for this question.")
+		}
+		return nil, err
+	}
+
+	sameValue := (currentOption.Valid && currentOption.String == selected) || (!currentOption.Valid && selected == "")
+	sameSequence := in.ClientSequence != nil && currentSeq.Valid && int64(*in.ClientSequence) == currentSeq.Int64
+	replayOfLast := in.ExpectedVersion != nil && *in.ExpectedVersion == currentVersion-1 && sameValue
+	if sameValue && (sameSequence || replayOfLast) {
+		return &SaveResult{
+			Saved: true, ServerSavedAt: store.Now(), Version: currentVersion,
+			SessionStatus: string(session.Status),
+		}, nil
+	}
+	if in.ExpectedVersion != nil && *in.ExpectedVersion != currentVersion {
+		return nil, httpx.NewError(httpx.CodeConflict,
+			"This answer was updated on another device. Refresh to see the latest saved value.",
+			map[string]any{"current_version": currentVersion})
+	}
+
+	editedAt := store.Now()
+	nextVersion := currentVersion + 1
+	var selectedArg any
+	if selected != "" {
+		selectedArg = selected
+	}
+	var seqArg any
+	if in.ClientSequence != nil {
+		seqArg = *in.ClientSequence
+	}
+
+	err = s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE assessment_responses
+			SET selected_option_id = ?, answer_version = ?, client_sequence = ?, updated_at = ?
+			WHERE session_id = ? AND question_version_id = ? AND answer_version = ?`,
+			selectedArg, nextVersion, seqArg, editedAt, sessionID, qvID, currentVersion); err != nil {
+			return err
+		}
+
+		responses, err := s.responsesFrom(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		breakdown := domain.ScoreAttempt(session.Snapshot.Questions, responses, session.Snapshot.Policy)
+		if _, err := tx.ExecContext(ctx, `UPDATE assessment_sessions
+			SET score_raw = ?, score_max = ?, score_percent = ? WHERE id = ?`,
+			breakdown.Raw, breakdown.Max, breakdown.Percent, sessionID); err != nil {
+			return err
+		}
+		for _, result := range breakdown.PerQuestion {
+			var isCorrect any
+			if result.IsCorrect != nil {
+				if *result.IsCorrect {
+					isCorrect = 1
+				} else {
+					isCorrect = 0
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE assessment_responses
+				SET is_correct = ?, awarded_points = ? WHERE session_id = ? AND question_version_id = ?`,
+				isCorrect, result.Awarded, sessionID, result.QvID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &SaveResult{
+		Saved: true, ServerSavedAt: editedAt, Version: nextVersion,
+		SessionStatus: string(session.Status),
+		// No remaining_seconds: the attempt is closed. No correctness: the result may still be sealed.
+	}, nil
 }

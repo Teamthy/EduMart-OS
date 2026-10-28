@@ -68,7 +68,8 @@ These are the invariants the product depends on; each has a test.
 | Payment truth comes only from a verified webhook | `commerce.HandleWebhook` | `TestWebhookIsTheOnlySourceOfPaymentTruth` |
 | Money is integer minor units | schema + `ServerApi` + `formatMoney` | `formatMoney` tests |
 | Authorisation is server-side and tenant-scoped | `auth.RequireRole`, `assessment.owned`, `classroom.Roster` | `TestTenantAndRoleAuthorisation` |
-| Signup progress is server-persisted across five pages | `signup_drafts` + `POST/PATCH /v1/signup-drafts` | `TestSignupWizardResumesFromServerState` |
+| Signup progress is server-persisted across five pages | `signup_drafts` + `POST/PATCH /v1/signup-drafts` | `TestSignupWizardResumesFromServerState`, `mergeDraft` tests |
+| Graded attempts freeze on submit; only practice accepts corrections | `assessment.EditResponse` | `TestGradedAssessmentSessionsAreFrozenOnSubmit`, `TestCorrectionsRescoreWithoutRevealingAnswers` |
 
 Run everything:
 
@@ -77,7 +78,7 @@ npm test                    # Go tests + web tests
 npm run typecheck           # shared, web (and mobile when its deps are installed)
 ```
 
-Current status: **Go 31 tests**, **web 21 tests**, `go vet` clean, `tsc --noEmit` clean on web,
+Current status: **Go 33 tests**, **web 25 tests**, `go vet` clean, `tsc --noEmit` clean on web,
 shared and mobile, `next build` clean.
 
 ---

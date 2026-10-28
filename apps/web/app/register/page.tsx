@@ -4,7 +4,6 @@ import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { readDraft } from "@/lib/signup-draft";
-import { startSignupFromForm } from "@/lib/signup-actions";
 
 export const metadata: Metadata = { title: "Create your account" };
 
@@ -55,7 +54,7 @@ export default async function RegisterEntryPage({
             </p>
           ) : null}
 
-          <form action={startSignupFromForm}>
+          <form action="/api/signup/start" method="post">
             <input type="hidden" name="referralCode" value={referralCode} />
             <Button type="submit" className="w-full" size="lg">
               Start

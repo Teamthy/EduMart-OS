@@ -733,3 +733,191 @@ func TestSignupWizardResumesFromServerState(t *testing.T) {
 		t.Fatalf("unknown step should be rejected, got %d", rejected.StatusCode)
 	}
 }
+
+func TestCorrectionsRescoreWithoutRevealingAnswers(t *testing.T) {
+	h := newHarness(t)
+	token := h.login("student@edumart.ng", "Student123!")
+
+	status, body := h.do("POST", "/v1/practice-sessions", token, map[string]any{
+		"subjectId": h.subjectID("mathematics"), "count": 2,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("start practice: %d %v", status, body)
+	}
+	session := body["session"].(map[string]any)
+	sessionID := session["session_id"].(string)
+	question := session["questions"].([]any)[0].(map[string]any)
+	qvID := question["qvId"].(string)
+	options := question["options"].([]any)
+
+	// A correction before the attempt closes is refused: the answer lock is what makes the deadline real.
+	correctionPath := fmt.Sprintf("/v1/assessment-sessions/%s/corrections/%s", sessionID, qvID)
+	status, body = h.do("PUT", correctionPath, token, map[string]any{
+		"selectedOptionId": options[0].(map[string]any)["id"].(string), "expectedVersion": 0,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409 for a correction on a live attempt, got %d %v", status, body)
+	}
+
+	// Answer with options[0], submit, learn the key from the released review, then correct the answer
+	// and watch the score move. Reordering the same way twice keeps the test independent of fixtures.
+	guess := options[0].(map[string]any)["id"].(string)
+	savePath := fmt.Sprintf("/v1/assessment-sessions/%s/responses/%s", sessionID, qvID)
+	if status, body = h.do("PUT", savePath, token, map[string]any{
+		"selectedOptionId": guess, "expectedVersion": 0, "clientSequence": 1,
+	}); status != http.StatusOK {
+		t.Fatalf("save answer: %d %v", status, body)
+	}
+	status, body = h.do("POST", fmt.Sprintf("/v1/assessment-sessions/%s/submit", sessionID), token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("submit: %d %v", status, body)
+	}
+	graded := body["session"].(map[string]any)
+	before := int(graded["score"].(map[string]any)["raw"].(float64))
+
+	var answer string
+	for _, raw := range graded["review"].([]any) {
+		if item := raw.(map[string]any); item["qvId"] == qvID {
+			answer = item["answerOptionId"].(string)
+		}
+	}
+	if answer == "" {
+		t.Fatal("the released review must expose the answer key")
+	}
+	wrong := ""
+	for _, raw := range options {
+		if id := raw.(map[string]any)["id"].(string); id != answer {
+			wrong = id
+			break
+		}
+	}
+	if wrong == "" {
+		t.Fatal("fixture needs at least two options")
+	}
+
+	version := 1
+	correct := func(optionID string) map[string]any {
+		t.Helper()
+		status, body := h.do("PUT", correctionPath, token, map[string]any{
+			"selectedOptionId": optionID, "expectedVersion": version, "clientSequence": version + 1,
+		})
+		if status != http.StatusOK || body["saved"] != true {
+			t.Fatalf("correction to %s: %d %v", optionID, status, body)
+		}
+		version = int(body["version"].(float64))
+		for _, forbidden := range []string{"is_correct", "awarded", "score", "answer"} {
+			serialized, _ := json.Marshal(body)
+			if bytes.Contains(serialized, []byte(forbidden)) {
+				t.Fatalf("correction response leaked %q: %s", forbidden, serialized)
+			}
+		}
+		_, reloaded := h.do("GET", "/v1/assessment-sessions/"+sessionID, token, nil)
+		return reloaded["session"].(map[string]any)
+	}
+	raw := func(v map[string]any) int {
+		return int(v["score"].(map[string]any)["raw"].(float64))
+	}
+
+	// Swap to a deliberately wrong option: the score can only go down (or stay at zero).
+	wrongState := correct(wrong)
+	if raw(wrongState) > before {
+		t.Fatalf("a wrong answer must not raise the score: %d → %d", before, raw(wrongState))
+	}
+	keyState := correct(answer)
+	if raw(keyState) <= raw(wrongState) {
+		t.Fatalf("correcting to the key should raise the score: %d → %d", raw(wrongState), raw(keyState))
+	}
+
+	// Replaying the same correction is idempotent; a stale version is a conflict.
+	status, body = h.do("PUT", correctionPath, token, map[string]any{
+		"selectedOptionId": answer, "expectedVersion": version - 1, "clientSequence": version,
+	})
+	if status != http.StatusOK || int(body["version"].(float64)) != version {
+		t.Fatalf("replayed correction should return the same version: %d %v", status, body)
+	}
+	status, body = h.do("PUT", correctionPath, token, map[string]any{
+		"selectedOptionId": wrong, "expectedVersion": version - 1, "clientSequence": version + 5,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409 on a stale correction, got %d %v", status, body)
+	}
+
+	// Another learner cannot correct somebody else's attempt.
+	other := h.login("teacher@edumart.ng", "Teacher123!")
+	status, _ = h.do("PUT", correctionPath, other, map[string]any{
+		"selectedOptionId": wrong, "expectedVersion": version,
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("expected 403 for a foreign correction, got %d", status)
+	}
+}
+
+func TestGradedAssessmentSessionsAreFrozenOnSubmit(t *testing.T) {
+	h := newHarness(t)
+	token := h.login("student@edumart.ng", "Student123!")
+
+	status, body := h.do("GET", "/v1/classes", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("classes: %d %v", status, body)
+	}
+	classes := body["classes"].([]any)
+	if len(classes) == 0 {
+		t.Fatal("the seeded learner should belong to a class")
+	}
+	classID := classes[0].(map[string]any)["id"].(string)
+
+	status, body = h.do("GET", "/v1/classes/"+classID+"/assignments", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("assignments: %d %v", status, body)
+	}
+	assignments := body["assignments"].([]any)
+	if len(assignments) == 0 {
+		t.Fatal("the seeded class should have a published assessment")
+	}
+	definitionID := assignments[0].(map[string]any)["definitionId"].(string)
+
+	// A non-member cannot start a class assessment, even with the definition id in hand.
+	outsider := h.login("admin@edumart.ng", "Admin123!")
+	if status, _ = h.do("POST", "/v1/assessment-definitions/"+definitionID+"/sessions", outsider, nil); status != http.StatusForbidden {
+		t.Fatalf("expected 403 for a non-member, got %d", status)
+	}
+
+	status, body = h.do("POST", "/v1/assessment-definitions/"+definitionID+"/sessions", token, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("start graded assessment: %d %v", status, body)
+	}
+	session := body["session"].(map[string]any)
+	if session["mode"] == "practice" {
+		t.Fatalf("a class assessment must not run in practice mode: %v", session["mode"])
+	}
+	sessionID := session["session_id"].(string)
+	question := session["questions"].([]any)[0].(map[string]any)
+	qvID := question["qvId"].(string)
+	optionID := question["options"].([]any)[0].(map[string]any)["id"].(string)
+
+	savePath := fmt.Sprintf("/v1/assessment-sessions/%s/responses/%s", sessionID, qvID)
+	if status, body = h.do("PUT", savePath, token, map[string]any{
+		"selectedOptionId": optionID, "expectedVersion": 0, "clientSequence": 1,
+	}); status != http.StatusOK {
+		t.Fatalf("save answer: %d %v", status, body)
+	}
+	if status, body = h.do("POST", fmt.Sprintf("/v1/assessment-sessions/%s/submit", sessionID), token, nil); status != http.StatusOK {
+		t.Fatalf("submit graded assessment: %d %v", status, body)
+	}
+
+	// Graded evidence is immutable: the released key must not be usable to rewrite the score.
+	status, body = h.do("PUT", fmt.Sprintf("/v1/assessment-sessions/%s/corrections/%s", sessionID, qvID), token, map[string]any{
+		"selectedOptionId": optionID, "expectedVersion": 1, "clientSequence": 2,
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409 for a graded correction, got %d %v", status, body)
+	}
+
+	// The attempt limit is enforced by the server, not the client.
+	for i := 0; i < 3; i++ {
+		status, body = h.do("POST", "/v1/assessment-definitions/"+definitionID+"/sessions", token, nil)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409 once attempts are exhausted, got %d %v", status, body)
+	}
+}

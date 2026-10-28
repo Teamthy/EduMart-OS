@@ -24,6 +24,8 @@ export function SubjectsForm({ subjects, draft }: { subjects: Subject[]; draft: 
       {selected.map((id) => (
         <input key={id} type="hidden" name="subjectIds" value={id} />
       ))}
+      {/* Tells the server that an empty list is a deliberate choice, not a missing field. */}
+      <input type="hidden" name="subjectsTouched" value="1" />
 
       {state.message ? <Alert tone="error" title="Could not save this step">{state.message}</Alert> : null}
 

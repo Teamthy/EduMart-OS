@@ -7,41 +7,17 @@ import { SIGNUP_STEPS, validateStep, type SignupDraft, type SignupStepId } from 
 
 import { ServerApiError, serverFetch } from "./server-api";
 import { createDraft, patchDraft, readDraft } from "./signup-draft";
-import { draftToForm } from "./signup-types";
+import { draftToForm, mergeDraft } from "./signup-types";
 
-const DRAFT_COOKIE = "edumart_signup";
+import { DRAFT_COOKIE } from "./signup-cookie";
 
 import type { StepState } from "./signup-state";
 
 /**
- * Starts (or resumes) the wizard. Creating the draft on the server and storing only its opaque
- * token in an httpOnly cookie is what makes the flow resumable: no answers live in the browser.
+ * The wizard entry point lives in `app/api/signup/start/route.ts`, not in a server action: starting
+ * a draft must work with JavaScript disabled, and it has to set a cookie, which a GET render cannot
+ * do. This keeps the first step a plain form POST.
  */
-export async function startSignup(referralCode?: string): Promise<void> {
-  const existing = await readDraft();
-  if (existing.draft) {
-    redirect(`/register/${existing.step ?? "pathway"}`);
-  }
-  const created = await createDraft(referralCode ?? "");
-  if (!created.draft) redirect("/register");
-  const token = created.token;
-  if (token) {
-    const store = await cookies();
-    store.set(DRAFT_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-  }
-  redirect("/register/pathway");
-}
-
-/** Entry point from the landing page: starts the wizard, forwarding an optional ?ref= code. */
-export async function startSignupFromForm(formData: FormData): Promise<void> {
-  const referral = formData.get("referralCode");
-  await startSignup(typeof referral === "string" ? referral : "");
-}
 
 async function advance(step: SignupStepId, patch: Record<string, unknown>): Promise<StepState> {
   try {
@@ -62,7 +38,7 @@ async function advance(step: SignupStepId, patch: Record<string, unknown>): Prom
 }
 
 export async function savePathway(_prev: StepState, formData: FormData): Promise<StepState> {
-  const draft = currentDraftFromForm(formData);
+  const draft = await mergedDraft(formData);
   const errors = validateStep("pathway", draft);
   if (Object.keys(errors).length > 0) return { ok: false, errors: errors as Record<string, string> };
 
@@ -75,7 +51,7 @@ export async function savePathway(_prev: StepState, formData: FormData): Promise
 }
 
 export async function saveSubjects(_prev: StepState, formData: FormData): Promise<StepState> {
-  const draft = currentDraftFromForm(formData);
+  const draft = await mergedDraft(formData);
   const errors = validateStep("subjects", draft);
   if (Object.keys(errors).length > 0) return { ok: false, errors: errors as Record<string, string> };
 
@@ -85,7 +61,7 @@ export async function saveSubjects(_prev: StepState, formData: FormData): Promis
 }
 
 export async function saveSchedule(_prev: StepState, formData: FormData): Promise<StepState> {
-  const draft = currentDraftFromForm(formData);
+  const draft = await mergedDraft(formData);
   const errors = validateStep("schedule", draft);
   if (Object.keys(errors).length > 0) return { ok: false, errors: errors as Record<string, string> };
 
@@ -102,7 +78,7 @@ export async function saveSchedule(_prev: StepState, formData: FormData): Promis
  * to `POST /v1/auth/register` in the same request that finishes the wizard.
  */
 export async function createAccount(_prev: StepState, formData: FormData): Promise<StepState> {
-  const draft = currentDraftFromForm(formData);
+  const draft = await mergedDraft(formData);
   const errors = validateStep("account", draft);
   if (Object.keys(errors).length > 0) return { ok: false, errors: errors as Record<string, string> };
 
@@ -158,10 +134,23 @@ export async function createAccount(_prev: StepState, formData: FormData): Promi
 }
 
 /**
+ * The form only carries the fields for the current step, so every action first re-reads the draft
+ * from the API and merges the posted fields on top of it.
+ */
+async function mergedDraft(formData: FormData) {
+  const persisted = await readDraft();
+  return mergeDraft(
+    draftToForm(persisted.draft),
+    draftFromForm(formData),
+    formData.has("subjectsTouched"),
+  );
+}
+
+/**
  * Server actions receive the form fields as strings; this rebuilds the draft shape the shared
  * validators expect (checkbox groups arrive as repeated `subjectIds` entries).
  */
-function currentDraftFromForm(formData: FormData): SignupDraft {
+function draftFromForm(formData: FormData): SignupDraft {
   const raw = formData.get("draft");
   let base: SignupDraft = {
     examPathwayKey: "",

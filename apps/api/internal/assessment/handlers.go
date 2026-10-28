@@ -151,6 +151,27 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// EditResponse handles PUT /v1/assessment-sessions/{id}/corrections/{qvId}: a post-submission answer
+// correction. The response deliberately carries no correctness or score information — only the new
+// answer version — so this cannot be used to probe answers on an attempt whose result is sealed.
+func (h *Handlers) EditResponse(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in SaveInput
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	result, err := h.svc.EditResponse(r.Context(), user.ID,
+		chi.URLParam(r, "id"), chi.URLParam(r, "qvId"), in)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, result)
+	return nil
+}
+
 // Cancel handles POST /v1/assessment-sessions/{id}/cancel.
 func (h *Handlers) Cancel(w http.ResponseWriter, r *http.Request) error {
 	session, err := h.owned(r)

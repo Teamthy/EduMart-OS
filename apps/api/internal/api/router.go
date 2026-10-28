@@ -122,6 +122,7 @@ func NewRouter(d Deps) http.Handler {
 			g.Get("/assessment-sessions", wrap(assessmentHandlers.History))
 			g.Get("/assessment-sessions/{id}", wrap(assessmentHandlers.Get))
 			g.Put("/assessment-sessions/{id}/responses/{qvId}", wrap(assessmentHandlers.SaveResponse))
+			g.Put("/assessment-sessions/{id}/corrections/{qvId}", wrap(assessmentHandlers.EditResponse))
 			g.Post("/assessment-sessions/{id}/submit", wrap(assessmentHandlers.Submit))
 			g.Post("/assessment-sessions/{id}/cancel", wrap(assessmentHandlers.Cancel))
 		})

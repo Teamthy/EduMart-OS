@@ -84,6 +84,7 @@ Draft steps: `pathway → subjects → schedule → account → confirm`.
 | `PUT` | `/assessment-sessions/{id}/responses/{qvId}` | Answer write (below) |
 | `POST` | `/assessment-sessions/{id}/submit` | Idempotent finalisation |
 | `POST` | `/assessment-sessions/{id}/cancel` | Only while `in_progress` |
+| `PUT` | `/assessment-sessions/{id}/corrections/{qvId}` | Post-submission correction (practice only) |
 
 ### Answer write
 
@@ -106,6 +107,20 @@ Content-Type: application/json
 - **Closed attempt**: `409 SESSION_CLOSED`.
 
 ### Session projection
+
+### Corrections
+
+```
+PUT /v1/assessment-sessions/{sessionId}/corrections/{qvId}
+{ "selectedOptionId": "opt_2", "expectedVersion": 1, "clientSequence": 2 }
+→ 200 { "saved": true, "version": 2, "session_status": "submitted", "server_saved_at": "…" }
+```
+
+Only `practice` attempts accept corrections, and only once they are closed — a graded assessment is
+evidence, so the released answer key can never be used to rewrite its score (`409 CONFLICT`). The
+response carries the new answer version and nothing else: no correctness, no score, so the endpoint
+cannot be used as an answer oracle. Everything the learner scored is then recomputed from the stored
+responses with the same `domain.ScoreAttempt` used at submission.
 
 `GET /assessment-sessions/{id}` returns questions **without** `answerOptionId` or explanations while
 the attempt is in progress. After finalisation, `result_released` follows the assessment's policy
