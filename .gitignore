@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# builds
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Go
+apps/api/data/
+apps/api/edumart.db*
+*.db-wal
+*.db-shm
+
+# env
+.env
+.env.local
+.env*.local
+
+# test output
+coverage/
+test-results/
+playwright-report/
+
+# mobile
+apps/mobile/.expo/
+apps/mobile/ios/
+apps/mobile/android/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/
+
+# local databases (the legacy prototype keeps its schema, never its data)
+*.db
+*.db-shm
+*.db-wal

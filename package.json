@@ -1,0 +1,31 @@
+{
+  "name": "edumart-os",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Edumart OS \u2014 exam preparation for Nigerian learners. Go API, Next.js web, React Native app.",
+  "workspaces": [
+    "apps/web",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @edumart/web",
+    "dev:web": "npm run dev --workspace @edumart/web",
+    "dev:api": "cd apps/api && go run ./cmd/api",
+    "dev:mobile": "npm --prefix apps/mobile run start",
+    "build": "npm run build --workspace @edumart/web",
+    "build:api": "cd apps/api && go build -o ../../dist/edumart-api ./cmd/api",
+    "test": "npm run test:api && npm run test:web",
+    "test:api": "cd apps/api && go test ./...",
+    "test:web": "npm run test --workspace @edumart/web",
+    "typecheck": "npm run typecheck --workspace @edumart/shared && npm run typecheck --workspace @edumart/web",
+    "lint": "npm run lint --workspace @edumart/web",
+    "seed": "cd apps/api && go run ./cmd/seed",
+    "typecheck:mobile": "npm --prefix apps/mobile run typecheck",
+    "install:mobile": "npm --prefix apps/mobile install --legacy-peer-deps",
+    "smoke": "python3 scripts/smoke.py",
+    "assets": "python3 scripts/render-assets.py"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}
