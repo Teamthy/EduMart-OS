@@ -62,6 +62,12 @@ func (s *Service) AuthenticateSession(ctx context.Context, r *http.Request) (*Us
 	if err != nil {
 		return nil, "", err
 	}
+	// A suspended account is not authenticated, whatever the token says. Suspension revokes sessions in
+	// the same transaction, but this check is what makes the rule true even if a session survived a
+	// restore, a replica lag or a bug in the revocation path.
+	if user.Status != StatusActive {
+		return nil, "", nil
+	}
 	return user, sessionID, nil
 }
 

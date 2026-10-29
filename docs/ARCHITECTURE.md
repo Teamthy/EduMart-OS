@@ -129,6 +129,19 @@ provides PostgreSQL and Redis for the production-shaped path; the default local 
 SQLite with in-process rate limiting. `docs/SECURITY_AND_DURABILITY.md` records the consistency
 decisions behind both choices.
 
+## Account status
+
+Suspension is a state of the account, not a flag on a session. `users.status` plus `suspended_at`,
+`suspended_reason` and `suspended_by` record the decision; every live session is revoked in the same
+transaction, and `AuthenticateSession` refuses any account that is not `active`. Two independent
+mechanisms, because a revocation that only lives in rows can be undone by a restore, a stale replica or
+a bug, while a status check cannot.
+
+Moderation rules are deliberately hard to misuse: platform administrators only, never themselves, and
+never another administrator. A console that can suspend every administrator is a single point of
+compromise, and `GET /v1/admin/users` exists so the decision is made against the right account rather
+than an id copied out of a database.
+
 ## Institutions and tenancy
 
 `internal/orgs` owns organisations, their memberships and their invitations. The rule it exists to

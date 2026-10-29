@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -117,6 +119,73 @@ func (h *Handlers) RevokeSession(w http.ResponseWriter, r *http.Request) error {
 	// Revoking your own current session is allowed and ends this request's session too.
 	current := sessionID == SessionIDFrom(r.Context())
 	httpx.JSON(w, http.StatusOK, map[string]any{"revoked": true, "wasCurrent": current})
+	return nil
+}
+
+// Users handles GET /v1/admin/users?q=&status=&limit= — the lookup that makes moderation usable.
+func (h *Handlers) Users(w http.ResponseWriter, r *http.Request) error {
+	if _, err := RequireRole(r, RolePlatformAdmin); err != nil {
+		return err
+	}
+	query := r.URL.Query()
+	limit := 25
+	if raw := query.Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	users, err := h.svc.SearchUsers(r.Context(), query.Get("q"), query.Get("status"), limit)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"users": users})
+	return nil
+}
+
+// Suspend handles POST /v1/admin/users/{id}/suspend. Platform administrators only.
+//
+// A reason is required: "why was this person locked out" is the first question support asks, and an
+// unexplained suspension is indistinguishable from a bug.
+func (h *Handlers) Suspend(w http.ResponseWriter, r *http.Request) error {
+	actor, err := RequireRole(r, RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	userID := chi.URLParam(r, "id")
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	if len(strings.TrimSpace(in.Reason)) < 3 {
+		return httpx.Validation([]httpx.FieldError{{Field: "reason", Message: "Say why the account is being suspended."}})
+	}
+	user, err := h.svc.Suspend(r.Context(), actor, userID, in.Reason, httpx.RequestID(r.Context()))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": user})
+	return nil
+}
+
+// Reinstate handles POST /v1/admin/users/{id}/reinstate.
+func (h *Handlers) Reinstate(w http.ResponseWriter, r *http.Request) error {
+	actor, err := RequireRole(r, RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	user, err := h.svc.Reinstate(r.Context(), actor, chi.URLParam(r, "id"), in.Note, httpx.RequestID(r.Context()))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": user})
 	return nil
 }
 
