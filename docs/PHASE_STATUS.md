@@ -19,7 +19,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
 | 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
 | 6 | API platform and contracts | Done | 64 routes, contract checked in CI |
-| 7 | Identity and account lifecycle | Partial | Verification works, and its messages are now delivered through a durable queue with real retries; **no refresh-token rotation**, no account suspension |
+| 7 | Identity and account lifecycle | Partial | Verification and delivery are solid, and accounts can now be suspended with their sessions; **no refresh-token rotation**, PBKDF2 rather than Argon2id |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
@@ -96,8 +96,10 @@ TypeScript client used by web and mobile.
 | **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through the durable courier (Phase 24), so a relay outage retries instead of losing the code |
 | Verification gate | Checkout (`POST /v1/orders`) refuses an unverified address with `EMAIL_NOT_VERIFIED` |
 | Rate limits | Per-route, **in-process** — resets on restart and does not span instances |
-| Refresh tokens / rotation | **Not started** — one 7-day opaque session |
-| Account suspension and recovery beyond password | **Not started** |
+| Refresh tokens / rotation | **Not started** — one 7-day opaque session. Rotating refresh tokens without short-lived access tokens would be theatre, so this needs a client session strategy first |
+| **Account suspension** | **Done** — `POST /v1/admin/users/{id}/suspend` and `/reinstate`, platform administrators only, never against an administrator or yourself |
+| Moderation lookup | `GET /v1/admin/users?q=&status=` — an administrator cannot suspend an account they cannot find |
+| Security-event audit trail | Suspension and reinstatement write `user.suspended` / `user.reinstated` to `audit_logs` in the same transaction as the change |
 
 Verification is proven by `TestEmailVerificationJourney`, `TestCheckoutRequiresVerifiedEmail`,
 `TestVerificationAttemptsAreLimited`, `TestVerificationResendIsThrottled`, `TestPhoneVerification`,
@@ -108,6 +110,21 @@ real SMTP relay.
 **What verification does not yet do:** it is not a required onboarding step, so an unverified account
 can still practise, take mocks and hold points. Only money is gated. That is a deliberate, documented
 scope decision — not an oversight.
+
+**What suspension guarantees**, and what it does not:
+
+- Status, the reason, the actor, every live session and any outstanding verification code change in one
+  transaction. A suspension that leaves a working session behind is not a suspension.
+- `AuthenticateSession` also refuses any non-active account, so the rule survives a restored backup, a
+  replica that has not caught up, or a bug in the revocation path.
+- Reinstatement does **not** restore sessions. The person signs in again, which re-establishes that they
+  still control the mailbox.
+- Proven by `TestSuspensionEndsSessionsAndBlocksSignIn`, `TestSuspensionRevokesOutstandingCodes`,
+  `TestSuspensionIsReservedForAdministrators`, `TestSuspensionIsStoredOnTheAccount`,
+  `TestReinstateRequiresASuspendedAccount`, `TestStaffCanFindAnAccountToModerate`, and the moderation
+  section of the smoke run.
+- Not covered: there is no admin web console for moderation yet (the API is what exists), no suspension
+  expiry or graduated limits, and no appeal workflow.
 
 ### Phase 8 — Authorization and multi-tenancy · Partial
 

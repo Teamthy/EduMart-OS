@@ -36,6 +36,13 @@ const SessionCookie = "edumart_session"
 
 const sessionTTL = 7 * 24 * time.Hour
 
+// Account statuses. `suspended` is the only one a member of staff can set; the others exist so a status
+// column is never a free-text field.
+const (
+	StatusActive    = "active"
+	StatusSuspended = "suspended"
+)
+
 // User is the authenticated principal attached to a request.
 type User struct {
 	ID             string   `json:"id"`
@@ -53,7 +60,11 @@ type User struct {
 	Phone          *string  `json:"phone"`
 	EmailVerified  bool     `json:"emailVerified"`
 	PhoneVerified  bool     `json:"phoneVerified"`
-	CreatedAt      string   `json:"createdAt"`
+	// Suspended marks an account a moderator has switched off. Status carries the same fact for callers
+	// that only read the raw field; this one exists so a client does not have to know the vocabulary.
+	Suspended       bool   `json:"suspended"`
+	SuspendedReason string `json:"suspendedReason,omitempty"`
+	CreatedAt       string `json:"createdAt"`
 }
 
 // HasRole reports whether the principal holds role (platform admins hold everything).
@@ -357,17 +368,19 @@ func bearerToken(r *http.Request) string {
 func (s *Service) UserByID(ctx context.Context, userID string) (*User, error) {
 	var user User
 	var email, display, status, timezone string
-	var pathwayID, targetDate, doneAt, phone, emailVerified, phoneVerified sql.NullString
+	var pathwayID, targetDate, doneAt, phone, emailVerified, phoneVerified, suspendedAt sql.NullString
+	var suspendedReason string
 	var onboardingStep, daily int
 	var createdAt string
 
 	err := s.db.DB.QueryRowContext(ctx, `
 		SELECT id, email_normalized, display_name, status, exam_pathway_id, target_date, timezone,
 		       daily_minutes, onboarding_step, onboarding_done_at, created_at,
-		       phone_e164, email_verified_at, phone_verified_at
+		       phone_e164, email_verified_at, phone_verified_at, suspended_at, suspended_reason
 		  FROM users WHERE id = ?`, userID).Scan(
 		&user.ID, &email, &display, &status, &pathwayID, &targetDate, &timezone,
-		&daily, &onboardingStep, &doneAt, &createdAt, &phone, &emailVerified, &phoneVerified)
+		&daily, &onboardingStep, &doneAt, &createdAt, &phone, &emailVerified, &phoneVerified,
+		&suspendedAt, &suspendedReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httpx.NewError(httpx.CodeUnauthenticated, "Please sign in to continue.")
 	}
@@ -390,6 +403,8 @@ func (s *Service) UserByID(ctx context.Context, userID string) (*User, error) {
 	}
 	user.EmailVerified = emailVerified.Valid && emailVerified.String != ""
 	user.PhoneVerified = phoneVerified.Valid && phoneVerified.String != ""
+	user.Suspended = status == StatusSuspended
+	user.SuspendedReason = suspendedReason
 
 	rows, err := s.db.DB.QueryContext(ctx, `SELECT role FROM role_assignments WHERE user_id = ? ORDER BY role`, userID)
 	if err != nil {
@@ -439,7 +454,13 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, client 
 	if !VerifyPassword(password, hash) {
 		return nil, httpx.NewError(httpx.CodeUnauthenticated, "Email or password is incorrect.")
 	}
-	if status != "active" {
+	switch status {
+	case StatusSuspended:
+		return nil, httpx.NewError(httpx.CodeAccountSuspended,
+			"This account is suspended. Contact support if you think that is a mistake.")
+	case StatusActive:
+		// Nothing to do: the ordinary case.
+	default:
 		return nil, httpx.NewError(httpx.CodeForbidden, "This account is not active. Contact support.")
 	}
 	return s.CreateSession(ctx, userID, userAgent, client)

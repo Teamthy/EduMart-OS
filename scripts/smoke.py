@@ -242,6 +242,29 @@ def main():
     expect(call("GET", "/admin/deliveries", None, token)[0] == 403,
            "learners cannot read delivery records")
 
+    print("moderation")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    status, found = call("GET", "/admin/users?q=student@edumart.ng", None, admin_token)
+    expect(status == 200 and found["users"], "an administrator can find an account to moderate")
+    learner = found["users"][0]
+    expect("passwordHash" not in learner and "token" not in learner,
+           "account search never exposes credentials")
+    expect(call("GET", "/admin/users?q=student", None, token)[0] == 403,
+           "learners cannot browse accounts")
+
+    status, _ = call("POST", f"/admin/users/{learner['id']}/suspend",
+                     {"reason": "smoke: verifying suspension"}, admin_token)
+    expect(status == 200, "an administrator can suspend an account")
+    expect(call("GET", "/me", None, token)[0] == 401,
+           "suspension ends the sessions the account already holds")
+    status, body = call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})
+    expect(status == 403 and body["error"]["code"] == "ACCOUNT_SUSPENDED",
+           "a suspended account cannot sign in")
+    expect(call("POST", f"/admin/users/{learner['id']}/reinstate", {}, admin_token)[0] == 200,
+           "an administrator can lift the suspension")
+    expect(call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})[0] == 200,
+           "a reinstated account can sign in again")
+
     print("\nsmoke passed")
 
 

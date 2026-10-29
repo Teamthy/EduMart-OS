@@ -189,6 +189,11 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))
 		v1.Post("/admin/organizations/{id}/verify", wrap(orgHandlers.Verify))
+		// Account status is a moderation decision, so it lives with identity rather than with the
+		// generic staff console: suspending also ends every session the account holds.
+		v1.Get("/admin/users", wrap(authHandlers.Users))
+		v1.Post("/admin/users/{id}/suspend", wrap(authHandlers.Suspend))
+		v1.Post("/admin/users/{id}/reinstate", wrap(authHandlers.Reinstate))
 		// Delivery health, so "the emails are not arriving" is answerable from the API instead of
 		// from a mail provider's dashboard.
 		v1.Get("/admin/deliveries", wrap(staffHandlers.Deliveries))

@@ -1335,6 +1335,121 @@ paths:
       responses:
         "201": { description: Case opened }
 
+  /v1/admin/users:
+    get:
+      tags: [moderation]
+      summary: Find an account to moderate
+      description: |
+        Platform administrators only. This exists because moderation without lookup is theory: an
+        administrator cannot suspend an account they cannot find, and copying an id out of the database
+        is how the wrong account gets suspended.
+
+        Results carry identity and status only — never a password hash, a session token, or verification
+        secrets. `q` matches part of the email address or the display name.
+      operationId: searchUsers
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [active, suspended] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        "200":
+          description: Matching accounts, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/UserSummary" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/users/{id}/suspend:
+    post:
+      tags: [moderation]
+      summary: Suspend an account and end its sessions
+      description: |
+        Platform administrators only, and never against an administrator or yourself: an admin who can
+        lock out every other admin is a single point of compromise.
+
+        Suspension is one transaction — status, reason, actor, every live session revoked, and any
+        outstanding verification code withdrawn. A suspension that leaves a working session behind is not
+        a suspension. Reinstating does **not** restore the old sessions; the person signs in again.
+
+        A reason is required. "Why was this person locked out" is the first question support asks, and an
+        unexplained suspension is indistinguishable from a bug.
+      operationId: suspendUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: The account with its new status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/admin/users/{id}/reinstate:
+    post:
+      tags: [moderation]
+      summary: Return a suspended account to normal use
+      description: |
+        Platform administrators only. Reinstatement clears the suspension and its reason, records who
+        lifted it, and returns the account to `active`. Sessions are not restored: signing in again also
+        re-establishes that the person still controls the mailbox.
+      operationId: reinstateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        "200":
+          description: The account with its new status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /v1/admin/deliveries:
     get:
       tags: [operations]
@@ -1459,6 +1574,8 @@ components:
       schema: { type: string }
 
   responses:
+    Conflict:
+      description: The request conflicts with the account's current state
     ValidationError:
       description: One or more fields are invalid
       content:
@@ -1557,6 +1674,21 @@ components:
         role: { type: string, enum: [teacher, student] }
         members: { type: integer }
         assignments: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    UserSummary:
+      type: object
+      description: An account as the moderation console sees it. No credentials, ever.
+      properties:
+        id: { type: string }
+        email: { type: string }
+        displayName: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        suspended: { type: boolean }
+        suspendedReason: { type: string }
+        roles:
+          type: array
+          items: { type: string }
         createdAt: { type: string, format: date-time }
 
     Delivery:

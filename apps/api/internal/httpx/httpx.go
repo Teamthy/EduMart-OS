@@ -31,6 +31,9 @@ const (
 	CodeRateLimited      ErrorCode = "RATE_LIMITED"
 	CodePaymentPending   ErrorCode = "PAYMENT_PENDING"
 	CodeEmailUnverified  ErrorCode = "EMAIL_NOT_VERIFIED"
+	// CodeAccountSuspended is distinct from CodeForbidden on purpose: the person needs to know that
+	// signing in again will not help, and that support is the next step.
+	CodeAccountSuspended ErrorCode = "ACCOUNT_SUSPENDED"
 	CodeInternal         ErrorCode = "INTERNAL_ERROR"
 )
 
@@ -46,6 +49,7 @@ var statusFor = map[ErrorCode]int{
 	CodeRateLimited:      http.StatusTooManyRequests,
 	CodePaymentPending:   http.StatusConflict,
 	CodeEmailUnverified:  http.StatusForbidden,
+	CodeAccountSuspended: http.StatusForbidden,
 	CodeInternal:         http.StatusInternalServerError,
 }
 

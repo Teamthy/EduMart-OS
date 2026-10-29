@@ -43,7 +43,7 @@ Every non-2xx response has the same shape:
 | `POST` | `/auth/password/reset` | Consumes a single-use token, revokes all sessions |
 | `POST` | `/auth/verification/request` | `{channel: "email"\|"phone", phone?}` → `202 {sent, channel, destination (masked), expires_at, resend_after, attempts_allowed}` |
 | `POST` | `/auth/verification/confirm` | `{channel, code}` → `{verified, channel, user}`; single-use, 15-minute, 5 attempts |
-| `GET` | `/me` | Current principal with roles, subject preferences, `emailVerified`, `phoneVerified`, `phone` |
+| `GET` | `/me` | Current principal with roles, subject preferences, `emailVerified`, `phoneVerified`, `phone`, `suspended`, `suspendedReason` |
 | `PATCH` | `/me` | Profile, plan and onboarding progress |
 
 ### Institutions
@@ -187,6 +187,9 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | `GET` | `/admin/cases` | support, platform_admin |
 | `POST` | `/admin/cases/{id}/resolve` | support, platform_admin |
 | `POST` | `/support-cases` | any signed-in user |
+| `GET` | `/admin/users?q=&status=` | platform_admin — find an account by email or name; identity and status only, never credentials |
+| `POST` | `/admin/users/{id}/suspend` | platform_admin — `{reason}`; suspends the account **and** revokes every session it holds |
+| `POST` | `/admin/users/{id}/reinstate` | platform_admin — lifts the suspension; the person signs in again |
 | `GET` | `/admin/deliveries?limit=` | support, platform_admin |
 
 `/admin/deliveries` answers "the emails are not arriving" without a provider dashboard: it returns the

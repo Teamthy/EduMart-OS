@@ -64,6 +64,20 @@ Delivery is at-least-once: a message that times out after the relay accepted it 
 Every message is therefore written to be idempotent — a second receipt for the same order references the
 same order and grants nothing, and a second verification code supersedes the first.
 
+### Account status and moderation
+
+| Rule | Enforced by |
+| --- | --- |
+| A suspended account stops working immediately | `Suspend` sets the status **and** revokes every live session in one transaction |
+| A surviving token still cannot be used | `AuthenticateSession` refuses any account whose status is not `active` — the check is what makes the rule survive a restore or a stale replica |
+| Codes cannot be redeemed after suspension | outstanding `verification_codes` rows are deleted with the suspension |
+| Moderation cannot lock everyone out | only platform administrators may suspend, never themselves, never another administrator |
+| Every decision is attributable | `user.suspended` / `user.reinstated` rows in `audit_logs`, with actor, reason and request id, written in the same transaction |
+| Lookup does not become browsing | `/v1/admin/users` returns identity and status only, caps at 100 rows, and is closed to everyone but platform administrators |
+
+Reinstatement deliberately does not restore sessions: the person signs in again, which also proves they
+still control the mailbox on the account.
+
 ### Tenancy boundaries
 
 | Rule | Enforced by |
