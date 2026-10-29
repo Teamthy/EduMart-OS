@@ -163,6 +163,12 @@ makes a *leaked token* detectable; it does nothing about a *guessed password* on
 
 ## Backup, restore and the honest gaps
 
+See [`BACKUP_AND_RECOVERY.md`](./BACKUP_AND_RECOVERY.md) for the full picture. In short: consistent
+snapshots with per-backup checksums and row counts, two-window retention that cannot delete the newest
+copy, an off-site mirror that is re-read, and point-in-time recovery proven by a drill that deletes the
+cluster and replays WAL to a chosen second. Each backup is verified by restoring it into a scratch
+database — a backup that has never been read back is a hypothesis.
+
 **Restoration is demonstrated; scheduling is not.** `scripts/restore-drill.py` starts the API against an
 empty database, fingerprints it (row count of every table plus a real login), snapshots it consistently
 (`VACUUM INTO` on SQLite, `pg_dump --format=custom` on PostgreSQL), *destroys* the database and asserts

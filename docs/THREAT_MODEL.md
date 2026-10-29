@@ -137,7 +137,11 @@ sitting in the dependency tree for as long as nobody looked.
 ### 3.8 Durability and recovery
 
 Migration discipline from an empty database on both engines, an automated destroy→restore→verify drill in
-CI for SQLite and PostgreSQL, and transactional writes for anything that must land together. The
+CI for SQLite and PostgreSQL, and transactional writes for anything that must land together. Backups add
+the operational half: consistent snapshots taken while the server serves, a checksum and per-table counts
+per backup, two-window retention that cannot delete the newest copy, a re-read off-site mirror, and
+point-in-time recovery demonstrated by deleting the cluster and replaying archived WAL to a chosen second
+(`docs/BACKUP_AND_RECOVERY.md`). The
 compensating-entry design means a bad money record is corrected, never erased.
 
 ---
@@ -152,7 +156,7 @@ Each of these is real, known, and owned. None is closed by this document.
 | R2 | **Rate limiting is in-process.** A second instance has its own windows; a restart clears them | Medium | Limits are per-instance, so horizontal scaling weakens them | Platform lead | Single-instance deployment; the limiter is behind one method so a shared store can replace it |
 | R3 | **No device-level 2FA or risk signals** on staff accounts | High | One phished finance password is a refund and reconciliation authority | Security lead | Role separation, audit trail on every money movement, session revocation, short-lived access tokens |
 | R4 | **No staging environment**, so deploy and rollback are unproven | High | The first real deploy is also the first rehearsal | Release lead | Restore drill and CI cover data recovery; a rollback rehearsal is Phase 4's remaining gate |
-| R5 | **No scheduled or off-site backups, no PITR** | High | A disaster loses everything since the last manual snapshot | Platform lead | The restore path itself is proven end to end on both engines |
+| R5 | **Backups exist and are drilled, but nothing watches them** | Medium | A backup job that has been failing for three weeks looks exactly like one that works; encryption at rest is delegated to the volume, and there is no cross-region copy | Platform lead | Nightly schedule with `--verify` and off-site mirroring, retention that cannot delete the newest copy, and a PITR drill that deletes the cluster first (`docs/BACKUP_AND_RECOVERY.md`) |
 | R6 | **No data export or deletion workflow**; retention rules unsigned | High (NDPA) | A data-subject request cannot be honoured systematically | Product + legal | Data minimisation: no card data, no location, no device identifiers |
 | R7 | **Legacy demo shell** (`legacy/`) ships seeded demo passwords in source | Low | Confusing, and a bad example if copied | Backend lead | Not built in CI; demo data only exists when seeding is explicitly enabled |
 | R8 | **No WAF or bot protection** in front of the public endpoints | Medium | Credential stuffing is slowed, not stopped | Platform lead | Per-endpoint budgets and generic auth failures |
@@ -186,7 +190,8 @@ A threat model ages. These are the events that invalidate it, each of which requ
 - Any multi-instance deployment (invalidates R2's mitigation).
 - Staff accounts gaining new privileges, or 2FA arriving (R3).
 - A staging environment and a rehearsed rollback (R4).
-- Scheduled backups and PITR (R5).
+- Scheduled backups and PITR — now in place and drilled; what would change this is alerting on failure,
+  encryption at rest with a key we manage, or cross-region replication.
 - Any change to what personal data is stored (R6).
 - A public launch (R8, R9, R10 all become urgent rather than noted).
 

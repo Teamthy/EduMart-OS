@@ -7,8 +7,8 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the Phase 28 slice: threat model, dependency and secret scanning, and the API hardening
-review that came out of it.
+Last updated with the backup and recovery work: scheduled dumps with verification and retention, WAL
+archiving, and point-in-time recovery proven by a drill that deletes the cluster first.
 
 ## The whole board
 
@@ -18,7 +18,7 @@ review that came out of it.
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
-| 5 | Database and persistence | Partial | Both engines tested; **restore demonstrated for both engines** (destroy → restore → verify, in CI). Still no scheduled backup, off-site copy or PITR |
+| 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention and off-site mirroring are implemented and templated. No alerting on a failed backup, no cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
@@ -70,7 +70,7 @@ clean install on every push.
 | Rollback | Documented in `docs/PRODUCTION_READINESS.md`; never exercised, because there is nothing to roll back |
 | Secret/dependency scanning | **Not started** |
 
-### Phase 5 — Database and persistence foundation · Partial (the restore gate is now met)
+### Phase 5 — Database and persistence foundation · restore, backup and PITR all demonstrated
 
 Both dialects are exercised by the whole suite. Constraints exist where they protect a real invariant
 (unique email, FK cascades, ledger append-only triggers where applicable). Timestamps are UTC RFC3339
@@ -93,10 +93,28 @@ returned `500` on PostgreSQL. Every test passed because no fixture had a complet
 dashboard's seven-day window. Study minutes are now subtracted in Go, and
 `TestDashboardAnswersOnEveryEngine` / `TestDashboardStudyMinutesComeFromServerTimestamps` cover it.
 
-What the drill does **not** prove, and what still blocks this phase's exit gate in production: scheduled
-backups, point-in-time recovery, off-site copies, restore into a *different* environment, and a measured
-recovery objective. The drill proves the data is recoverable from a snapshot; it does not yet prove that
-a snapshot would exist when it is needed.
+**A snapshot is now something that exists, and one can be replayed to a chosen second.** The operational
+half — schedule, retention, off-site copy, point-in-time recovery — is
+[`BACKUP_AND_RECOVERY.md`](./BACKUP_AND_RECOVERY.md), implemented in `scripts/backup.py` and proven by
+`scripts/backup-drill.py` and `scripts/pitr-drill.py`, both run in CI:
+
+| Capability | Proven by |
+| --- | --- |
+| A snapshot taken while the API keeps serving restores every row, and the restored database then serves a real login | `backup-drill.py` claim 1 — all 45 tables match the counts the backup recorded |
+| Corruption is caught **before** a restore is attempted | claim 2 — one flipped byte, `--verify` fails on the checksum |
+| Retention cannot delete the only copy | claim 3 — `--keep-daily 0 --keep-weekly 0` still keeps the newest |
+| The off-site copy is the same bytes | claim 4 — second destination re-read and compared, with its own manifest |
+| Recovery to a chosen second | `pitr-drill.py` — archive WAL, `pg_basebackup`, **delete the data directory**, replay to the target, promote; the account created before the target exists and the mistake made after it does not |
+
+Three decisions are worth recording because each is where backup systems usually fail: the dump is
+consistent rather than a file copy; retention is two windows (daily for a bad deploy, weekly for "nobody
+looked for a fortnight") rather than "the last seven files"; and verification compares the restored rows to
+the counts the backup recorded about itself, which is what makes it a test rather than a restatement.
+
+Still open, and named in the runbook rather than implied: no alerting on a failed backup, no encryption at
+rest by this tooling, no cross-region replication, no drill against production-sized data, and the
+environment secrets (webhook, SMTP, verification) are not in the backup — restoring the database without
+them is half a restore.
 
 ### Phase 6 — API platform and shared contracts · Done
 
@@ -442,9 +460,9 @@ is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ## Recommended next three steps
 
-1. **Scheduled, off-site backups and PITR (Phase 5's remaining gate).** The restore path is proven; what
-   is unproven is that a copy exists when the disk dies. This is now the largest gap that can be closed
-   without a product decision.
+1. **Alerting on the things that are now measurable.** A failed backup, a reconciliation discrepancy and
+   an `INTERNAL_ERROR` spike all have somewhere to hang an alert now, and nothing watches them. This is
+   the gap that turns the controls into a control system.
 2. **A real refund adapter (Paystack).** Refunds are now recorded correctly but move no money. Wiring the
    provider call, and marking a refund `pending` until the provider confirms it, is the next honest step —
    and it is the difference between a ledger that describes money and one that describes intentions.

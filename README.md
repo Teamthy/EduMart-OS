@@ -226,7 +226,8 @@ apps/
   mobile/                   Expo app (Router) — same steps, same contract
 packages/shared/            wire types, API client, signup definition, design tokens
 legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
-docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model
+docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model,
+                            backup and recovery
 ```
 
 ---
@@ -286,5 +287,10 @@ real event through the same code path, so the demo can never diverge from produc
 - Behind a load balancer, set `EDUMART_TRUST_PROXY=true` so rate limits key on the real client address.
   Left `false` in front of a proxy, every request looks like it came from the proxy and shares one budget.
 
-See `docs/PRODUCTION_READINESS.md` for the honest list of what is and is not ready, and
-`docs/THREAT_MODEL.md` for the assets, adversaries, controls and residual risks with owners.
+- Back up with `python3 scripts/backup.py --engine postgres --dsn "$DSN" --dest /var/backups/edumart
+  --mirror /mnt/offsite`; the systemd and CronJob templates in `infra/backup/` run it nightly with
+  `--verify`, and `docs/BACKUP_AND_RECOVERY.md` covers WAL archiving and restoring to a point in time.
+
+See `docs/PRODUCTION_READINESS.md` for the honest list of what is and is not ready,
+`docs/THREAT_MODEL.md` for the assets, adversaries, controls and residual risks with owners, and
+`docs/BACKUP_AND_RECOVERY.md` for what to do when the disk dies.

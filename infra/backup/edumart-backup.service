@@ -1,0 +1,37 @@
+# Take a backup, apply retention, verify the newest copy and mirror it off-site.
+#
+#   sudo cp edumart-backup.service edumart-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now edumart-backup.timer
+#   systemctl list-timers edumart-backup.timer       # confirm the next run
+#   sudo systemctl start edumart-backup.service      # run one now, before trusting the schedule
+#
+# A schedule nobody has triggered is a cron entry, not a backup. Run the service by hand first and read
+# the journal: `journalctl -u edumart-backup -n 50`.
+[Unit]
+Description=Edumart database backup and verification
+Documentation=file:///opt/edumart/docs/BACKUP_AND_RECOVERY.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=edumart-backup
+Group=edumart-backup
+EnvironmentFile=/etc/edumart/backup.env
+# The verification step restores into a scratch database, so the DSN must allow creating one.
+WorkingDirectory=/opt/edumart
+ExecStart=/usr/bin/python3 /opt/edumart/scripts/backup.py \
+    --engine ${EDUMART_BACKUP_ENGINE} \
+    --dsn ${EDUMART_BACKUP_DSN} \
+    --dest ${EDUMART_BACKUP_DEST} \
+    --mirror ${EDUMART_BACKUP_MIRROR} \
+    --keep-daily ${EDUMART_BACKUP_KEEP_DAILY} \
+    --keep-weekly ${EDUMART_BACKUP_KEEP_WEEKLY}
+ExecStartPost=/usr/bin/python3 /opt/edumart/scripts/backup.py --verify --dest ${EDUMART_BACKUP_DEST}
+# A backup that fails must be loud: the unit failing is what an alert hangs off.
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=best-effort
+
+[Install]
+WantedBy=multi-user.target

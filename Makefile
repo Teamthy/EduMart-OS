@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke drill build build-api fmt vet clean secrets audit security
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke drill backup pitr build build-api fmt vet clean secrets audit security
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -36,6 +36,12 @@ test-web: ## Vitest
 
 typecheck: ## Typecheck shared + web (+ mobile when installed)
 	npm run typecheck
+
+backup: ## Prove the backup strategy: live snapshot, tamper detection, retention, off-site copy
+	python3 scripts/backup-drill.py sqlite
+
+pitr: ## Prove point-in-time recovery (needs PostgreSQL server binaries: initdb, pg_basebackup)
+	python3 scripts/pitr-drill.py
 
 secrets: ## Scan the tracked tree for committed secrets (with a self-test first)
 	python3 scripts/scan-secrets.py --self-test && python3 scripts/scan-secrets.py

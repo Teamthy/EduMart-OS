@@ -43,19 +43,19 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | --- | --- |
 | Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). Migrations now run on SQLite and PostgreSQL 17 in CI. What is still missing is a forward-fix/rollback rehearsal against a production-shaped database |
 | Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
-| Backups | A restore **is** demonstrated: `scripts/restore-drill.py` (CI job *Restore drill*) destroys both databases and recovers them, verifying every table's row count and a login. What is missing is the operational half — a schedule, off-site copies, retention, encryption at rest, and a measured recovery objective |
+| Backups | A restore **is** demonstrated, and so is the operational half: `scripts/backup.py` takes consistent snapshots, verifies each one by restoring it into a scratch database, applies two-window retention, and mirrors off-site with a checksum re-read. `scripts/pitr-drill.py` proves recovery to a chosen second by deleting the cluster and replaying archived WAL to a target time. What is still missing is encryption at rest by this tooling, cross-region replication, and a drill against production-sized data |
 | Notification delivery | Email is real: a durable outbox with exponential backoff, SMTP or log adapters, per-message delivery records, and scheduled reminders that are planned once, claimed before sending and withdrawn when their reason disappears. No SMS or push channel, no unsubscribe or quiet hours |
 | Live payment provider | No adapter, no key management, no webhook replay window |
 | Content operations | 50 demo questions; no editorial pipeline or licensing workflow in practice |
 | Load testing | No measurement of concurrent attempts against a realistic PostgreSQL instance |
 | Security operations | No monitoring or alerting (audit rows are written and nothing watches them), no WAF or bot protection, no incident-response runbook, no dependency-update automation |
 | Staff 2FA | No device-level second factor, so one phished finance password is refund and reconciliation authority |
-| Backup schedule | No schedule, no off-site copy and no PITR: a disk failure loses everything since the last manual snapshot, even though the restore path itself is proven |
+| Backup alerting | The schedule, retention, off-site mirror and PITR are implemented and drilled (see `docs/BACKUP_AND_RECOVERY.md`), but **nothing alerts when a backup fails**: the systemd unit failing is only visible if someone reads it |
 
 ## Pre-launch checklist
 
 1. Move the production database to PostgreSQL; run the migrations; run `go test` against it.
-2. Schedule backups in the target environment (nightly base backup plus WAL for PITR), copy them off-site, and run `scripts/restore-drill.py` against a restored copy of production data before trusting the schedule.
+2. Install the backup schedule (`infra/backup/`), enable WAL archiving per `docs/BACKUP_AND_RECOVERY.md`, run `scripts/backup.py --verify` by hand once, and then run `scripts/pitr-drill.py` on the production host before trusting any of it. Put an alert on the unit's failure status.
 3. Add the live payment adapter; test a real webhook in staging, including a replayed event.
 4. Move rate limiting to Redis; set `EDUMART_ALLOW_SANDBOX_PAYMENTS=false`.
 5. Add metrics/tracing and an on-call alert on `INTERNAL_ERROR` rate and webhook failures.
