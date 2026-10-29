@@ -128,3 +128,19 @@ server-confirmed `version`, and a save status (`pending | saved | failed`).
 provides PostgreSQL and Redis for the production-shaped path; the default local and CI path is
 SQLite with in-process rate limiting. `docs/SECURITY_AND_DURABILITY.md` records the consistency
 decisions behind both choices.
+
+## Database engines
+
+One query layer serves two engines. SQLite (a file) is the default for local development, CI and
+demos; PostgreSQL is the production system of record. The SQL is written in portable form with `?`
+placeholders, and `apps/api/internal/store/pg.go` translates them to PostgreSQL's `$n` inside a
+`database/sql` connector — skipping literals, quoted identifiers, dollar-quoted bodies and
+comments, so a `?` in data is never mistaken for a bind parameter.
+
+The consequence worth stating: the production engine is exercised by the whole test suite and the
+HTTP smoke journey in CI, not only by the first request that reaches production. Schema changes go
+through the versioned runner (`store/migrate.go`), which checksums each migration and refuses to
+start if an applied one was edited afterwards.
+
+Redis is provisioned in `infra/docker` but unused: rate limiting is in-process, and there is no
+background worker yet. Both are Phase 9 items.

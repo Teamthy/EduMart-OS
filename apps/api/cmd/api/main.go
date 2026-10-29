@@ -1,7 +1,7 @@
 // Command api serves the Edumart REST API.
 //
 //	go run ./cmd/api                       # SQLite at ./data/edumart.db, seeded demo data
-//	EDUMART_DRIVER=postgres go run ./cmd/api   # needs the pgx driver linked; see internal/store
+//	EDUMART_DRIVER=postgres EDUMART_DSN=postgres://… go run ./cmd/api
 package main
 
 import (

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -33,9 +34,9 @@ type Store struct {
 var ErrNotFound = errors.New("not found")
 
 // Open connects to the database, applies the schema for the selected driver and returns the store.
-// Supported drivers: "sqlite3" (default, the tested path) and "postgres" (the production target;
-// needs github.com/jackc/pgx/v5/stdlib registered here, which this build does not link yet — asking
-// for it fails loudly with that instruction rather than silently falling back).
+// Supported drivers: "sqlite3" (default: local development, CI, demo) and "postgres" (the production
+// system of record). Both run the same portable SQL; see pg.go for the placeholder translation that
+// makes that possible.
 func Open(driver, dsn string) (*Store, error) {
 	if driver == "" {
 		driver = "sqlite3"
@@ -54,19 +55,24 @@ func Open(driver, dsn string) (*Store, error) {
 		}
 	}
 
-	db, err := sql.Open(driver, dsn)
-	if err != nil {
-		if driver == "postgres" || driver == "pgx" {
-			// Naming the missing piece beats "unknown driver" at 2am.
-			return nil, fmt.Errorf("open postgres: %w — this build links only the SQLite driver; "+
-				"register github.com/jackc/pgx/v5/stdlib in this package to enable PostgreSQL "+
-				"(see docs/PRODUCTION_READINESS.md)", err)
+	// PostgreSQL goes through a connector that rewrites `?` placeholders to `$n`; SQLite speaks `?`.
+	var db *sql.DB
+	if driver == "postgres" || driver == "pgx" {
+		var err error
+		if db, err = openPostgres(dsn); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("open database: %w", err)
+	} else {
+		var err error
+		if db, err = sql.Open(driver, dsn); err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
 	}
-	// SQLite serialises writes anyway; a single connection avoids "database is locked" churn.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	if driver == "sqlite3" {
+		// SQLite serialises writes anyway; a single connection avoids "database is locked" churn.
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	}
 	db.SetConnMaxLifetime(time.Hour)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

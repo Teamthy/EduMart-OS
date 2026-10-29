@@ -37,7 +37,7 @@ partial, contract agreed ✓, owners ✗.
 | --- | --- |
 | Monorepo, toolchains (Go / Next / Expo / TS) | Done — `apps/api`, `apps/web`, `apps/mobile`, `packages/shared` |
 | Migrations **and a migration runner** | Done — `store/migrate.go`: `schema_migrations` ledger, sha256 checksums, one transaction per migration, applied-once, refuses a edited-after-apply file, adopts a pre-ledger database |
-| PostgreSQL migrations | Written (`migrations/postgres/0001_init.sql`) but **never executed** — the pgx driver is not linked, so `EDUMART_DRIVER=postgres` fails at startup with an explicit message |
+| PostgreSQL | **Done and tested** — `lib/pq` driver, `?` → `$n` translation at the driver boundary, migrations run on a real PostgreSQL 17. The full suite and the HTTP smoke journey run on both engines in CI. One cross-engine bug (writes while a result set was open) was found and fixed by doing this |
 | Environments (dev/test/staging/prod) | Dev and CI are real; staging and production are documented (`docs/PRODUCTION_READINESS.md`) but not provisioned |
 | Docker local dependencies | `infra/docker/compose.yml` (Postgres 17 + Redis 7). Neither is used by the app yet — SQLite is the tested driver, rate limiting is in-process |
 | Structured logging, request IDs, error envelope | Done — `internal/httpx` |
@@ -46,9 +46,9 @@ partial, contract agreed ✓, owners ✗.
 | Deployment + rollback procedure | Documented only; no deployment pipeline exists |
 | `/readyz` checks real dependencies | **Done** — `internal/api/health.go`: database ping + real read, migration state, per-check breakdown, 503 on failure; `TestReadinessChecksRealDependencies` |
 
-**Exit criteria:** clean checkout builds ☑, migrations create a working database from scratch ☑
-(SQLite; **PostgreSQL unproven**), CI blocks failing merges ☑, secrets not committed ☑ (nothing
-sensitive is in the tree), staging deployable ✗, `/readyz` real ☑.
+**Exit criteria:** clean checkout builds ☑, migrations create a working database from scratch ☑ on
+**both** SQLite and PostgreSQL 17, CI blocks failing merges ☑, secrets not committed ☑, staging
+deployable ✗, `/readyz` real ☑.
 
 ---
 
@@ -66,7 +66,8 @@ sensitive is in the tree), staging deployable ✗, `/readyz` real ☑.
 | Refresh tokens / session rotation | Not started — single 7-day opaque session |
 | Account recovery beyond password (lost email) | Not started |
 
-**Exit criteria:** registration/login against PostgreSQL ✗ (SQLite only), verification tested ✗,
+**Exit criteria:** registration/login against PostgreSQL ☑ (now covered by the PostgreSQL CI job),
+verification tested ✗,
 expired/revoked sessions rejected ☑ (`TestSessionListAndRevocation`,
 `TestPasswordResetInvalidatesSessions`), horizontal escalation tests ☑, duplicate registration retry
 safe ☑ (`TestDuplicateRegistrationIsRejected`).
@@ -172,13 +173,12 @@ No staging environment, no pilot, no production deployment, no on-call or incide
 
 ## Recommended next three steps
 
-1. **Link the PostgreSQL driver and run the suite against it in CI.** The schema is ported and the
-   migrations are now versioned; this is the single biggest gap between "works locally" and "works
-   in production". Everything in Phase 2's exit criteria that says "against PostgreSQL" depends on it.
-2. **Email verification (Phase 2).** The only remaining blocker to a public launch in identity:
-   accounts currently become usable without proving ownership of the address.
-3. **A backup + restore drill and metrics (Phase 9).** Cheap to do, and the difference between an
-   incident and an outage.
+1. **Email verification (Phase 2).** The remaining blocker to a public launch in identity: accounts
+   currently become usable without proving ownership of the address.
+2. **A backup + restore drill against a production-like PostgreSQL, and metrics (Phase 9).** The
+   engine now works; what is untested is recovery, monitoring, and behaviour under real volume.
+3. **A threat model and dependency/secret scanning (Phase 9).** Nothing has been scanned, and no
+   document yet enumerates the threats the platform accepts.
 
 ---
 

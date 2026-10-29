@@ -56,6 +56,27 @@ CREATE TABLE IF NOT EXISTS role_assignments (
   UNIQUE (user_id, role, scope)
 );
 
+-- exam_pathways and subjects are created here, before user_subjects, because PostgreSQL validates
+-- foreign-key targets at CREATE time (SQLite does not). Same tables, dependency order made explicit.
+
+CREATE TABLE IF NOT EXISTS exam_pathways (
+  id     TEXT PRIMARY KEY,
+  key    TEXT NOT NULL UNIQUE,
+  name   TEXT NOT NULL,
+  body   TEXT NOT NULL,
+  blurb  TEXT NOT NULL DEFAULT '',
+  active SMALLINT NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS subjects (
+  id              TEXT PRIMARY KEY,
+  key             TEXT NOT NULL UNIQUE,
+  name            TEXT NOT NULL,
+  exam_pathway_id TEXT NOT NULL REFERENCES exam_pathways(id) ON DELETE CASCADE,
+  icon            TEXT NOT NULL DEFAULT '',
+  active          SMALLINT NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS user_subjects (
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   subject_id TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
@@ -130,24 +151,6 @@ CREATE TABLE IF NOT EXISTS invitations (
   max_uses        SMALLINT NOT NULL DEFAULT 1,
   use_count       INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS exam_pathways (
-  id     TEXT PRIMARY KEY,
-  key    TEXT NOT NULL UNIQUE,
-  name   TEXT NOT NULL,
-  body   TEXT NOT NULL,
-  blurb  TEXT NOT NULL DEFAULT '',
-  active SMALLINT NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS subjects (
-  id              TEXT PRIMARY KEY,
-  key             TEXT NOT NULL UNIQUE,
-  name            TEXT NOT NULL,
-  exam_pathway_id TEXT NOT NULL REFERENCES exam_pathways(id) ON DELETE CASCADE,
-  icon            TEXT NOT NULL DEFAULT '',
-  active          SMALLINT NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS topics (
