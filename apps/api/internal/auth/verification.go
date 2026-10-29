@@ -234,19 +234,22 @@ func (s *Service) RequestVerification(ctx context.Context, user *User, channel, 
 		return nil, err
 	}
 
-	msg := notify.Message{
-		Channel: notify.Channel(channel),
-		To:      destination,
-		Subject: "Your Edumart verification code",
-		Text:    "Use code " + code + " to confirm your " + channel + ". It expires in 15 minutes.",
-		Code:    code,
+	// The code is handed to the courier, which records the message durably before attempting it. A
+	// failed attempt is not the end: it is retried, and if delivery is eventually abandoned the code
+	// is withdrawn with it. Only a failure to *record* the message is fatal here — that would leave a
+	// live credential with no delivery behind it.
+	templateKey := notify.TemplateVerifyEmail
+	if channel == ChannelPhone {
+		templateKey = notify.TemplateVerifyPhone
 	}
-	if err := s.notifier.Send(ctx, msg); err != nil {
-		// Delivery failed, so the row is removed rather than marked used: there is no live
-		// credential left behind, and the failed attempt does not eat into the hourly quota of a
-		// user who received nothing.
+	msg := notify.Render(templateKey, notify.Channel(channel), destination, map[string]string{
+		"name": user.DisplayName,
+		"code": code,
+		"ttl":  "15 minutes",
+	})
+	if err := s.notifier.Send(ctx, msg, notify.Ref{Type: notify.RefVerificationCode, ID: rowID}); err != nil {
 		_, _ = s.db.DB.ExecContext(ctx, `DELETE FROM verification_codes WHERE id = ? AND consumed_at IS NULL`, rowID)
-		s.log().Error("verification delivery failed", "channel", channel, "error", err.Error())
+		s.log().Error("verification could not be queued", "channel", channel, "error", err.Error())
 		return nil, httpx.NewError(httpx.CodeInternal, "We could not send the code. Please try again.")
 	}
 

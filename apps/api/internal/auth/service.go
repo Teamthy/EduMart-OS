@@ -79,7 +79,7 @@ func (u *User) HasAnyRole(roles ...string) bool {
 // Service exposes identity use cases.
 type Service struct {
 	db         *store.Store
-	notifier   notify.Sender
+	notifier   notify.Courier
 	codeSecret []byte
 	logger     *slog.Logger
 }
@@ -87,11 +87,11 @@ type Service struct {
 // Option configures the identity service.
 type Option func(*Service)
 
-// WithNotifier sets where verification and recovery messages are delivered. Without one, codes
-// would be generated and dropped on the floor, so a silent notifier is the default: tests must opt
-// in and a misconfigured server fails loudly instead of pretending to have sent a code.
-func WithNotifier(sender notify.Sender) Option {
-	return func(s *Service) { s.notifier = sender }
+// WithNotifier sets the courier that carries verification and recovery messages. Without one, codes
+// would be generated and dropped on the floor, so a silent courier is the default: tests must opt in
+// and a misconfigured server fails loudly instead of pretending to have sent a code.
+func WithNotifier(courier notify.Courier) Option {
+	return func(s *Service) { s.notifier = courier }
 }
 
 // WithCodeSecret sets the HMAC key that protects stored verification codes. Rotating it invalidates
@@ -107,18 +107,18 @@ func WithLogger(logger *slog.Logger) Option {
 
 // New builds the auth service.
 func New(db *store.Store, opts ...Option) *Service {
-	s := &Service{db: db, notifier: discardSender{}, codeSecret: []byte(DefaultCodeSecret), logger: slog.Default()}
+	s := &Service{db: db, notifier: discardCourier{}, codeSecret: []byte(DefaultCodeSecret), logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
 }
 
-// discardSender accepts messages and drops them. It is the safe default: an unstubbed notifier in
-// a test produces no code, which the test then fails on, rather than silently hitting a real inbox.
-type discardSender struct{}
+// discardCourier accepts messages and drops them. It is the safe default: an unstubbed notifier in a
+// test produces no code, which the test then fails on, rather than silently hitting a real inbox.
+type discardCourier struct{}
 
-func (discardSender) Send(context.Context, notify.Message) error { return nil }
+func (discardCourier) Send(context.Context, notify.Message, notify.Ref) error { return nil }
 
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
@@ -446,18 +446,33 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, client 
 }
 
 // RequestPasswordReset issues a single-use token. The caller never learns whether the address exists.
-func (s *Service) RequestPasswordReset(ctx context.Context, email string) (string, bool) {
-	var userID string
-	if err := s.db.DB.QueryRowContext(ctx, `SELECT id FROM users WHERE email_normalized = ?`,
-		NormalizeEmail(email)).Scan(&userID); err != nil {
-		return "", false
+// RequestPasswordReset issues a single-use reset token and hands it to the courier for delivery.
+//
+// The token is not returned to the caller and not logged: it is a credential, and the only copy that
+// should exist outside the database is the one in the user's inbox. Delivery is durable, so a relay
+// outage delays the message instead of losing it.
+func (s *Service) RequestPasswordReset(ctx context.Context, email string) bool {
+	normalized := NormalizeEmail(email)
+	var userID, displayName string
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT id, display_name FROM users WHERE email_normalized = ?`,
+		normalized).Scan(&userID, &displayName); err != nil {
+		return false
 	}
 	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
+	tokenID := hashToken(token)
 	if _, err := s.db.DB.ExecContext(ctx, `INSERT INTO password_reset_tokens (id, user_id, created_at, expires_at)
-		VALUES (?,?,?,?)`, hashToken(token), userID, store.Now(), store.TS(time.Now().Add(30*time.Minute))); err != nil {
-		return "", false
+		VALUES (?,?,?,?)`, tokenID, userID, store.Now(), store.TS(time.Now().Add(30*time.Minute))); err != nil {
+		return false
 	}
-	return token, true
+	msg := notify.Render(notify.TemplatePasswordReset, notify.ChannelEmail, normalized, map[string]string{
+		"name": displayName,
+		"code": token,
+		"ttl":  "30 minutes",
+	})
+	if err := s.notifier.Send(ctx, msg, notify.Ref{Type: notify.RefPasswordReset, ID: tokenID}); err != nil {
+		s.log().Error("password reset could not be queued", "error", err.Error())
+	}
+	return true
 }
 
 func randomBytes(n int) []byte {

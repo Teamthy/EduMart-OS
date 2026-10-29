@@ -6,13 +6,15 @@
 # nothing here is needed to run the product locally. This file exists for the two things SQLite
 # cannot stand in for:
 #
-#   postgres — the production system of record. The schema is ported
-#              (`apps/api/internal/store/migrations/postgres/`) but the Go driver is not linked into
-#              the build yet, so `EDUMART_DRIVER=postgres` stops at startup with an explicit error.
-#              Wiring `github.com/jackc/pgx/v5/stdlib` is the one remaining step; see
-#              docs/PRODUCTION_READINESS.md.
+#   postgres — the production system of record. Fully supported: `EDUMART_DRIVER=postgres`, and the
+#              whole test suite plus the HTTP smoke journey run against it in CI.
 #   redis    — reserved for cross-instance rate limiting and background jobs. The API does not talk
 #              to it today: rate limiting is in-process.
+#   mailpit  — a local SMTP relay with a web inbox, so verification emails can be read without a
+#              provider. Start it with `--profile mail` and set:
+#                EDUMART_NOTIFY=smtp EDUMART_SMTP_HOST=127.0.0.1 EDUMART_SMTP_PORT=1025
+#                EDUMART_SMTP_FROM=no-reply@edumart.ng EDUMART_SMTP_TLS=none
+#                EDUMART_SMTP_ALLOW_INSECURE=true
 #
 # Credentials below are local-only and must never be reused anywhere real.
 
@@ -49,6 +51,14 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+
+  # Local inbox: accepts everything, shows it at http://localhost:8025. Never for real users.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["mail"]
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web inbox
 
 volumes:
   edumart_pgdata:

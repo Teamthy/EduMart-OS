@@ -7,7 +7,7 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the email/phone verification work (Phase 7).
+Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 delivery path).
 
 ## The whole board
 
@@ -18,8 +18,8 @@ Last updated with the email/phone verification work (Phase 7).
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
 | 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
-| 6 | API platform and contracts | Done | 53 routes, contract checked in CI |
-| 7 | Identity and account lifecycle | Partial | Verification now works; **no refresh-token rotation**, no account suspension |
+| 6 | API platform and contracts | Done | 64 routes, contract checked in CI |
+| 7 | Identity and account lifecycle | Partial | Verification works, and its messages are now delivered through a durable queue with real retries; **no refresh-token rotation**, no account suspension |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations and audit events now exist; **no org-scoped class/dashboard data yet** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
@@ -36,7 +36,7 @@ Last updated with the email/phone verification work (Phase 7).
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
-| 24 | Notifications | Partial | Adapter + templates for codes; **no retries, no delivery status, no SMS provider** |
+| 24 | Notifications | Partial | Durable queue, retries, SMTP delivery, per-message delivery records for codes, resets, invitations and receipts; **no SMS/push provider, no reminders** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
@@ -78,7 +78,7 @@ gate ("a restore has been demonstrated") is not met.
 
 ### Phase 6 — API platform and shared contracts · Done
 
-53 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+64 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
 `scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
 `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
 `SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
@@ -93,7 +93,7 @@ TypeScript client used by web and mobile.
 | Password hashing | PBKDF2, not Argon2id. Argon2id needs `golang.org/x/crypto/argon2`; drop-in in `internal/auth/password.go` |
 | Password recovery | Done, enumeration-safe, invalidates every session |
 | Sessions and revocation | Done — opaque tokens, server-side revocation, `GET /v1/me/sessions`, `DELETE /v1/me/sessions/{id}` |
-| **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through a `notify.Sender` adapter |
+| **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through the durable courier (Phase 24), so a relay outage retries instead of losing the code |
 | Verification gate | Checkout (`POST /v1/orders`) refuses an unverified address with `EMAIL_NOT_VERIFIED` |
 | Rate limits | Per-route, **in-process** — resets on restart and does not span instances |
 | Refresh tokens / rotation | **Not started** — one 7-day opaque session |
@@ -101,7 +101,9 @@ TypeScript client used by web and mobile.
 
 Verification is proven by `TestEmailVerificationJourney`, `TestCheckoutRequiresVerifiedEmail`,
 `TestVerificationAttemptsAreLimited`, `TestVerificationResendIsThrottled`, `TestPhoneVerification`,
-`TestVerificationRejectsBadInput`, `TestUndeliveredCodeIsNotUsable`, plus the live smoke run.
+`TestVerificationRejectsBadInput`, `TestUndeliveredCodeIsRetriedThenWithdrawn`,
+`TestDeliveryIsRecordedAndVisibleToStaff`, plus the live smoke run and a manual outage drill against a
+real SMTP relay.
 
 **What verification does not yet do:** it is not a required onboarding step, so an unverified account
 can still practise, take mocks and hold points. Only money is gated. That is a deliberate, documented
@@ -180,24 +182,35 @@ entries.
 Gaps: sandbox provider only (no live Paystack adapter), no refunds, disputes or reconciliation job, no
 commission approval or payout workflow, no reversal tooling for refunds.
 
-### Phase 24 — Notifications · Partial
+### Phase 24 — Notifications · Partial (delivery is now real)
 
-`internal/notify` defines the adapter (`Sender`), a development `LogSender` that redacts codes in
-production, and a test `Recorder`. Verification codes and password reset links use it. There is no
-provider integration, no template store, no retry/backoff, no delivery-status tracking, and no SMS or
-push channel — so the blueprint's exit gate is not met.
+`internal/notify` owns delivery end to end:
+
+| Item | Evidence |
+| --- | --- |
+| Durable queue | `notification_deliveries` (migration `0004`), written **before** the first attempt, so a crash between deciding to send and sending still retries |
+| Retries and backoff | 30 s → 2 m → 10 m → 30 m, five attempts, swept by a worker that survives restarts — proven live: a stopped relay recovered on its own at ~50 s |
+| Real provider | `SMTPSender` (STARTTLS / implicit TLS / plain), verified against a socket in `smtp_test.go` and against a sandbox relay in the smoke run |
+| Templates | Code, not database rows: a message body editable at runtime is a phishing vector aimed at our own users |
+| Credential hygiene | An abandoned delivery **deletes** the verification code or reset token it carried; delivered bodies are cleared; `GET /v1/admin/deliveries` never returns a body |
+| Messages that actually go out | Verification codes, password resets, organisation invitations, purchase receipts |
+| Observability | `GET /v1/admin/deliveries` with `{sent, pending, failed}`; `FailedSender` injections are covered by tests |
+
+**Not done, and not claimed:** SMS and push channels (no provider wired; `notify.Channel` already has
+the seam), class/assessment reminders (there is no assignment model to remind about yet), digests,
+bounce and complaint feedback loops, and per-tenant sender identities.
 
 ---
 
 ## Recommended next three steps
 
-1. **Phase 24: a real email provider with retries and delivery status.** Verification and
-   invitations both depend on delivery, and today delivery is a log line — so an invitation token can
-   only be copied by hand from the browser.
-2. **Phase 19/20: link classes to organisations and build the institution view.** The model exists and
-   is enforced; nothing yet uses it for reporting, which is what institutions actually buy.
-3. **Phase 28's first slice: a threat model, dependency/secret scanning and a restore drill.** Cheap,
-   and they convert "we think it is safe and recoverable" into evidence.
+1. **Phase 19: link classes to organisations.** `classes.organization_id` exists and no code path sets
+   it, so an institution cannot yet own a class — which blocks org-scoped reporting, assignment
+   ownership and institution billing.
+2. **Phase 7 hardening: Argon2id, refresh-token rotation and account suspension.** The lifecycle works,
+   but a stolen session lives until it expires and there is no way to suspend an abusive account.
+3. **Phase 28's first slice: a threat model, dependency and secret scanning, and a restore drill.**
+   Cheap, and they turn "we believe it is recoverable" into evidence.
 
 ## Feature completion checklist
 

@@ -41,7 +41,28 @@ frozen on submit.
 - **Constraints in the schema**, not only in Go: foreign keys, uniqueness on session tokens, class
   memberships, provider event ids and referral codes.
 - **Silent-failure avoidance**: the API refuses to boot when the database is unreachable, and names
-  the missing driver rather than falling back to SQLite.
+  the missing driver rather than falling back to SQLite. Delivery failures are recorded on the
+  message row rather than swallowed, and an unknown SMTP configuration exits non-zero at startup.
+- **A durable outbox for credentials**: verification codes, reset tokens, invitations and receipts are
+  written to `notification_deliveries` before the first send attempt, then retried on a backoff
+  (30 s → 2 m → 10 m → 30 m, five attempts). A relay outage delays a code; it does not lose it.
+- **Secrets do not live in the queue**: a delivered or abandoned message has its body cleared, an
+  abandoned verification code or reset token is deleted, and the operator view cannot return a body.
+
+### Delivery-specific controls
+
+| Control | Where |
+| --- | --- |
+| The queue is a database table, not an in-memory list | `notification_deliveries`; a restart resumes retries |
+| Bodies are cleared on send or abandon, and never returned by the API | `notify.Service.attempt`, `/v1/admin/deliveries` |
+| An undelivered verification code or reset token is deleted, not left live | `notify.Service.abandon` |
+| Header injection is refused, and CRLF is enforced on every line | `SMTPSender.composeMessage` |
+| Cleartext SMTP is refused when `EDUMART_ENV=production` unless explicitly opted in | `SMTPConfig.Validate` |
+| A bad SMTP configuration stops the process at startup | `cmd/api` `buildCourier` |
+
+Delivery is at-least-once: a message that times out after the relay accepted it can be attempted again.
+Every message is therefore written to be idempotent — a second receipt for the same order references the
+same order and grants nothing, and a second verification code supersedes the first.
 
 ## Security baseline
 

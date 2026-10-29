@@ -1292,6 +1292,38 @@ paths:
       responses:
         "201": { description: Case opened }
 
+  /v1/admin/deliveries:
+    get:
+      tags: [operations]
+      summary: Recent outbound messages and delivery health
+      description: |
+        Every verification code, reset link and invitation is recorded before it is attempted, then
+        retried on a backoff until it succeeds or is abandoned. This endpoint is how "the emails are
+        not arriving" gets answered without opening a provider dashboard.
+
+        Message bodies are never returned: an operator needs to know a message failed, not to read the
+        credential it carried. Bodies are cleared from the queue as soon as a message is delivered or
+        abandoned, so the queue is not a second copy of user inboxes.
+      operationId: listDeliveries
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Deliveries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items: { $ref: "#/components/schemas/Delivery" }
+                  stats: { $ref: "#/components/schemas/DeliveryStats" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/admin/review-queue:
     get:
       tags: [staff]
@@ -1467,6 +1499,34 @@ components:
           type: boolean
           description: True only after a code sent to the address was confirmed.
         phoneVerified: { type: boolean }
+
+    Delivery:
+      type: object
+      description: One outbound message. The body is deliberately absent.
+      properties:
+        id: { type: string }
+        channel: { type: string, enum: [email, phone] }
+        recipient: { type: string }
+        template: { type: string, example: verify_email }
+        subject: { type: string }
+        status: { type: string, enum: [pending, sent, failed] }
+        attempts: { type: integer }
+        maxAttempts: { type: integer }
+        lastError:
+          type: string
+          description: The provider's last complaint, truncated. Empty once the message is delivered.
+        resourceType: { type: string, enum: ["", verification_code, password_reset_token] }
+        resourceId: { type: string }
+        createdAt: { type: string, format: date-time }
+        nextAttemptAt: { type: string, format: date-time }
+        sentAt: { type: string }
+
+    DeliveryStats:
+      type: object
+      properties:
+        sent: { type: integer }
+        pending: { type: integer }
+        failed: { type: integer }
 
     Organization:
       type: object

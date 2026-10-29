@@ -161,9 +161,11 @@ small secret.
   than remaining valid forever at five attempts.
 - **Throttled sending.** 60-second cooldown and five codes per hour per user and channel: an endpoint
   that sends a message is an endpoint that can be used to bill you and flood someone's inbox.
-- **Delivery is an adapter.** `internal/notify` defines `Sender`; `LogSender` is the development
-  default (redacting codes whenever the deployment is not development), `Recorder` is what tests read.
-  A provider integration is one new type, not a change to identity code.
+- **Delivery is an adapter around a durable queue.** `internal/notify` exposes `Sender` (transport) and
+  `Courier` (what identity actually depends on). Every message is written to `notification_deliveries`
+  *before* the first attempt, then retried on a backoff by a worker, so a relay outage delays a code
+  instead of losing it. `LogSender` is the development default, `SMTPSender` is the real one, and
+  `Recorder` is what tests read. A new channel is one type, not a change to identity or commerce.
 - **Failure is not success.** If the sender errors, the row is deleted rather than left live: a code
   nobody received must not remain a valid credential, and it must not consume the user's hourly quota.
 

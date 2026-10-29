@@ -14,13 +14,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -70,6 +73,24 @@ type Service struct {
 	db            *store.Store
 	webhookSecret string
 	provider      string
+	// courier is optional; see WithNotifier.
+	courier notify.Courier
+	logger  *slog.Logger
+}
+
+// WithLogger supplies a logger for the paths that are deliberately best-effort. A receipt that cannot
+// be prepared must leave a trace, otherwise "nobody gets receipts" is only discovered by a customer.
+func (s *Service) WithLogger(l *slog.Logger) *Service {
+	s.logger = l
+	return s
+}
+
+// WithNotifier attaches the courier used for receipts. Commerce never blocks a payment on it: the
+// money has moved by the time a receipt is queued, and a mail outage must not turn into a failed
+// webhook that a provider then retries into a duplicate-purchase bug.
+func (s *Service) WithNotifier(c notify.Courier) *Service {
+	s.courier = c
+	return s
 }
 
 // New builds the commerce service.
@@ -308,6 +329,9 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 
 	// Persist the raw event first: an unverifiable-but-signed duplicate is then trivially ignored.
 	var alreadyProcessed bool
+	// orderPaid records that *this* event moved the order into "paid". A second, distinct event for an
+	// order that is already paid must not send a second receipt.
+	var orderPaid bool
 	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `INSERT INTO provider_events
 			(id, provider, event_id, signature_valid, processing_status, payload_hash, received_at)
@@ -369,6 +393,7 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 		if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?`, now, orderID); err != nil {
 			return err
 		}
+		orderPaid = true
 		if _, err := tx.ExecContext(ctx, `UPDATE payment_attempts SET status = 'succeeded' WHERE order_id = ?`, orderID); err != nil {
 			return err
 		}
@@ -423,7 +448,107 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 	if alreadyProcessed {
 		return map[string]any{"received": true, "duplicate": true}, nil
 	}
+	if orderPaid {
+		s.sendReceipt(ctx, event.Reference)
+	}
 	return map[string]any{"received": true, "duplicate": false}, nil
+}
+
+// sendReceipt emails the buyer their receipt. Best-effort by design: the order is paid and entitlements
+// are granted before this runs, so a failure here leaves a queued-or-failed delivery record, not a
+// customer without what they bought.
+func (s *Service) sendReceipt(ctx context.Context, reference string) {
+	if s.courier == nil {
+		return
+	}
+	var (
+		email, displayName, currency, paidAt string
+		totalMinor                           int
+	)
+	err := s.db.DB.QueryRowContext(ctx, `
+		SELECT u.email_normalized, u.display_name, o.total_minor, o.currency, COALESCE(o.paid_at,'')
+		  FROM orders o JOIN users u ON u.id = o.user_id
+		 WHERE o.reference = ?`, reference).Scan(&email, &displayName, &totalMinor, &currency, &paidAt)
+	if err != nil {
+		s.logError("receipt lookup failed", "reference", reference, "error", err.Error())
+		return
+	}
+
+	var items []string
+	rows, err := s.db.DB.QueryContext(ctx, `
+		SELECT oi.title_snapshot, oi.quantity FROM order_items oi
+		  JOIN orders o ON o.id = oi.order_id WHERE o.reference = ? ORDER BY oi.title_snapshot`, reference)
+	if err == nil {
+		for rows.Next() {
+			var title string
+			var quantity int
+			if scanErr := rows.Scan(&title, &quantity); scanErr == nil {
+				if quantity > 1 {
+					title = fmt.Sprintf("%s × %d", title, quantity)
+				}
+				items = append(items, title)
+			}
+		}
+		rows.Close()
+	}
+
+	msg := notify.Render(notify.TemplateReceipt, notify.ChannelEmail, email, map[string]string{
+		"name":      displayName,
+		"reference": reference,
+		"items":     strings.Join(items, ", "),
+		"total":     formatMoney(totalMinor, currency),
+		"paid":      formatMoment(paidAt),
+	})
+	if err := s.courier.Send(ctx, msg, notify.Ref{Type: notify.RefOrder, ID: reference}); err != nil {
+		s.logError("receipt could not be queued", "reference", reference, "error", err.Error())
+	}
+}
+
+func (s *Service) logError(msg string, args ...any) {
+	if s.logger != nil {
+		s.logger.Error(msg, args...)
+	}
+}
+
+// formatMoney renders minor units the way a receipt should read: ₦4,500.00, not 450000.
+func formatMoney(minor int, currency string) string {
+	sign := map[string]string{"NGN": "₦", "USD": "$", "GBP": "£", "EUR": "€"}[strings.ToUpper(currency)]
+	if sign == "" {
+		sign = currency + " "
+	}
+	negative := minor < 0
+	if negative {
+		minor = -minor
+	}
+	out := fmt.Sprintf("%s%s.%02d", sign, groupThousands(minor/100), minor%100)
+	if negative {
+		out = "-" + out
+	}
+	return out
+}
+
+// groupThousands inserts separators, because "120000" and "1,200.00" are the same number and only one
+// of them can be checked against a bank statement at a glance.
+func groupThousands(whole int) string {
+	digits := strconv.Itoa(whole)
+	var b strings.Builder
+	for i, digit := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(digit)
+	}
+	return b.String()
+}
+
+// formatMoment turns the stored RFC 3339 timestamp into something a person can read. A raw nanosecond
+// timestamp in a receipt looks like a bug to the customer even when it is correct.
+func formatMoment(stamp string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return stamp
+	}
+	return parsed.UTC().Format("2 Jan 2006, 15:04 MST")
 }
 
 // SimulatePayment is the development-only stand-in for a provider. It emits a correctly signed

@@ -54,15 +54,17 @@ Every non-2xx response has the same shape:
 | `POST` | `/organizations` | Create one; caller becomes owner. Requires a verified email. Starts `pending_verification` |
 | `GET` | `/organizations/{id}` | Members only; non-members get `404`, not `403` |
 | `GET` | `/organizations/{id}/members` | Owner/admin only (roster holds other people's contact details) |
-| `POST` | `/organizations/{id}/invitations` | `{email, role}` → `201 {invitation, token}`; the token is returned **once** |
+| `POST` | `/organizations/{id}/invitations` | `{email, role}` → `201 {invitation, token}`; the token is returned to the inviter **once** and the join link is also emailed to the invitee |
 | `GET` | `/organizations/{id}/invitations` | Open and recent invitations, never their tokens |
 | `DELETE` | `/organizations/{id}/invitations/{invitationId}` | Withdraw; the link stops working immediately |
 | `POST` | `/organizations/invitations/accept` | `{token}`; must match the signed-in account's email |
 | `DELETE` | `/organizations/{id}/members/{userId}` | Remove a member, or leave. Withdraws the teacher role with the membership |
 | `POST` | `/admin/organizations/{id}/verify` | Platform administrator approves the institution |
+| `GET` | `/admin/deliveries?limit=` | Outbound messages with status, attempts and last error, plus `{sent, pending, failed}`. Bodies are never returned. Platform administrators and support only |
 
 Invitation rules: single use, addressed to one email, valid seven days, single-use claimed by
-affected-row count. A teacher invitation grants the platform teacher role — an owner issued it
+affected-row count. The invitation email carries the join link; if the relay is down the invitation row
+still exists, the link is retried through the delivery queue, and the inviter still holds the token. A teacher invitation grants the platform teacher role — an owner issued it
 deliberately — while admin and student invitations grant nothing outside the organisation.
 
 ### Signup wizard
@@ -184,6 +186,12 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | `GET` | `/admin/cases` | support, platform_admin |
 | `POST` | `/admin/cases/{id}/resolve` | support, platform_admin |
 | `POST` | `/support-cases` | any signed-in user |
+| `GET` | `/admin/deliveries?limit=` | support, platform_admin |
+
+`/admin/deliveries` answers "the emails are not arriving" without a provider dashboard: it returns the
+most recent messages with `status` (`pending`, `sent`, `failed`), `attempts`, `lastError` and the
+credential they relate to, plus `stats {sent, pending, failed}`. Bodies are never returned — an operator
+needs to know a message failed, not to read the code inside it.
 
 ## Outside /v1
 

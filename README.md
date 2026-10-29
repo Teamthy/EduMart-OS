@@ -243,6 +243,13 @@ Copy `.env.example` to `.env` for local overrides; both services read environmen
 | `EDUMART_WEBHOOK_SECRET` | `dev_sandbox_webhook_secret` | HMAC secret for payment webhooks |
 | `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
 | `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
+| `EDUMART_WEB_URL` | `http://localhost:3000` | Origin used in links sent by email (invitations) |
+| `EDUMART_NOTIFY` | `log` | `log` writes messages to the structured log; `smtp` delivers them |
+| `EDUMART_SMTP_HOST` / `_PORT` | — / `587` | Relay host and port (required when `EDUMART_NOTIFY=smtp`) |
+| `EDUMART_SMTP_USERNAME` / `_PASSWORD` | — | Relay credentials; set both or neither |
+| `EDUMART_SMTP_FROM` | — | Envelope and header sender, e.g. `no-reply@edumart.ng` |
+| `EDUMART_SMTP_TLS` | `starttls` | `starttls` (587), `tls` (465, implicit) or `none` |
+| `EDUMART_SMTP_ALLOW_INSECURE` | `false` | Permits `tls=none`; refused when `EDUMART_ENV=production` |
 | `EDUMART_API_URL` | `http://127.0.0.1:8080` | Where the Next.js server proxies `/v1` |
 | `EXPO_PUBLIC_API_URL` | `http://localhost:8080` | Absolute API base for the native app |
 
