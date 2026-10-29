@@ -417,7 +417,7 @@ func TestAPaystackShapedWebhookSettlesARefund(t *testing.T) {
 	orderID := order["id"].(string)
 	total := int(order["totalMinor"].(float64))
 
-	const secretKey = "sk_test_paystack_webhook"
+	const secretKey = "sk_test_paystack_webhook" // scan: allow test fixture, not a credential
 	h.shop.WithPaystackWebhook(secretKey)
 	h.withRefundProvider(&fakeRefunds{result: commerce.RefundResult{
 		ProviderReference: "77", Status: commerce.RefundStatusPending, ProviderStatus: "pending",
