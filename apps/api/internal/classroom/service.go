@@ -449,7 +449,10 @@ func (s *Service) RotateJoinCode(ctx context.Context, userID, classID string) (*
 		return nil, httpx.NewError(httpx.CodeNotFound, "That class was not found.")
 	}
 
-	out := &Class{ID: classID, Name: name, JoinCode: code, Role: "teacher"}
+	// The response carries the caller's own relationship to the class, not an assumed one: an institution
+	// administrator rotating a code is not a teacher in that classroom, and saying so would be a lie the
+	// UI then repeats.
+	out := &Class{ID: classID, Name: name, JoinCode: code, Role: s.callerRole(ctx, userID, classID, ownerID)}
 	fresh := store.TS(time.Now().UTC().Add(joinCodeLifetime))
 	out.JoinCodeExpiresAt = &fresh
 	if orgID.Valid {
@@ -459,6 +462,20 @@ func (s *Service) RotateJoinCode(ctx context.Context, userID, classID string) (*
 		out.SubjectID = &subjectID.String
 	}
 	return out, nil
+}
+
+// callerRole reports how the caller relates to the class, for the response payload only.
+func (s *Service) callerRole(ctx context.Context, userID, classID, ownerID string) string {
+	if userID == ownerID {
+		return "teacher"
+	}
+	var role string
+	if err := s.db.DB.QueryRowContext(ctx,
+		`SELECT role FROM class_memberships WHERE class_id = ? AND user_id = ? AND status = 'active'`,
+		classID, userID).Scan(&role); err == nil && role != "" {
+		return role
+	}
+	return "admin"
 }
 
 // requireClassTeacher decides who may reissue a class code: the teacher who owns the class, a teacher in
