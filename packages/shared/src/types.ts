@@ -63,6 +63,45 @@ export interface User {
   createdAt: string;
 }
 
+// ── institutions ──────────────────────────────────────────────────────────
+export type OrganizationRole = "owner" | "admin" | "teacher" | "student" | "platform_admin";
+export type OrganizationStatus = "pending_verification" | "active" | "suspended";
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  kind: "school" | "centre" | "ngo" | "company";
+  status: OrganizationStatus;
+  verified: boolean;
+  /** The signed-in user's own role in this organisation. */
+  role: OrganizationRole;
+  members: number;
+  classes: number;
+  createdAt: string;
+  verifiedAt?: string;
+}
+
+export interface OrganizationMember {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: Exclude<OrganizationRole, "platform_admin">;
+  status: string;
+  joinedAt: string;
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  role: "admin" | "teacher" | "student";
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expiresAt: string;
+  createdAt: string;
+  maxUses: number;
+  useCount: number;
+}
+
 /** Where a verification code was sent, and for how long it is good. */
 export interface VerificationIssued {
   sent: boolean;

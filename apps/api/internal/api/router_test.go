@@ -24,6 +24,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
+	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
@@ -69,6 +70,7 @@ func newHarness(t *testing.T) *harness {
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
+		Orgs:     orgs.New(db),
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:  []string{"http://localhost:3000"},

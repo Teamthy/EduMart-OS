@@ -360,10 +360,33 @@ func seedSamples(ctx context.Context, db *store.Store) error {
 	var mathSubjectID string
 	_ = db.DB.QueryRowContext(ctx, `SELECT id FROM subjects WHERE key = 'mathematics'`).Scan(&mathSubjectID)
 
+	// A demo institution, so the organisation surface is not an empty state on a fresh clone. It is
+	// already verified: the fixture represents a school that has been through approval.
+	orgID := deterministicID("org", "LEKKI")
+	if _, err := db.DB.ExecContext(ctx, `INSERT INTO organizations
+		(id, name, slug, status, kind, created_by, verified_at, created_at, updated_at)
+		VALUES (?,?,'lekki-study-circle','active','centre',?,?,?,?)
+		ON CONFLICT (slug) DO NOTHING`,
+		orgID, "Lekki Study Circle", teacherID, now, now, now); err != nil {
+		return err
+	}
+	if _, err := db.DB.ExecContext(ctx, `INSERT INTO organization_memberships
+		(id, organization_id, user_id, role, status, joined_at)
+		VALUES (?,?,?,'owner','active',?) ON CONFLICT (organization_id, user_id) DO NOTHING`,
+		deterministicID("orgm", teacherID), orgID, teacherID, now); err != nil {
+		return err
+	}
+	if _, err := db.DB.ExecContext(ctx, `INSERT INTO organization_memberships
+		(id, organization_id, user_id, role, status, joined_at)
+		VALUES (?,?,?,'student','active',?) ON CONFLICT (organization_id, user_id) DO NOTHING`,
+		deterministicID("orgm", studentID), orgID, studentID, now); err != nil {
+		return err
+	}
+
 	if _, err := db.DB.ExecContext(ctx, `INSERT INTO classes
 		(id, organization_id, owner_user_id, name, subject_id, join_code, status, created_at)
-		VALUES (?,NULL,?,'Lekki Study Circle',?,'LEKKI24','active',?) ON CONFLICT (join_code) DO NOTHING`,
-		classID, teacherID, nullable(mathSubjectID), now); err != nil {
+		VALUES (?,?,?,'Lekki Study Circle',?,'LEKKI24','active',?) ON CONFLICT (join_code) DO NOTHING`,
+		classID, orgID, teacherID, nullable(mathSubjectID), now); err != nil {
 		return err
 	}
 	var actualClassID string

@@ -145,6 +145,22 @@ In development the code is printed by the log sender, so the flow works on a lap
 server. Buying anything requires a verified address: `POST /v1/orders` answers `403
 EMAIL_NOT_VERIFIED` until then, because a receipt and a refund both need a mailbox that exists.
 
+## Institutions
+
+An organisation is created by a verified account and starts `pending_verification` until a platform
+administrator approves it. Members are added by invitation — single-use, email-locked, seven days —
+and authority comes from membership rather than from the role someone picked at signup.
+
+```bash
+# As an owner: invite a teacher. The token is returned once, and never again.
+curl -X POST localhost:8080/v1/organizations/$ORG_ID/invitations \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"email":"teacher@school.edu.ng","role":"teacher"}'
+```
+
+Removing a membership ends the access it carried in the same transaction, including the teaching role
+when no other organisation still grants it. See `apps/web/app/(app)/institutions`.
+
 ## What is actually enforced
 
 These are the invariants the product depends on; each has a test.

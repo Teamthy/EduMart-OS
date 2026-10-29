@@ -23,6 +23,9 @@ import type {
   RewardsSummary,
   SaveAnswerResult,
   SessionResponse,
+  Organization,
+  OrganizationMember,
+  Invitation,
   StudyPlan,
   Subject,
   SupportCase,
@@ -139,6 +142,9 @@ export class ApiClient {
   private patch<T>(path: string, body?: unknown) {
     return this.request<T>("PATCH", path, body);
   }
+  private delete<T>(path: string) {
+    return this.request<T>("DELETE", path);
+  }
 
   // ── identity ──────────────────────────────────────────────────────────
   register = (input: unknown) => this.post<SessionResponse>("/v1/auth/register", input);
@@ -157,6 +163,24 @@ export class ApiClient {
   forgotPassword = (email: string) => this.post<{ sent: boolean; message: string }>("/v1/auth/password/forgot", { email });
   resetPassword = (token: string, password: string) =>
     this.post<{ reset: boolean }>("/v1/auth/password/reset", { token, password });
+
+  // ── institutions ──────────────────────────────────────────────────────
+  organizations = () => this.get<{ organizations: Organization[] }>("/v1/organizations");
+  organization = (id: string) => this.get<{ organization: Organization }>(`/v1/organizations/${id}`);
+  createOrganization = (input: { name: string; kind?: Organization["kind"] }) =>
+    this.post<{ organization: Organization }>("/v1/organizations", input);
+  organizationMembers = (id: string) =>
+    this.get<{ members: OrganizationMember[] }>(`/v1/organizations/${id}/members`);
+  inviteToOrganization = (id: string, input: { email: string; role: Invitation["role"] }) =>
+    this.post<{ invitation: Invitation; token: string }>(`/v1/organizations/${id}/invitations`, input);
+  organizationInvitations = (id: string) =>
+    this.get<{ invitations: Invitation[] }>(`/v1/organizations/${id}/invitations`);
+  revokeInvitation = (id: string, invitationId: string) =>
+    this.delete<{ revoked: boolean }>(`/v1/organizations/${id}/invitations/${invitationId}`);
+  removeMember = (id: string, userId: string) =>
+    this.delete<{ removed: boolean }>(`/v1/organizations/${id}/members/${userId}`);
+  acceptInvitation = (token: string) =>
+    this.post<{ joined: boolean; organization: Organization }>("/v1/organizations/invitations/accept", { token });
 
   // ── taxonomy ──────────────────────────────────────────────────────────
   pathways = () => this.get<{ pathways: Pathway[] }>("/v1/exam-pathways");

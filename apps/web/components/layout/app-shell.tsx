@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   BarChart3,
+  Building2,
   BookOpen,
   GraduationCap,
   Home,
@@ -32,6 +33,7 @@ const NAV: NavItem[] = [
   { href: "/library", label: "Library", icon: Library, primary: true },
   { href: "/settings", label: "Settings", icon: Settings, primary: true },
   { href: "/classes", label: "Classes", icon: Users },
+  { href: "/institutions", label: "Institutions", icon: Building2 },
   { href: "/teacher", label: "Teaching", icon: GraduationCap, roles: ["teacher", "org_admin", "platform_admin"] },
   { href: "/admin", label: "Operations", icon: Shield, roles: ["content_editor", "platform_admin", "support", "finance"] },
   { href: "/rewards", label: "Rewards", icon: BookOpen },
