@@ -296,6 +296,19 @@ export interface ClassSummary {
   createdAt: string;
 }
 
+/**
+ * The pair issued at sign-in. The access token is short-lived; the refresh token is single-use and
+ * rotated on every exchange, so a client must replace what it stores with each response.
+ */
+export interface SessionIssued {
+  token: string;
+  expiresAt: string;
+  refreshToken: string;
+  refreshExpiresAt: string;
+  user: User;
+  next?: string;
+}
+
 /** One message the system promised to send later. */
 export interface Reminder {
   id: string;

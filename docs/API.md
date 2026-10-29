@@ -38,6 +38,7 @@ Every non-2xx response has the same shape:
 | --- | --- | --- |
 | `POST` | `/auth/register` | Creates account + default role + referral code; sets session cookie |
 | `POST` | `/auth/login` | `{email, password, client}` → `{token, expires_at, user, next}` |
+| `POST` | `/auth/refresh` | `{refreshToken}` → new `{token, refresh_token}`, both new. The presented token is retired by the call; replaying it past a 20s grace window revokes the whole session family with `401 SESSION_REUSED` |
 | `POST` | `/auth/logout` | Revokes the session server-side |
 | `POST` | `/auth/password/forgot` | Always 200; never reveals whether the email exists |
 | `POST` | `/auth/password/reset` | Consumes a single-use token, revokes all sessions |

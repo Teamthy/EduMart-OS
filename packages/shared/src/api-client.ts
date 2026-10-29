@@ -27,6 +27,7 @@ import type {
   OrganizationMember,
   OrganizationReport,
   Reminder,
+  SessionIssued,
   ReminderStats,
   Invitation,
   StudyPlan,
@@ -223,6 +224,15 @@ export class ApiClient {
 
   organizationClasses = (organizationId: string) =>
     this.get<{ classes: ClassSummary[] }>(`/v1/organizations/${organizationId}/classes`);
+  /**
+   * Exchange a refresh token for a new pair.
+   *
+   * The presented token is retired by the call, so callers must store the returned one. A second use of
+   * the old token is treated as theft and ends the whole session family.
+   */
+  refreshSession = (refreshToken: string) =>
+    this.post<SessionIssued>("/v1/auth/refresh", { refreshToken });
+
   // ── operations ────────────────────────────────────────────────────────
   reminders = (limit = 50) =>
     this.get<{ reminders: Reminder[]; stats: ReminderStats }>(`/v1/admin/reminders?limit=${limit}`);

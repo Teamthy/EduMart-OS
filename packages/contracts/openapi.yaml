@@ -160,6 +160,51 @@ paths:
       responses:
         "200": { description: Session revoked }
 
+  /v1/auth/refresh:
+    post:
+      tags: [identity]
+      summary: Exchange a refresh token for a new pair
+      description: |
+        Rotation, not extension. The presented refresh token is retired by this call, and the response
+        carries its successor. Two rules follow from that:
+
+        - **A token used twice is evidence.** Once a rotation is older than a 20-second grace window,
+          presenting its token again means two parties hold it, so the entire session family is revoked
+          — the caller's successor included — and the response is `401 SESSION_REUSED`. Inside the grace
+          window the duplicate is refused without revocation, because two browser tabs refreshing at
+          the same moment is a race, not theft.
+        - **Retrying cannot help.** `SESSION_REUSED` means the user must sign in again; a client that
+          retries the same token gets the same answer forever.
+
+        Present the token in the body, or as an `edumart_refresh` cookie if the client sets one itself.
+        The API never sets that cookie: a 30-day single-use credential belongs in the client's secure
+        storage, not in a cookie that every request to the origin carries.
+      operationId: refreshSession
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+                  description: Optional when the `edumart_refresh` cookie is present.
+      responses:
+        "200":
+          description: A new token pair; the presented refresh token is now dead
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionIssued" }
+        "401":
+          description: The token is unknown, expired, revoked, already rotated, or the account is suspended
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /v1/auth/password/forgot:
     post:
       tags: [identity]
@@ -2063,12 +2108,19 @@ components:
 
     SessionIssued:
       type: object
-      required: [token, expires_at, user]
+      required: [token, expires_at, refresh_token, refresh_expires_at, user]
       properties:
         token:
           type: string
-          description: Opaque session token. The web app never reads it (httpOnly cookie).
+          description: Opaque access token, valid 7 days. The web app never reads it (HttpOnly cookie).
         expires_at: { type: string, format: date-time }
+        refresh_token:
+          type: string
+          description: |
+            Single-use refresh token, valid 30 days. Exchanged at `/v1/auth/refresh` for a new pair; the
+            presented token dies the moment the exchange succeeds. Storing it in a place script can read
+            is storing a 30-day credential in a place script can read.
+        refresh_expires_at: { type: string, format: date-time }
         next: { type: string }
         user: { $ref: "#/components/schemas/User" }
 

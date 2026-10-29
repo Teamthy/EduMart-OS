@@ -202,6 +202,28 @@ func sessionCookie(token string, expires time.Time, secure bool) *http.Cookie {
 	}
 }
 
+// sessionResponse writes the token pair, and sets the access cookie for browser clients.
+//
+// The refresh token is returned only in the body, never in a cookie. A refresh token is a 30-day
+// credential and single-use: putting it in a cookie would hand it to every request the browser makes to
+// this origin, for a client that does not currently use it. The web build keeps the 7-day access cookie
+// and signs in again when it expires; native clients keep the pair in secure storage and rotate it.
+func (h *Handlers) sessionResponse(w http.ResponseWriter, r *http.Request, status int, session *Session, extra map[string]any) {
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, sessionCookie(session.Token, session.ExpiresAt, secure))
+	body := map[string]any{
+		"token":              session.Token,
+		"expires_at":         session.ExpiresAt,
+		"refresh_token":      session.RefreshToken,
+		"refresh_expires_at": session.RefreshExpiresAt,
+		"user":               session.User,
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	httpx.JSON(w, status, body)
+}
+
 // Register handles POST /v1/auth/register.
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) error {
 	var in RegisterInput
@@ -212,14 +234,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, sessionCookie(session.Token, session.ExpiresAt, secure))
-	httpx.JSON(w, http.StatusCreated, map[string]any{
-		"token":      session.Token,
-		"expires_at": session.ExpiresAt,
-		"user":       session.User,
-		"next":       "/dashboard",
-	})
+	h.sessionResponse(w, r, http.StatusCreated, session, map[string]any{"next": "/dashboard"})
 	return nil
 }
 
@@ -247,14 +262,45 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, sessionCookie(session.Token, session.ExpiresAt, secure))
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"token":      session.Token,
-		"expires_at": session.ExpiresAt,
-		"user":       session.User,
-		"next":       nextRoute(session.User),
-	})
+	h.sessionResponse(w, r, http.StatusOK, session, map[string]any{"next": nextRoute(session.User)})
+	return nil
+}
+
+// Refresh handles POST /v1/auth/refresh: exchange a refresh token for a new pair.
+//
+// The presented token is single-use. The response carries the successor, and the client must replace
+// what it holds — keeping the old one only produces a SESSION_REUSED on the next attempt, and that is
+// deliberate: a token used twice means two parties have it.
+func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		RefreshToken string `json:"refreshToken"`
+	}
+	// A body is optional so a client that keeps the token in storage can still post it explicitly.
+	if r.ContentLength > 0 {
+		if err := httpx.Decode(r, &in); err != nil {
+			return err
+		}
+	}
+	if in.RefreshToken == "" {
+		if cookie, err := r.Cookie(RefreshCookie); err == nil {
+			in.RefreshToken = cookie.Value
+		}
+	}
+
+	limiter, ok := r.Context().Value(limiterKey{}).(*httpx.Limiter)
+	if ok {
+		key := "refresh:" + httpx.ClientIP(r)
+		if allowed, retry := limiter.Allow(key, 30, time.Minute); !allowed {
+			w.Header().Set("Retry-After", itoa(retry))
+			return httpx.NewError(httpx.CodeRateLimited, "Too many attempts. Try again shortly.")
+		}
+	}
+
+	session, err := h.svc.Refresh(r.Context(), in.RefreshToken, r.UserAgent())
+	if err != nil {
+		return err
+	}
+	h.sessionResponse(w, r, http.StatusOK, session, nil)
 	return nil
 }
 
