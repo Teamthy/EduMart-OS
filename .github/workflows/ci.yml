@@ -78,7 +78,14 @@ jobs:
         # database. Exit code 3 means a reachable advisory, which is exactly a merge blocker.
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
+          set +e
+          OUT=$("$(go env GOPATH)/bin/govulncheck" ./... 2>&1)
+          CODE=$?
+          echo "$OUT"
+          # A finding nobody can read is a finding nobody fixes: surface the report as annotations so it
+          # is visible on the pull request rather than buried in a log.
+          echo "$OUT" | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          exit $CODE
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
