@@ -129,6 +129,28 @@ provides PostgreSQL and Redis for the production-shaped path; the default local 
 SQLite with in-process rate limiting. `docs/SECURITY_AND_DURABILITY.md` records the consistency
 decisions behind both choices.
 
+## Institutions and tenancy
+
+`internal/orgs` owns organisations, their memberships and their invitations. The rule it exists to
+enforce is that authority inside an institution comes from a membership or an invitation — never from a
+role chosen at signup.
+
+- **Membership is the source of truth.** `organization_memberships` holds `owner`, `admin`, `teacher`
+  and `student`. Every organisation query joins it, so a missing membership is a missing row rather than
+  a forgotten `if`.
+- **Not found, not forbidden.** Non-members get `404` on organisations, rosters, invitations and classes:
+  a `403` that distinguishes "exists" from "does not exist" is an enumeration oracle.
+- **Invitations are credentials.** Random 32-byte tokens stored as SHA-256 hashes, single use, email
+  locked, seven days, superseded on re-invite, revocable independently of expiry. The claim is an
+  `UPDATE … WHERE use_count < max_uses AND accepted_at IS NULL` whose affected-row count decides.
+- **The one global grant.** A teacher invitation confers the platform `teacher` role, because an owner
+  deliberately issued it. Admin and student invitations confer nothing outside the organisation.
+- **Institution classes are explicit.** `classes.organization_id` is set only when an owner or
+  administrator creates the class for the institution; a teacher's personal class stays personal, which
+  is what stops institution reporting from silently claiming somebody's private group.
+- **Approval is someone else's decision.** A new organisation starts `pending_verification` and only a
+  platform administrator can activate it.
+
 ## Database engines
 
 One query layer serves two engines. SQLite (a file) is the default for local development, CI and

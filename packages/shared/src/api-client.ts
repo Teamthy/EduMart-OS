@@ -215,7 +215,11 @@ export class ApiClient {
 
   // ── classes ───────────────────────────────────────────────────────────
   classes = () => this.get<{ classes: ClassSummary[] }>("/v1/classes");
-  createClass = (input: { name: string; subjectId?: string }) => this.post<{ class: ClassSummary }>("/v1/classes", input);
+  createClass = (input: { name: string; subjectId?: string; organizationId?: string }) =>
+    this.post<{ class: ClassSummary }>("/v1/classes", input);
+
+  organizationClasses = (organizationId: string) =>
+    this.get<{ classes: ClassSummary[] }>(`/v1/organizations/${organizationId}/classes`);
   joinClass = (joinCode: string) => this.post<{ class: ClassSummary }>("/v1/classes/join", { joinCode });
   roster = (classId: string) => this.get<{ members: ClassMember[] }>(`/v1/classes/${classId}/roster`);
   assignments = (classId: string) => this.get<{ assignments: Assignment[] }>(`/v1/classes/${classId}/assignments`);

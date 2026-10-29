@@ -194,6 +194,44 @@ def main():
     status, body = call("GET", "/organizations/" + organization["id"], None, outsider_token)
     expect(status == 404, "removing the membership removes the access it carried")
 
+    print("institutions")
+    teacher_token = call("POST", "/auth/login", {"email": "teacher@edumart.ng", "password": "Teacher123!"})[1]["token"]
+    status, created = call("POST", "/organizations", {"name": "Smoke Academy " + uuid.uuid4().hex[:6], "kind": "school"}, teacher_token)
+    expect(status == 201, "a verified teacher can register an institution")
+    institution = created["organization"]
+    expect(institution["status"] == "pending_verification" and not institution["verified"],
+           "a new institution starts unverified")
+    expect(institution["role"] == "owner", "the creator owns the institution")
+
+    status, _ = call("POST", f"/admin/organizations/{institution['id']}/verify", None, teacher_token)
+    expect(status == 403, "a teacher cannot approve their own institution")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    status, approved = call("POST", f"/admin/organizations/{institution['id']}/verify", None, admin_token)
+    expect(status == 200 and approved["organization"]["verified"], "a platform administrator approves it")
+
+    status, invited = call("POST", f"/organizations/{institution['id']}/invitations",
+                           {"email": "student@edumart.ng", "role": "student"}, teacher_token)
+    expect(status == 201 and invited["token"], "an owner can invite a member")
+    student_token = call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})[1]["token"]
+    status, _ = call("POST", "/organizations/invitations/accept", {"token": invited["token"]}, student_token)
+    expect(status == 200, "the invited account can accept")
+    status, _ = call("POST", "/organizations/invitations/accept", {"token": invited["token"]}, student_token)
+    expect(status == 409, "an invitation cannot be used twice")
+
+    status, roster = call("GET", f"/organizations/{institution['id']}/members", None, teacher_token)
+    expect(status == 200 and len(roster["members"]) == 2, "the roster shows both members")
+    status, _ = call("GET", f"/organizations/{institution['id']}/members", None, student_token)
+    expect(status == 403, "a student member cannot read the roster")
+    status, _ = call("POST", f"/organizations/{institution['id']}/invitations",
+                     {"email": "spy@example.com", "role": "teacher"}, student_token)
+    expect(status == 403, "a student member cannot invite anyone")
+
+    student_id = next(m["userId"] for m in roster["members"] if m["email"] == "student@edumart.ng")
+    status, _ = call("DELETE", f"/organizations/{institution['id']}/members/{student_id}", None, teacher_token)
+    expect(status == 200, "an owner can remove a member")
+    status, _ = call("GET", f"/organizations/{institution['id']}", None, student_token)
+    expect(status == 404, "removing the membership removes the access it carried")
+
     print("deliveries")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
     status, records = call("GET", "/admin/deliveries", None, admin_token)
