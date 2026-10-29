@@ -182,6 +182,25 @@ Webhook behaviour: verify signature → record event (unique per `provider`+`eve
 reference → verify amount and currency → ignore non-`succeeded` statuses → mark paid, grant
 entitlements, audit. Replays return `{received: true, duplicate: true}`.
 
+### Refunds
+
+| Method | Path | Roles | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/admin/orders/{id}/refund` | finance, platform_admin | `{amountMinor?, reason, idempotencyKey?}` — omit the amount to refund the remainder |
+| `GET` | `/admin/orders/{id}/refunds` | finance, platform_admin, support | Refund history plus `{totalMinor, refundedMinor}` |
+| `GET` | `/admin/finance/reconciliation?from=&to=` | finance, platform_admin | Five contradiction checks; reports how many ran |
+
+A refund is an **append-only compensating entry**: `orders.totalMinor` keeps saying what was charged,
+the refund rows say what came back, and `status` becomes `partially_refunded` or `refunded` as a derived
+value recomputed in the same transaction. An amount beyond the remainder is a `409 CONFLICT` whose
+`details` carry `{totalMinor, refundedMinor, remainingMinor, attemptedMinor}` — a refusal has to say what
+is left. Repeating a request with the same `idempotencyKey` returns the original refund; providers retry.
+A full refund revokes the entitlements that order granted and books a proportional negative entry in the
+commission ledger, so the earning stays in history and the payout total stays explainable. Every refund
+writes `payment.refunded` to `audit_logs` with the amount, the full flag and the order reference.
+
+Refunds here are **recorded, not transferred**: the sandbox has no refund API, so no money moves yet.
+
 ## Staff
 
 | Method | Path | Roles |

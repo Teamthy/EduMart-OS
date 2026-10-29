@@ -1825,6 +1825,120 @@ paths:
         "200": { description: Metrics }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /v1/admin/orders/{id}/refund:
+    post:
+      tags: [commerce, staff]
+      summary: Refund an order, in full or in part
+      description: |
+        Money is corrected by appending a refund, never by editing the order. `orders.totalMinor`
+        keeps stating what was charged; the refund rows state what came back, and the order status
+        becomes `partially_refunded` or `refunded` as a derived value.
+
+        Omit `amountMinor` to refund whatever is left. An amount greater than the remainder is
+        refused with `409 CONFLICT` and details naming the total, what has already been refunded and
+        what remains. Repeating a request with the same `idempotencyKey` returns the original refund
+        instead of creating a second one, because providers retry.
+
+        A full refund revokes the entitlements that order granted and books a proportional negative
+        entry in the commission ledger.
+      operationId: refundOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                amountMinor:
+                  type: integer
+                  minimum: 1
+                  description: Amount to return in the currency's minor unit. Omit to refund the remainder.
+                reason:
+                  type: string
+                  description: Why the money is going back. Required — an unexplained refund cannot be audited.
+                idempotencyKey:
+                  type: string
+                  description: Client-generated; a retry with the same key returns the original refund.
+      responses:
+        "200":
+          description: Refund recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund: { $ref: "#/components/schemas/Refund" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/admin/orders/{id}/refunds:
+    get:
+      tags: [commerce, staff]
+      summary: Refunds recorded against an order
+      description: Readable by support as well as finance — answering "where is my refund?" must not need a refund permission.
+      operationId: listOrderRefunds
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Refunds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refunds:
+                    type: array
+                    items: { $ref: "#/components/schemas/Refund" }
+                  totalMinor: { type: integer }
+                  refundedMinor: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/admin/finance/reconciliation:
+    get:
+      tags: [commerce, staff]
+      summary: Reconcile the books against themselves
+      description: |
+        Not a revenue report: a list of places where two records of the same money disagree, plus
+        the number of checks that ran. An empty `discrepancies` list with a `checked` count is the
+        claim; a report that silently checked nothing is worse than no report.
+
+        Checks: `paid_without_entitlement`, `entitlement_without_payment`,
+        `refund_exceeds_total`, `succeeded_attempt_unpaid`, `paid_without_attempt`.
+      operationId: financeReconciliation
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Reconciliation report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reconciliation: { $ref: "#/components/schemas/Reconciliation" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/admin/cases:
     get:
       tags: [staff]
@@ -1877,6 +1991,9 @@ components:
   responses:
     Conflict:
       description: The request conflicts with the account's current state
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     ValidationError:
       description: One or more fields are invalid
       content:
@@ -2123,6 +2240,58 @@ components:
         refresh_expires_at: { type: string, format: date-time }
         next: { type: string }
         user: { $ref: "#/components/schemas/User" }
+
+    Refund:
+      type: object
+      description: |
+        One recorded return of money. Refunds are append-only: two partial refunds are two rows, and
+        the amount returned so far is their sum. Nothing here edits the charge it compensates.
+      required: [id, orderId, amountMinor, currency, fullRefund, reason, createdAt]
+      properties:
+        id: { type: string }
+        orderId: { type: string }
+        amountMinor: { type: integer }
+        currency: { type: string }
+        fullRefund:
+          type: boolean
+          description: True when this refund returned everything that was left on the order.
+        reason: { type: string }
+        actorUserId: { type: string, nullable: true }
+        provider: { type: string, description: The payment provider the refund was recorded against. }
+        providerRefundId: { type: string, nullable: true }
+        idempotencyKey: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    Discrepancy:
+      type: object
+      required: [kind, orderId, detail]
+      properties:
+        kind:
+          type: string
+          enum:
+            - paid_without_entitlement
+            - entitlement_without_payment
+            - refund_exceeds_total
+            - succeeded_attempt_unpaid
+            - paid_without_attempt
+        orderId: { type: string }
+        detail: { type: string, description: What the two records say, in words an operator can act on. }
+
+    Reconciliation:
+      type: object
+      required: [from, to, checked, paidOrders, discrepancies]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        checked:
+          type: integer
+          description: How many distinct checks ran. A report that checked nothing is not a clean report.
+        paidOrders: { type: integer }
+        refundedMinor: { type: integer }
+        webhookFailures: { type: integer }
+        discrepancies:
+          type: array
+          items: { $ref: "#/components/schemas/Discrepancy" }
 
     RegisterRequest:
       type: object

@@ -10,6 +10,7 @@ const (
 	TemplatePasswordReset = "password_reset"
 	TemplateInvitation    = "invitation"
 	TemplateReceipt       = "purchase_receipt"
+	TemplateRefund        = "refund_receipt"
 )
 
 // template is one message shape: subject plus body, built from named values.
@@ -69,6 +70,21 @@ What you bought is available in your library now. Keep this email — it is your
 reference above is what support will ask for.
 
 — Edumart`, v["name"], v["reference"], v["items"], v["total"], v["paid"])
+		},
+	},
+	TemplateRefund: {
+		subject: "Your Edumart refund",
+		body: func(v map[string]string) string {
+			return fmt.Sprintf(`Hi %s,
+
+We have refunded %s on order %s.
+
+Your bank or payment provider may take a few working days to show it. If you bought something with
+that payment, access to it ends now — the refund returns the money and the product together.
+
+Keep this email: the reference above is what support will ask for.
+
+— Edumart`, v["name"], v["amount"], v["reference"])
 		},
 	},
 	TemplatePasswordReset: {

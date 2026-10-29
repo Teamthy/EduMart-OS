@@ -58,6 +58,9 @@ func NewRouter(d Deps) http.Handler {
 	contentHandlers := content.NewHandlers(d.Items, d.Logger)
 	assessmentHandlers := assessment.NewHandlers(d.Exams, d.Logger)
 	classroomHandlers := classroom.NewHandlers(d.Classes)
+	// A paid order is where a referral stops being an attribution and starts being a liability. The
+	// hook keeps that decision in the rewards ledger while commerce stays the owner of the payment fact.
+	d.Shop.WithReferralQualifier(d.Rewards.QualifyReferral)
 	commerceHandlers := commerce.NewHandlers(d.Shop)
 	rewardsHandlers := rewards.NewHandlers(d.Rewards)
 	insightsHandlers := insights.NewHandlers(d.Insights)
@@ -191,6 +194,11 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/admin/review-queue", wrap(staffHandlers.ReviewQueue))
 		v1.Post("/admin/question-versions/{id}/review", wrap(staffHandlers.Review))
 		v1.Get("/admin/metrics", wrap(staffHandlers.Metrics))
+		// Money corrections are finance's job, not support's: the two roles answer different questions
+		// and only one of them is accountable for the total.
+		v1.Post("/admin/orders/{id}/refund", wrap(commerceHandlers.Refund))
+		v1.Get("/admin/orders/{id}/refunds", wrap(commerceHandlers.OrderRefunds))
+		v1.Get("/admin/finance/reconciliation", wrap(commerceHandlers.ReconciliationReport))
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))
 		v1.Get("/admin/organizations", wrap(orgHandlers.ApprovalQueue))

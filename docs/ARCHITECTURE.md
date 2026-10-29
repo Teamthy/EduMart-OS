@@ -268,6 +268,37 @@ The interesting part is what happens when the world changes between the two:
 - **Withdrawn reminders are kept.** "We decided to warn them and then did not, because they had submitted"
   is an answer support needs, so the row is settled, not deleted.
 
+## Money is corrected by appending, never by editing
+
+A payment has four facts that must never contradict each other: what was charged (`orders.total_minor`),
+what the provider said (`payment_webhook_events`, `payment_attempts`), what the learner can access
+(`entitlements`), and what a referrer earned (`commission_ledger_entries`). The first version of this
+system could only ever add to them, which meant a refund had nowhere to go.
+
+Phase 22 adds the correction path and one rule: **nothing that already happened is rewritten.**
+
+- `orders.total_minor` and the original status transition stay as they were. A refund inserts a row in
+  `refunds`; the order's status is recomputed from those rows inside the same transaction
+  (`paid` → `partially_refunded` → `refunded`), so the status is a projection of the rows rather than a
+  second opinion about them.
+- Entitlements are *revoked* on a full refund, not deleted: "this learner had access and then did not" is
+  a different fact from "this learner never had access", and support will be asked the difference.
+- Commission is reversed with a negative entry keyed `commission:reversal:<refundId>`, scaled by the
+  refunded share. The original earning remains, so a payout statement can explain itself line by line. The
+  uniqueness of the reversal key is what makes "reversed twice" impossible rather than merely unlikely.
+- The refund is created, the ledger corrected and the audit written in one transaction. The receipt email
+  is queued *after* the commit — inside it, SQLite would ask for a second connection while the write
+  transaction holds the database, which is a deadlock rather than a slow path.
+
+Reconciliation follows from the same design. Because every one of those four facts is durable and
+timestamped, the books can be asked where they disagree with themselves: money taken with nothing granted,
+something granted for an unpaid order, more returned than charged, a succeeded attempt that never marked
+its order paid, or a paid order no attempt accounts for. The report returns the count of checks that ran
+alongside the list, because "no discrepancies" and "nothing was checked" look identical otherwise.
+
+The honest limit: this records refunds, it does not transfer money. Until a provider refund adapter exists,
+finance is looking at an accurate ledger of an action someone must still complete at the provider.
+
 ## Sessions: two tokens, one family
 
 A session is a pair. The access token travels on every request and lives seven days; the refresh token

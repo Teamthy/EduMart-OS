@@ -37,7 +37,12 @@ frozen on submit.
   and scoring policy version used for that attempt, so re-scoring an old attempt stays reproducible
   after content edits.
 - **Append-only ledgers**: `points_ledger_entries` and `commission_ledger_entries` are separate and
-  insert-only; corrections are compensating entries.
+  insert-only; corrections are compensating entries. Refunds follow the same rule: `refunds` rows are
+  appended, `orders.total_minor` is never rewritten, and a full refund books a negative commission entry
+  keyed `commission:reversal:<refundId>` so a reversal cannot happen twice.
+- **Money movements are attributable**: every refund writes `payment.refunded` to `audit_logs` with the
+  amount, the full flag and the order reference (no customer PII), and a reason is mandatory at the API
+  boundary — an unexplained refund is a loss nobody can account for later.
 - **Constraints in the schema**, not only in Go: foreign keys, uniqueness on session tokens, class
   memberships, provider event ids and referral codes.
 - **Silent-failure avoidance**: the API refuses to boot when the database is unreachable, and names

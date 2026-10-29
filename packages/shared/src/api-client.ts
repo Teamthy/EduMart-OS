@@ -19,6 +19,8 @@ import type {
   Pathway,
   PlatformMetrics,
   Product,
+  Reconciliation,
+  Refund,
   ReviewQueueItem,
   RewardsSummary,
   SaveAnswerResult,
@@ -255,6 +257,28 @@ export class ApiClient {
   orders = () => this.get<{ orders: Order[] }>("/v1/orders");
   library = () => this.get<{ products: Product[] }>("/v1/library");
   simulatePayment = (orderId: string) => this.post<{ order: Order }>(`/v1/orders/${orderId}/simulate-payment`);
+  /**
+   * Return money on an order, in full or in part.
+   *
+   * Omit `amountMinor` to refund the remainder. A retry with the same `idempotencyKey` returns the
+   * original refund rather than creating a second one, so callers should generate the key before the
+   * first attempt and keep it for retries.
+   */
+  refundOrder = (
+    orderId: string,
+    input: { amountMinor?: number; reason: string; idempotencyKey?: string },
+  ) => this.post<{ refund: Refund }>(`/v1/admin/orders/${orderId}/refund`, input);
+  orderRefunds = (orderId: string) =>
+    this.get<{ refunds: Refund[]; totalMinor: number; refundedMinor: number }>(
+      `/v1/admin/orders/${orderId}/refunds`,
+    );
+  reconciliation = (range?: { from?: string; to?: string }) => {
+    const query = new URLSearchParams();
+    if (range?.from) query.set("from", range.from);
+    if (range?.to) query.set("to", range.to);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.get<{ reconciliation: Reconciliation }>(`/v1/admin/finance/reconciliation${suffix}`);
+  };
 
   // ── rewards ───────────────────────────────────────────────────────────
   rewards = () => this.get<{ rewards: RewardsSummary }>("/v1/rewards");
