@@ -18,8 +18,8 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
 | 5 | Database and persistence | Partial | Both engines tested; **restore demonstrated for both engines** (destroy → restore → verify, in CI). Still no scheduled backup, off-site copy or PITR |
-| 6 | API platform and contracts | Done | 74 routes, contract checked in CI |
-| 7 | Identity and account lifecycle | Partial | Verification and delivery are solid, and accounts can now be suspended with their sessions; **no refresh-token rotation**, PBKDF2 rather than Argon2id |
+| 6 | API platform and contracts | Done | 75 routes, contract checked in CI |
+| 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
@@ -99,7 +99,7 @@ a snapshot would exist when it is needed.
 
 ### Phase 6 — API platform and shared contracts · Done
 
-74 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+75 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
 `scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
 `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
 `SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
@@ -111,16 +111,44 @@ TypeScript client used by web and mobile.
 | Item | Status |
 | --- | --- |
 | Registration, login, logout | Done |
-| Password hashing | PBKDF2, not Argon2id. Argon2id needs `golang.org/x/crypto/argon2`; drop-in in `internal/auth/password.go` |
+| Password hashing | **Argon2id** (`golang.org/x/crypto/argon2`), m=19 MiB, t=2, p=1 — the OWASP baseline. Parameters live inside each digest, so raising them later rehashes rows on their next sign-in rather than locking anyone out. PBKDF2 digests still verify and are upgraded on use |
 | Password recovery | Done, enumeration-safe, invalidates every session |
 | Sessions and revocation | Done — opaque tokens, server-side revocation, `GET /v1/me/sessions`, `DELETE /v1/me/sessions/{id}` |
 | **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through the durable courier (Phase 24), so a relay outage retries instead of losing the code |
 | Verification gate | Checkout (`POST /v1/orders`) refuses an unverified address with `EMAIL_NOT_VERIFIED` |
 | Rate limits | Per-route, **in-process** — resets on restart and does not span instances |
-| Refresh tokens / rotation | **Not started** — one 7-day opaque session. Rotating refresh tokens without short-lived access tokens would be theatre, so this needs a client session strategy first |
+| Refresh tokens / rotation | **Done** — `POST /v1/auth/refresh` exchanges a single-use, 30-day refresh token for a new pair (7-day access token + new refresh token). Reuse past a 20-second grace window revokes the whole session family with `401 SESSION_REUSED`. Sign-out ends the family too. The web shell does not yet rotate — it keeps its 7-day cookie and signs in again; native clients rotate |
 | **Account suspension** | **Done** — `POST /v1/admin/users/{id}/suspend` and `/reinstate`, platform administrators only, never against an administrator or yourself |
 | Moderation lookup | `GET /v1/admin/users?q=&status=` — an administrator cannot suspend an account they cannot find |
 | Security-event audit trail | Suspension and reinstatement write `user.suspended` / `user.reinstated` to `audit_logs` in the same transaction as the change |
+
+**Session rotation, and why the family is the unit.** A single long-lived token has one failure mode
+that matters: once it leaks, the thief has the owner's standing for the token's whole life and nobody can
+tell the two apart. Rotation turns that into a detectable event — every exchange retires the presented
+token, so a token used twice means two parties hold it. The response is not "fail this request": it is
+revoke every session descended from that sign-in, because there is no way to know which party is the
+thief. Three details make it work rather than merely exist:
+
+- **The retired hash is kept, not cleared.** Clearing it would make a replay look like a token that never
+  existed, and the detection would quietly stop working. The hash is a one-way digest of a token that can
+  no longer authenticate anything.
+- **A 20-second grace window is not a weakening.** Two browser tabs refreshing at the same moment is a
+  race; treating it as theft would sign people out of everything and teach them to distrust the
+  mechanism. Inside the window the duplicate is refused without revoking the family; outside it, the
+  family dies.
+- **The access token dies on rotation too.** After an exchange there is exactly one live pair, so "which
+  token is current?" has an answer.
+
+Proven by `TestRefreshRotatesAndRetiresTheOldToken`, `TestReusingARefreshTokenKillsTheWholeFamily`,
+`TestRefreshingTwiceInTheGraceWindowDoesNotRevokeTheFamily`, `TestSigningOutEndsTheWholeFamily`,
+`TestSignInIssuesARotatingPair`, `TestRefreshRejectsASuspendedAccount`,
+`TestSessionsListShowsOneDeviceAfterRotation`, `TestFamilyRowsShareOneIdentifier`, and the
+`token rotation` section of the smoke run.
+
+Password hashing is proven by `TestPasswordsAreHashedWithArgon2id`, `TestALegacyPBKDF2HashStillSignsIn`,
+`TestSignInUpgradesAnOldPasswordHash`, `TestAbsurdArgon2ParametersAreRejected` and
+`TestLongPasswordsAreRefused`. The last of those is not paranoia: a digest arrives from the database, and
+a tampered row could otherwise ask the process to allocate a gigabyte per sign-in attempt.
 
 Verification is proven by `TestEmailVerificationJourney`, `TestCheckoutRequiresVerifiedEmail`,
 `TestVerificationAttemptsAreLimited`, `TestVerificationResendIsThrottled`, `TestPhoneVerification`,
@@ -321,13 +349,14 @@ is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ## Recommended next three steps
 
-1. **Phase 7 hardening: Argon2id and refresh-token rotation.** Suspension, session revocation and
-   verification are done; what remains is a stolen session that lives until it expires, and a password
-   hash that is PBKDF2 rather than the current recommendation.
-2. **Phase 22: refunds and reconciliation as compensating ledger entries.** The sandbox provider works and
-   webhooks are the only source of payment truth, but nothing can correct a payment after the fact.
-3. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill is
-   done; the other half of "we believe we are safe" is still a belief.
+1. **Phase 22: refunds and reconciliation as compensating ledger entries.** The sandbox provider works and
+   webhooks are the only source of payment truth, but nothing can correct a payment after the fact — and
+   a ledger that can only ever grow is not a ledger an accountant will accept.
+2. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill and
+   the session model are done; "we believe our dependencies are clean" is still a belief.
+3. **Phase 9/20: an operations console and accessibility pass.** The approval queue, moderation and
+   reminders are API-complete but only partly surfaced, and nothing has been checked with a screen
+   reader.
 
 ## Feature completion checklist
 

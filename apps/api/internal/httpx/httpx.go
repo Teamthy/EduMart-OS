@@ -38,7 +38,12 @@ const (
 	// CodeAccountSuspended is distinct from CodeForbidden on purpose: the person needs to know that
 	// signing in again will not help, and that support is the next step.
 	CodeAccountSuspended ErrorCode = "ACCOUNT_SUSPENDED"
-	CodeInternal         ErrorCode = "INTERNAL_ERROR"
+
+	// CodeSessionReused means a refresh token was presented twice, so the whole session family has been
+	// revoked. It is distinct from UNAUTHENTICATED because retrying cannot help: the client must send
+	// the user back to sign-in, and silently retrying would hide the one signal that matters.
+	CodeSessionReused ErrorCode = "SESSION_REUSED"
+	CodeInternal      ErrorCode = "INTERNAL_ERROR"
 )
 
 var statusFor = map[ErrorCode]int{
@@ -55,6 +60,7 @@ var statusFor = map[ErrorCode]int{
 	CodeEmailUnverified:  http.StatusForbidden,
 	CodeJoinCodeExpired:  http.StatusGone,
 	CodeAccountSuspended: http.StatusForbidden,
+	CodeSessionReused:    http.StatusUnauthorized,
 	CodeInternal:         http.StatusInternalServerError,
 }
 
@@ -76,7 +82,14 @@ func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }
 
 // NewError builds a domain error with the default status for its code.
 func NewError(code ErrorCode, message string, details ...any) *Error {
-	err := &Error{Code: code, Message: message, Status: statusFor[code]}
+	status, known := statusFor[code]
+	if !known {
+		// An unmapped code used to produce Status 0, which `http.ResponseWriter` rejects with a panic
+		// deep inside the handler — a confusing 500 for what is really a programming mistake. Defaulting
+		// to 500 keeps the API's error envelope intact and the mistake visible in the logs.
+		status = http.StatusInternalServerError
+	}
+	err := &Error{Code: code, Message: message, Status: status}
 	if len(details) > 0 {
 		err.Details = details[0]
 	}

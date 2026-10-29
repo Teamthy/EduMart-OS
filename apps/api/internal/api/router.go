@@ -98,6 +98,9 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/auth/register", wrap(authHandlers.Register))
 			g.Post("/auth/login", wrap(authHandlers.Login))
 			g.Post("/auth/logout", wrap(authHandlers.Logout))
+			// Refresh is inside the rate-limited group on purpose: it is the one endpoint an attacker
+			// with a stolen token would hammer.
+			g.Post("/auth/refresh", wrap(authHandlers.Refresh))
 			g.Post("/auth/password/forgot", wrap(authHandlers.Forgot))
 			g.Post("/auth/password/reset", wrap(authHandlers.Reset))
 			g.Post("/auth/verification/request", wrap(authHandlers.RequestVerification))

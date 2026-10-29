@@ -268,3 +268,27 @@ The interesting part is what happens when the world changes between the two:
 - **Withdrawn reminders are kept.** "We decided to warn them and then did not, because they had submitted"
   is an answer support needs, so the row is settled, not deleted.
 
+## Sessions: two tokens, one family
+
+A session is a pair. The access token travels on every request and lives seven days; the refresh token
+is used rarely, lives thirty, and is retired the moment it is used. Storing either in clear text would
+make a database read equivalent to a sign-in, so both are stored as `sha256`.
+
+Every token descended from one sign-in shares a `family_id`, and that is the unit of revocation. It is
+what makes reuse detection worth detecting: if a rotated token is presented twice, revoking only the
+row that was replayed leaves whoever stole it holding a working refresh token while the rightful owner
+is signed out — the worst of both outcomes. So the family dies, and `SESSION_REUSED` tells the client to
+send the user back to sign-in rather than retry.
+
+Two details exist because the alternative is subtly broken:
+
+- **The retired hash is kept.** Clearing it on rotation would make a replay indistinguishable from a
+  token that never existed, and the detection would stop working without any test noticing.
+- **A short grace window is not a hole.** Two browser tabs refreshing simultaneously is a race, not
+  theft. Inside 20 seconds the duplicate is refused without revoking the family; outside it, the signal
+  is real and the family goes.
+
+The web shell keeps the seven-day access cookie and does not rotate; native clients hold the pair in
+secure storage and do. The API never sets a refresh cookie of its own — a thirty-day single-use
+credential does not belong in a jar that every request to the origin carries.
+

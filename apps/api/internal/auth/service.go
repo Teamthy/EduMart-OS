@@ -31,8 +31,16 @@ const (
 	RolePlatformAdmin = "platform_admin"
 )
 
-// SessionCookie is the browser session cookie name.
+// SessionCookie is the browser session cookie name: the short-lived access token.
 const SessionCookie = "edumart_session"
+
+// RefreshCookie is the name a browser client may use to present its refresh token to
+// POST /v1/auth/refresh instead of sending it in the body.
+//
+// The API never sets this cookie itself. A refresh token is a 30-day single-use credential, and putting
+// it in a cookie hands it to every request the browser makes to this origin on behalf of a client that
+// may not use it. A client that wants the cookie can set it itself, scoped to the auth path.
+const RefreshCookie = "edumart_refresh"
 
 const sessionTTL = 7 * 24 * time.Hour
 
@@ -178,7 +186,11 @@ func ValidateRegister(in RegisterInput) []httpx.FieldError {
 type Session struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expiresAt"`
-	User      *User     `json:"user"`
+	// RefreshToken is the long-lived half of the pair. It is returned exactly once per issue and
+	// rotated on every exchange, so a copy that shows up twice is evidence of a leak.
+	RefreshToken     string    `json:"refreshToken,omitempty"`
+	RefreshExpiresAt time.Time `json:"refreshExpiresAt,omitzero"`
+	User             *User     `json:"user"`
 }
 
 // Register creates the account, default role, referral code and (optionally) the referral attribution.
@@ -197,7 +209,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, userAgent stri
 		return nil, err
 	}
 
-	hash, err := HashPassword(in.Password)
+	hash, err := hashPasswordChecked(in.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -320,33 +332,43 @@ func randomSuffix(n int) string {
 	return string(out)
 }
 
-// CreateSession issues an opaque token, storing only its hash.
+// CreateSession issues an access token and a refresh token, storing only their hashes.
+//
+// It starts a new token family: this is a sign-in, not a rotation.
 func (s *Service) CreateSession(ctx context.Context, userID, userAgent, client string) (*Session, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, err
-	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	expires := time.Now().UTC().Add(sessionTTL)
-	if client == "" {
-		client = "web"
-	}
-	if _, err := s.db.DB.ExecContext(ctx, `INSERT INTO sessions (id, user_id, user_agent, client, created_at, expires_at)
-		VALUES (?,?,?,?,?,?)`, hashToken(token), userID, userAgent, client, store.Now(), store.TS(expires)); err != nil {
+	row, err := s.createSessionRow(ctx, userID, userAgent, client, "")
+	if err != nil {
 		return nil, err
 	}
 	user, err := s.UserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return &Session{Token: token, ExpiresAt: expires, User: user}, nil
+	return &Session{
+		Token:            row.Token,
+		ExpiresAt:        row.ExpiresAt,
+		RefreshToken:     row.RefreshToken,
+		RefreshExpiresAt: row.RefreshExpiresAt,
+		User:             user,
+	}, nil
 }
 
-// Revoke marks the session revoked so it stops working immediately.
+// Revoke ends the session behind a token — and the rest of its family with it.
+//
+// Signing out of one device should end that chain, not leave a sibling refresh token alive for a
+// subsequent exchange. The row is looked up first because the family id lives on it.
 func (s *Service) Revoke(ctx context.Context, token string) error {
-	_, err := s.db.DB.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
-		store.Now(), hashToken(token))
-	return err
+	sessionID := hashToken(token)
+	var familyID string
+	err := s.db.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(family_id, id) FROM sessions WHERE id = ?`, sessionID).Scan(&familyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already gone; signing out twice is not an error
+	}
+	if err != nil {
+		return err
+	}
+	return s.RevokeFamily(ctx, familyID)
 }
 
 // Authenticate resolves a request to a user: bearer token first (mobile), then session cookie.
@@ -463,6 +485,21 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, client 
 	default:
 		return nil, httpx.NewError(httpx.CodeForbidden, "This account is not active. Contact support.")
 	}
+
+	// Sign-in is the only moment the plaintext password exists, so it is the only moment an outdated
+	// digest can be upgraded. A failure here is logged and swallowed: the password was correct, and
+	// refusing the sign-in because a background upgrade did not land would punish the user for an
+	// internal problem.
+	if NeedsRehash(hash) {
+		if upgraded, rehashErr := hashPasswordChecked(password); rehashErr == nil {
+			if _, err := s.db.DB.ExecContext(ctx,
+				`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+				upgraded, store.Now(), userID); err != nil {
+				s.log().Warn("password rehash failed", "userId", userID, "error", err.Error())
+			}
+		}
+	}
+
 	return s.CreateSession(ctx, userID, userAgent, client)
 }
 
@@ -525,7 +562,7 @@ func (s *Service) ResetPassword(ctx context.Context, token, password string) err
 		return httpx.NewError(httpx.CodeConflict, "This reset link has expired.")
 	}
 
-	hash, err := HashPassword(password)
+	hash, err := hashPasswordChecked(password)
 	if err != nil {
 		return err
 	}

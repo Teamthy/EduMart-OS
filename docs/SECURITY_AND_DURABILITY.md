@@ -127,6 +127,23 @@ Not there yet — see `docs/PRODUCTION_READINESS.md` for the full list:
 - Audit trail: admin review, case resolution and organisation membership changes are recorded in
   `audit_logs`, but there is no general audit stream and no retention policy for it.
 
+## Sessions and password hashing
+
+| Concern | What the code does | Why that shape |
+| --- | --- | --- |
+| Password storage | Argon2id, m=19 MiB, t=2, p=1 | Memory-hard, not just CPU-hard: a GPU farm has to buy RAM for every parallel guess. Parameters live in the digest, so they can be raised without invalidating anyone |
+| Legacy digests | PBKDF2 still verifies, and is rewritten as Argon2id on next sign-in | Changing the algorithm must never lock a learner out. Sign-in is the only moment the plaintext exists |
+| Tampered digests | Parameters bounded when parsing (≤1 GiB, ≤20 passes, ≤32 lanes) | A compromised row must not be able to make the process allocate a gigabyte per attempt |
+| Access token | Opaque, 7 days, stored as `sha256` | Only a hash is stored, so a database read cannot be replayed as credentials |
+| Refresh token | Opaque, single-use, 30 days, rotated on every exchange | A token used twice is proof that two parties hold it |
+| Reuse detection | Whole *family* revoked (`SESSION_REUSED`) past a 20s grace window | Revoking only the replayed row would leave the thief with a live refresh token while the victim is quietly signed out |
+| Sign-out | Revokes the family | "Sign out this device" has to end the chain, or it is advice rather than a control |
+| Suspension | Revokes sessions in the same transaction; the refresh path re-checks account status | A chain must not outlive the account's standing |
+
+Two things this does not do, and they are the honest gaps: there is no device-level second factor, and no
+risk signal (new country, impossible travel) that would prompt for re-authentication. The rotation model
+makes a *leaked token* detectable; it does nothing about a *guessed password* on a fresh device.
+
 ## Backup, restore and the honest gaps
 
 **Restoration is demonstrated; scheduling is not.** `scripts/restore-drill.py` starts the API against an

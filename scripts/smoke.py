@@ -116,6 +116,37 @@ def main():
     expect(status == 200 and products["products"], "the store lists products")
     expect(all(isinstance(p["priceMinor"], int) for p in products["products"]), "prices are integer minor units")
 
+    print("token rotation")
+    status, signed_in = call("POST", "/auth/login", {"email": "teacher@edumart.ng", "password": "Teacher123!"})
+    expect(status == 200 and signed_in.get("refresh_token"), "sign-in returns an access and a refresh token")
+    access, refresh = signed_in["token"], signed_in["refresh_token"]
+    expect(access != refresh, "the two tokens are different credentials")
+    expect(call("GET", "/me", None, refresh)[0] == 401,
+           "a refresh token cannot authenticate ordinary requests")
+
+    status, rotated = call("POST", "/auth/refresh", {"refreshToken": refresh})
+    expect(status == 200 and rotated["refresh_token"] != refresh, "a refresh token rotates into a new pair")
+    new_access, new_refresh = rotated["token"], rotated["refresh_token"]
+    expect(call("GET", "/me", None, new_access)[0] == 200, "the rotated access token works")
+    expect(call("GET", "/me", None, access)[0] == 401,
+           "the superseded access token stops working")
+
+    status, reused = call("POST", "/auth/refresh", {"refreshToken": refresh})
+    expect(status == 401, "replaying a rotated refresh token is refused")
+    if reused["error"]["code"] == "SESSION_REUSED":
+        expect(call("POST", "/auth/refresh", {"refreshToken": new_refresh})[0] == 401,
+               "genuine reuse revokes the whole family, not just the replayed token")
+        expect(call("GET", "/me", None, new_access)[0] == 401,
+               "the family's access token dies with it")
+    else:
+        expect(call("GET", "/me", None, new_access)[0] == 200,
+               "a duplicate inside the grace window leaves the successor usable")
+
+    status, second = call("POST", "/auth/login", {"email": "teacher@edumart.ng", "password": "Teacher123!"})
+    expect(status == 200 and second.get("refresh_token"), "signing in again after a revocation works")
+    expect(call("POST", "/auth/refresh", {"refreshToken": "not-a-real-token"})[0] == 401,
+           "an unknown refresh token is refused")
+
     print("verification")
     verified_user = call("GET", "/me", None, token)[1]["user"]
     expect(verified_user["emailVerified"] is True, "a seeded account has a proven address")
