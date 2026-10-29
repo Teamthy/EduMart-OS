@@ -13,9 +13,11 @@ is a change, not a rewrite.
 3. **Session hardening.** Session rotation on privilege change, absolute + idle expiry, a
    "signed-in devices" list in Settings, and rate limiting moved to Redis (`httpx.Limiter` is the seam).
 4. **Backups and restore drills.** Daily PostgreSQL snapshots, PITR, and a documented restore test.
-5. **Observability.** Structured logs exist (`slog` JSON with request ids). Add metrics
-   (`/metrics`: request latency, attempt finalisations, webhook outcomes) and tracing across the
-   Next.js → Go hop.
+5. ~~**Observability.**~~ **Metrics and alert rules are done** — `GET /metrics` publishes request counts
+   and latency by route pattern, error codes, webhook outcomes, refunds, reconciliation state, backup
+   freshness and sign-in failures, with fourteen alert rules checked against the exposition in CI. What
+   remains is not code: run Prometheus and route the `severity: page` rules to a person, and add tracing
+   when a request first crosses a service boundary. See `docs/OBSERVABILITY.md`.
 
 ## P1 — launch completeness
 

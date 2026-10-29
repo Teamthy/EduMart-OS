@@ -114,6 +114,24 @@ pg_basebackup -D /mnt/offsite/edumart-base/$(date -u +%Y%m%dT%H%M%SZ) -Ft -z -X 
 7. Point the API at the recovered cluster, run `python3 scripts/backup.py --verify --dest …` against the
    *new* backups directory, and only then resume traffic.
 
+## Recording that it ran
+
+A schedule that fails quietly is worse than no schedule, because it is believed. The backup job writes a
+heartbeat on every run:
+
+```bash
+python3 scripts/backup.py --engine postgres --dsn "$DSN" --dest /var/backups/edumart \
+    --heartbeat /var/lib/edumart/backup-heartbeat.json
+python3 scripts/backup.py --verify --dest /var/backups/edumart \
+    --heartbeat /var/lib/edumart/backup-heartbeat.json
+```
+
+The first write says `"verifiedAt": false`; only the restore-and-compare step flips it. The API is pointed at
+the file with `EDUMART_BACKUP_HEARTBEAT` and re-reads it on every scrape, so the freshness of the backup and
+the freshness of the database are answered by the same request. A missing file is not an error the API
+reports — it means "no backup has ever been recorded", which is what the `absent()` alert says, in words a
+person can act on.
+
 ## Targets, stated honestly
 
 | | Target | Status |
@@ -127,8 +145,12 @@ pg_basebackup -D /mnt/offsite/edumart-base/$(date -u +%Y%m%dT%H%M%SZ) -Ft -z -X 
 
 Named so nobody assumes otherwise:
 
-- **No alerting on backup failure.** The systemd unit's failure status is what an alert would hang off; no
-  monitoring is wired to it yet (see the threat model's R9).
+- ~~No alerting on backup failure.~~ **Closed.** `backup.py --heartbeat` records each run where the API
+  reads it, and `/metrics` publishes `edumart_backup_age_seconds`, `edumart_backup_rows` and
+  `edumart_backup_last_run_succeeded`. Three rules in `infra/observability/alerts.yml` fire on a missing
+  heartbeat, an age over 36 hours, and a run that was never verified. See
+  [`OBSERVABILITY.md`](./OBSERVABILITY.md#backup-stale). What remains is delivery: routing Alertmanager to a
+  phone is deployment configuration, not code, and is not in this repository.
 - **No encryption at rest by this tooling.** Backups rely on volume or object-store encryption; the dumps
   themselves are not encrypted with a key we manage.
 - **No cross-region replication.** `--mirror` copies once, to one destination.

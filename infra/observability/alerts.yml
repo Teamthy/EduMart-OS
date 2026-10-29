@@ -1,0 +1,222 @@
+# Alert rules for Edumart.
+#
+# Every metric named here is checked against the running API's /metrics by `scripts/check-alerts.py`,
+# which CI runs. That check exists because the failure mode of an alerting setup is silence: a rule that
+# references a metric nobody emits — a typo, a rename, a feature removed — is not an error anywhere, it is
+# simply an alert that will never fire. The dashboard looks green and the pager stays quiet, which is
+# indistinguishable from a healthy system until it is not.
+#
+# Conventions:
+#   - `severity: page` means a person should be woken. `severity: ticket` means it is dealt with in the
+#     next working day. Everything else is a dashboard.
+#   - Every alert has a `runbook` anchor into docs/OBSERVABILITY.md. `check-alerts.py` verifies the anchor
+#     exists, because an alert whose runbook link is dead is an alert someone will silence.
+#   - Thresholds are chosen from the product's own behaviour, and each one says why it is that number.
+
+groups:
+  - name: edumart-availability
+    rules:
+      - alert: EdumartApiDown
+        expr: up{job="edumart-api"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "The API is not responding to scrapes"
+          description: >-
+            Prometheus cannot reach the API at all. Check the process, then /healthz (liveness) and
+            /readyz (database and migrations) — a green healthz with a red readyz means the process is
+            alive but cannot serve.
+          runbook: "docs/OBSERVABILITY.md#api-down"
+
+      - alert: EdumartReadinessFailing
+        expr: probe_success{job="edumart-readyz"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "/readyz has been failing for 5 minutes"
+          description: >-
+            The API is running but not ready: it cannot reach the database or a migration is missing. A
+            load balancer will (correctly) refuse to send it traffic.
+          runbook: "docs/OBSERVABILITY.md#readiness-failing"
+
+  - name: edumart-errors
+    rules:
+      - alert: EdumartInternalErrorRate
+        expr: >-
+          sum(rate(edumart_api_errors_total{code="INTERNAL_ERROR"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Bugs are reaching users: {{ $value | printf \"%.2f\" }} INTERNAL_ERROR/s"
+          description: >-
+            More than one failure every five seconds sustained for five minutes. Each of these is a
+            request that should have succeeded and a log line carrying the same request id the user was
+            shown. Do not restart first: the error rate is the evidence.
+          runbook: "docs/OBSERVABILITY.md#internal-errors"
+
+      - alert: EdumartRefusalSpike
+        expr: >-
+          sum(rate(edumart_api_errors_total{code=~"UNAUTHENTICATED|FORBIDDEN"}[5m]))
+            > 10 * sum(rate(edumart_api_errors_total{code="UNAUTHENTICATED"}[5m] offset 1h) > 0)
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Refusals are ten times their level an hour ago"
+          description: >-
+            Either an attack in progress or a client that broke. The split between UNAUTHENTICATED and
+            FORBIDDEN says which: a wall of 401s is credential stuffing, a wall of 403s is usually a
+            permission regression in a deploy.
+          runbook: "docs/OBSERVABILITY.md#refusal-spike"
+
+      - alert: EdumartLoginFailures
+        expr: sum(rate(edumart_login_failures_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "More than one failed sign-in per second for ten minutes"
+          description: >-
+            Credential stuffing looks like this. The per-address limiter caps what one source can do, but
+            a distributed attempt stays under it by design; the mitigation is a WAF or an account lockout
+            policy, both of which are noted as open in the threat model.
+          runbook: "docs/OBSERVABILITY.md#login-failures"
+
+  - name: edumart-money
+    rules:
+      - alert: EdumartWebhookRejections
+        expr: increase(edumart_webhook_events_total{outcome="rejected"}[15m]) > 5
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "Payment webhooks are being rejected"
+          description: >-
+            More than five callbacks failed signature or payload checks in fifteen minutes. Two causes:
+            the shared secret was rotated on one side only, or someone is posting forged callbacks. Both
+            stop money from being recorded, so this is not a wait-and-see.
+          runbook: "docs/OBSERVABILITY.md#webhook-rejections"
+
+      - alert: EdumartNoWebhooksAtAll
+        # `or absent(...)`: with no series at all the rate is empty rather than zero, so a rule written as
+        # `rate(...) == 0` is silent in exactly the case it is meant to catch — a webhook path that has never
+        # delivered anything.
+        expr: >-
+          (rate(edumart_webhook_events_total[1h]) == 0 or absent(edumart_webhook_events_total))
+            and on() (hour() >= 8 and hour() <= 21)
+        for: 2h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "No payment webhooks for two hours during the day"
+          description: >-
+            Silence is ambiguous: it can mean nobody bought anything. Check against the order count before
+            assuming the webhook path is healthy — a provider-side outage or a wrong URL also looks like
+            this, and only one of the three is fine.
+          runbook: "docs/OBSERVABILITY.md#no-webhooks"
+
+      - alert: EdumartReconciliationDiscrepancy
+        expr: edumart_reconciliation_discrepancies > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The books disagree with themselves: {{ $labels.kind }} = {{ $value }}"
+          description: >-
+            The last reconciliation run found {{ $value }} row(s) of kind {{ $labels.kind }}. This is money,
+            so it is a page rather than a ticket. The report at GET /v1/admin/finance/reconciliation
+            names the orders and what to do about each kind.
+          runbook: "docs/OBSERVABILITY.md#reconciliation-discrepancy"
+
+      - alert: EdumartReconciliationMissing
+        # The gauges are only published by a report, so "never ran" produces no series — and every rule that
+        # compares a gauge to a number is then silently satisfied. Absence has to be its own alert.
+        expr: absent(edumart_reconciliation_last_run_timestamp_seconds)
+        for: 24h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Reconciliation has never produced a report"
+          description: >-
+            No reconciliation report has ever been recorded, so every "the books agree" reading is an absence
+            of evidence rather than evidence. Pull GET /v1/admin/finance/reconciliation once to publish the
+            gauges, and schedule it — the run is manual today.
+          runbook: "docs/OBSERVABILITY.md#reconciliation-missing"
+
+      - alert: EdumartReconciliationStale
+        expr: >-
+          time() - edumart_reconciliation_last_run_timestamp_seconds > 26 * 3600
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Reconciliation has not run in over a day"
+          description: >-
+            The discrepancy gauges are only as fresh as the last report. If this fires, a clean
+            `edumart_reconciliation_discrepancies` means "nothing has looked", not "nothing is wrong".
+          runbook: "docs/OBSERVABILITY.md#reconciliation-stale"
+
+  - name: edumart-backups
+    rules:
+      - alert: EdumartBackupMissing
+        # absent() rather than a comparison: if the backup job has never run, there is no series to compare,
+        # and "no data" must page rather than being read as "no problem".
+        expr: absent(edumart_backup_age_seconds)
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "No successful backup has ever been recorded"
+          description: >-
+            The API is reading no backup heartbeat at all: either EDUMART_BACKUP_HEARTBEAT is unset, the
+            backup job has never completed, or the two are looking at different files. Until this is
+            resolved there is no restore point.
+          runbook: "docs/OBSERVABILITY.md#backup-missing"
+
+      - alert: EdumartBackupStale
+        # 36 hours: a nightly job plus half a day of slack for a late run, a long restore or a weekend
+        # deploy that needed the window. Anything tighter pages on a schedule rather than on a problem.
+        expr: edumart_backup_age_seconds > 36 * 3600
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The newest backup is {{ $value | humanizeDuration }} old"
+          description: >-
+            No verified backup for over a day and a half. Check the backup unit's status and its journal
+            (`journalctl -u edumart-backup -n 50`); a failing backup is loud on purpose. If it has been
+            failing quietly, this is the alert that was supposed to catch it, and it is catching it now.
+          runbook: "docs/OBSERVABILITY.md#backup-stale"
+
+      - alert: EdumartBackupUnverified
+        expr: edumart_backup_last_run_succeeded == 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The last backup has not been verified"
+          description: >-
+            A backup exists but nobody restored it. The verification step (`backup.py --verify`) restores
+            into a scratch database and compares row counts; without it, "we have a backup" is a belief.
+            Check that the schedule still runs the verify step.
+          runbook: "docs/OBSERVABILITY.md#backup-unverified"
+
+  - name: edumart-latency
+    rules:
+      - alert: EdumartSlowRequests
+        expr: >-
+          histogram_quantile(0.95,
+            sum(rate(edumart_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "p95 request latency is above one second"
+          description: >-
+            One second at the 95th percentile for ten minutes. This API answers most reads in a few
+            milliseconds, so this is a database problem or a lock, not "the server is a bit busy".
+          runbook: "docs/OBSERVABILITY.md#slow-requests"

@@ -11,9 +11,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/teamthy/edumart/apps/api/internal/metrics"
 )
 
 // ErrorCode mirrors the documented client-facing error vocabulary.
@@ -157,6 +162,45 @@ func Recover(logger *slog.Logger) Middleware {
 	}
 }
 
+type metricsKey struct{}
+
+// WithMetrics puts the registry in the request context so the error path can count codes it refuses.
+func WithMetrics(ctx context.Context, recorder ErrorRecorder) context.Context {
+	return context.WithValue(ctx, metricsKey{}, recorder)
+}
+
+// ErrorRecorder is the slice of the metrics registry the HTTP layer needs. Keeping it an interface means
+// httpx does not import a package that knows about Prometheus, and a test can pass a counter.
+type ErrorRecorder interface {
+	CountError(code string)
+}
+
+// Metrics records every request by route pattern, method and status code, plus how long it took.
+//
+// The route label is chi's pattern, never the request path: `/v1/orders/{id}` is one series. Using the raw
+// path would create a series per order id, and a metric whose cardinality is chosen by the caller is how a
+// monitoring system falls over during the incident it exists to describe.
+func Metrics(registry *metrics.Registry) Middleware {
+	requests := registry.Counter("edumart_http_requests_total",
+		"Requests handled, by route pattern, method and status code.", "method", "route", "status")
+	duration := registry.Histogram("edumart_http_request_duration_seconds",
+		"Request duration in seconds, by route pattern and method.", "route", "method")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+
+			route := "unmatched"
+			if pattern := chi.RouteContext(r.Context()).RoutePattern(); pattern != "" {
+				route = pattern
+			}
+			requests.With(r.Method, route, strconv.Itoa(rec.status)).Inc()
+			duration.With(route, r.Method).Observe(time.Since(start).Seconds())
+		})
+	}
+}
+
 // AccessLog emits one structured line per request with latency and status.
 func AccessLog(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
@@ -203,6 +247,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err *Error) {
 	status := err.Status
 	if status == 0 {
 		status = statusFor[err.Code]
+	}
+	// Counted here rather than in each handler: a refusal is a refusal whether it came from a handler, the
+	// rate limiter or the router's own 404, and the alert has to see all of them.
+	if recorder, ok := r.Context().Value(metricsKey{}).(ErrorRecorder); ok {
+		recorder.CountError(string(err.Code))
 	}
 	details := err.Details
 	if details == nil {

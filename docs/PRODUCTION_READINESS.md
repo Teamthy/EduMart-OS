@@ -42,23 +42,23 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Area | Why it matters |
 | --- | --- |
 | Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). Migrations now run on SQLite and PostgreSQL 17 in CI. What is still missing is a forward-fix/rollback rehearsal against a production-shaped database |
-| Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
+| Observability | Structured logs, request ids, and now a **Prometheus `/metrics` endpoint with fourteen alert rules** over it (errors, refusals, webhooks, refunds, reconciliation, backup freshness, latency), plus `GET /readyz` for load balancers. What is missing is the surrounding stack — Prometheus, Grafana and Alertmanager are deployment choices, and **nothing routes an alert to a person**, so today an alert that fires is a rule that fires |
 | Backups | A restore **is** demonstrated, and so is the operational half: `scripts/backup.py` takes consistent snapshots, verifies each one by restoring it into a scratch database, applies two-window retention, and mirrors off-site with a checksum re-read. `scripts/pitr-drill.py` proves recovery to a chosen second by deleting the cluster and replaying archived WAL to a target time. What is still missing is encryption at rest by this tooling, cross-region replication, and a drill against production-sized data |
 | Notification delivery | Email is real: a durable outbox with exponential backoff, SMTP or log adapters, per-message delivery records, and scheduled reminders that are planned once, claimed before sending and withdrawn when their reason disappears. No SMS or push channel, no unsubscribe or quiet hours |
 | Live payment provider | No adapter, no key management, no webhook replay window |
 | Content operations | 50 demo questions; no editorial pipeline or licensing workflow in practice |
 | Load testing | No measurement of concurrent attempts against a realistic PostgreSQL instance |
-| Security operations | No monitoring or alerting (audit rows are written and nothing watches them), no WAF or bot protection, no incident-response runbook, no dependency-update automation |
+| Security operations | Sign-in failures, webhook rejections and API error codes are now measurable and alertable, but audit rows (refunds, suspensions) are not, so an insider refunding repeatedly is still visible only to someone reading the table. No WAF or bot protection, no incident-response runbook, no dependency-update automation. No 2FA |
 | Staff 2FA | No device-level second factor, so one phished finance password is refund and reconciliation authority |
-| Backup alerting | The schedule, retention, off-site mirror and PITR are implemented and drilled (see `docs/BACKUP_AND_RECOVERY.md`), but **nothing alerts when a backup fails**: the systemd unit failing is only visible if someone reads it |
+| Backup alerting | **Closed in code**: the backup job writes a heartbeat, `/metrics` publishes backup age and verification status, and three alert rules fire on missing, stale or unverified backups (see `docs/OBSERVABILITY.md`). Delivery is still configuration: wiring Alertmanager to a phone is not something this repository can do |
 
 ## Pre-launch checklist
 
 1. Move the production database to PostgreSQL; run the migrations; run `go test` against it.
-2. Install the backup schedule (`infra/backup/`), enable WAL archiving per `docs/BACKUP_AND_RECOVERY.md`, run `scripts/backup.py --verify` by hand once, and then run `scripts/pitr-drill.py` on the production host before trusting any of it. Put an alert on the unit's failure status.
+2. Install the backup schedule (`infra/backup/`), enable WAL archiving per `docs/BACKUP_AND_RECOVERY.md`, run `scripts/backup.py --verify` by hand once, and then run `scripts/pitr-drill.py` on the production host before trusting any of it. Point `EDUMART_BACKUP_HEARTBEAT` at the heartbeat file and confirm `edumart_backup_age_seconds` appears on `/metrics`.
 3. Add the live payment adapter; test a real webhook in staging, including a replayed event.
 4. Move rate limiting to Redis; set `EDUMART_ALLOW_SANDBOX_PAYMENTS=false`.
-5. Add metrics/tracing and an on-call alert on `INTERNAL_ERROR` rate and webhook failures.
+5. Deploy Prometheus with `infra/observability/prometheus.yml`, and route the `severity: page` rules to a phone. Add tracing when a request first crosses a service boundary; today it crosses none.
 6. Load test: 500 concurrent attempts, 50 answer writes/second.
 7. Screen-reader pass on signup, attempt and results; fix whatever it finds.
 8. Rotate the demo users out (`EDUMART_SEED_DEMO_USERS=false`) and delete the seeded accounts.

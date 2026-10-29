@@ -160,7 +160,7 @@ Each of these is real, known, and owned. None is closed by this document.
 | R6 | **No data export or deletion workflow**; retention rules unsigned | High (NDPA) | A data-subject request cannot be honoured systematically | Product + legal | Data minimisation: no card data, no location, no device identifiers |
 | R7 | **Legacy demo shell** (`legacy/`) ships seeded demo passwords in source | Low | Confusing, and a bad example if copied | Backend lead | Not built in CI; demo data only exists when seeding is explicitly enabled |
 | R8 | **No WAF or bot protection** in front of the public endpoints | Medium | Credential stuffing is slowed, not stopped | Platform lead | Per-endpoint budgets and generic auth failures |
-| R9 | **No security monitoring or alerting**: audit rows are written but nothing watches them | Medium | A refund spike or a suspension spree is visible only if someone looks | Platform lead | `audit_logs` is queryable; the reconciliation report exists to be pulled |
+| R9 | **Partial security monitoring**: `/metrics` now carries request, error, webhook, refund, reconciliation and backup signals with alerts on them, but audit rows (`refunds`, suspensions) are not among them | Medium | A refund spike is still visible only if someone looks; login failures, webhook rejections and reconciliation discrepancies now page | Platform lead | `edumart_api_errors_total`, `edumart_login_failures_total`, `edumart_webhook_events_total` and the reconciliation gauges are alertable; `audit_logs` is queryable |
 | R10 | **No incident response runbook** | Medium | The first incident will be improvised | Engineering lead | This document names the assets and the owners |
 | R11 | **No dependency update automation** | Medium | Advisories are found only when CI runs after someone changes a pin | Backend lead | The Security job fails loudly on a reachable advisory |
 
@@ -190,7 +190,7 @@ A threat model ages. These are the events that invalidate it, each of which requ
 - Any multi-instance deployment (invalidates R2's mitigation).
 - Staff accounts gaining new privileges, or 2FA arriving (R3).
 - A staging environment and a rehearsed rollback (R4).
-- Scheduled backups and PITR — now in place and drilled; what would change this is alerting on failure,
+- Scheduled backups and PITR — now in place, drilled, and alerted on via the backup heartbeat; what would change this is encryption at rest or a cross-region copy,
   encryption at rest with a key we manage, or cross-region replication.
 - Any change to what personal data is stored (R6).
 - A public launch (R8, R9, R10 all become urgent rather than noted).

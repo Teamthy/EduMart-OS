@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -11,17 +12,26 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/metrics"
 )
 
 // Handlers wires the identity use cases to HTTP.
 type Handlers struct {
-	svc    *Service
-	logger *slog.Logger
+	svc      *Service
+	logger   *slog.Logger
+	platform *metrics.Platform
 }
 
 // NewHandlers builds the identity HTTP layer.
 func NewHandlers(svc *Service, logger *slog.Logger) *Handlers {
 	return &Handlers{svc: svc, logger: logger}
+}
+
+// WithMetrics attaches the product metrics registry, so a spike in refused sign-ins is visible to an
+// alert rather than only to whoever reads the log.
+func (h *Handlers) WithMetrics(platform *metrics.Platform) *Handlers {
+	h.platform = platform
+	return h
 }
 
 type ctxUserKey struct{}
@@ -238,6 +248,14 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// isRateLimit reports whether the refusal was the limiter rather than a bad credential. Counting a
+// throttled request as a failed sign-in would make a brute-force attempt look exponentially worse than it
+// is, and would turn the alert into a report about our own limiter.
+func isRateLimit(err error) bool {
+	var apiErr *httpx.Error
+	return errors.As(err, &apiErr) && apiErr.Code == httpx.CodeRateLimited
+}
+
 // Login handles POST /v1/auth/login.
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
@@ -260,6 +278,11 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) error {
 
 	session, err := h.svc.Login(r.Context(), in.Email, in.Password, r.UserAgent(), in.Client)
 	if err != nil {
+		// Counted without the address or the password, and without distinguishing "no such account" from
+		// "wrong password": the metric must not become the membership oracle the response refuses to be.
+		if h.platform != nil && !isRateLimit(err) {
+			h.platform.LoginFailure()
+		}
 		return err
 	}
 	h.sessionResponse(w, r, http.StatusOK, session, map[string]any{"next": nextRoute(session.User)})

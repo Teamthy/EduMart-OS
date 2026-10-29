@@ -244,6 +244,7 @@ Left `false`, `X-Forwarded-For` is ignored — a caller cannot choose its own ra
 | --- | --- |
 | `GET /healthz` | `200 {status:"ok",time,driver}`. Liveness only: never checks a dependency, so a database blip cannot restart a healthy process. |
 | `GET /readyz` | `200` when the database answers and every migration is applied; `503` otherwise, with `checks[]` naming the failing dependency. Used by load balancers and deploy gates. |
+| `GET /metrics` | Prometheus exposition for the monitoring system. **Not part of the product contract** and deliberately outside `/v1`: it is infrastructure, its labels are chosen by the code rather than the caller, and it is not versioned with the API. Requires `Authorization: Bearer $EDUMART_METRICS_TOKEN` when that is set, and answers loopback callers only when it is not. A refusal is a `404`, not a `403`. See `docs/OBSERVABILITY.md`. |
 
 `/readyz` is deliberately stricter than `/healthz`. `healthz` green while `readyz` is red is the
 intended signal: the process is alive, it just cannot serve traffic yet.

@@ -38,6 +38,9 @@ const webhookSecret = "test_webhook_secret"
 type harness struct {
 	t      *testing.T
 	server *httptest.Server
+	// router is the same handler the server wraps, so a test can send a request with a remote address
+	// the client cannot set (an external caller, for the /metrics policy).
+	router http.Handler
 	store  *store.Store
 	// mail captures what a user would have received. Verification codes are out-of-band secrets,
 	// so a test that cannot read them cannot test the flow at all.
@@ -117,7 +120,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return &harness{t: t, server: server, store: db, mail: mail, courier: courier, clock: clock}
+	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier, clock: clock}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {

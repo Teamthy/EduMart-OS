@@ -17,6 +17,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/metrics"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
@@ -32,6 +33,12 @@ type Config struct {
 	// TrustProxy must be true only when a known proxy sits in front of the process. It decides whether
 	// X-Forwarded-For is believed, which decides what every rate limit is keyed on.
 	TrustProxy bool
+	// MetricsToken guards /metrics. Empty means "loopback only", which is the right default for a
+	// developer and the wrong one for a deployment, so production sets it.
+	MetricsToken string
+	// BackupHeartbeat is the file the backup job writes after a verified backup. It is optional: with no
+	// path, the backup metrics are simply absent, and the alert on absence is what reports it.
+	BackupHeartbeat string
 }
 
 // Deps are the constructed services the router needs.
@@ -56,8 +63,11 @@ type Deps struct {
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	limiter := httpx.NewLimiter()
+	// One registry for the process. It is created here rather than in main so that the router tests get
+	// the same metrics the deployment does, and an alert rule can be checked against what a test sees.
+	platform := metrics.NewPlatform(metrics.NewRegistry())
 
-	authHandlers := auth.NewHandlers(d.Auth, d.Logger)
+	authHandlers := auth.NewHandlers(d.Auth, d.Logger).WithMetrics(platform)
 	contentHandlers := content.NewHandlers(d.Items, d.Logger)
 	assessmentHandlers := assessment.NewHandlers(d.Exams, d.Logger)
 	classroomHandlers := classroom.NewHandlers(d.Classes)
@@ -65,6 +75,7 @@ func NewRouter(d Deps) http.Handler {
 	// hook keeps that decision in the rewards ledger while commerce stays the owner of the payment fact.
 	d.Shop.WithReferralQualifier(d.Rewards.QualifyReferral)
 	commerceHandlers := commerce.NewHandlers(d.Shop)
+	d.Shop.WithMetrics(platform)
 	rewardsHandlers := rewards.NewHandlers(d.Rewards)
 	insightsHandlers := insights.NewHandlers(d.Insights)
 	staffHandlers := admin.NewHandlers(d.Staff, d.Notifier).WithReminders(d.Notifier)
@@ -75,6 +86,14 @@ func NewRouter(d Deps) http.Handler {
 	// this, a caller rotating X-Forwarded-For bypasses every rate limit in the system.
 	r.Use(httpx.TrustProxy(d.Config.TrustProxy))
 	r.Use(httpx.SecurityHeaders())
+	r.Use(httpx.Metrics(platform.Registry()))
+	r.Use(func(next http.Handler) http.Handler {
+		// The error path records its code through the context, so a refusal counts wherever it happens:
+		// in a handler, in the limiter, or in the router's own 404.
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, req.WithContext(httpx.WithMetrics(req.Context(), platform)))
+		})
+	})
 	r.Use(httpx.RequestIDMiddleware)
 	r.Use(httpx.Recover(d.Logger))
 	r.Use(httpx.AccessLog(d.Logger))
@@ -98,6 +117,9 @@ func NewRouter(d Deps) http.Handler {
 		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "time": store.Now(), "driver": d.Store.Driver})
 	})
 	r.Get("/readyz", readyzHandler(d.Store))
+	// Scrape endpoint. Deliberately outside /v1: it is infrastructure, not part of the product contract,
+	// and it must not appear to clients as something they may call.
+	r.Get("/metrics", metricsHandler(platform, d.Config.MetricsToken, d.Config.BackupHeartbeat))
 
 	r.Route("/v1", func(v1 chi.Router) {
 		wrap := func(fn httpx.HandlerFunc) http.HandlerFunc { return httpx.Wrap(d.Logger, fn) }
@@ -237,7 +259,10 @@ func NewRouter(d Deps) http.Handler {
 		v1.Post("/admin/reminders/sweep", wrap(staffHandlers.SweepReminders))
 	})
 
+	// The two router-level refusals count their codes by hand: they never reach a handler, so nothing else
+	// would record them, and a spike in probing would be invisible to the alert that watches for it.
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		platform.CountError(string(httpx.CodeNotFound))
 		httpx.JSON(w, http.StatusNotFound, map[string]any{
 			"error": map[string]any{
 				"code":       httpx.CodeNotFound,
@@ -248,6 +273,7 @@ func NewRouter(d Deps) http.Handler {
 		})
 	})
 	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		platform.CountError(string(httpx.CodeValidation))
 		httpx.JSON(w, http.StatusMethodNotAllowed, map[string]any{
 			"error": map[string]any{
 				"code":       httpx.CodeValidation,

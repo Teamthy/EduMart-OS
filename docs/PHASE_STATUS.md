@@ -18,7 +18,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
-| 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention and off-site mirroring are implemented and templated. No alerting on a failed backup, no cross-region copy, no drill against production-sized data |
+| 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
@@ -41,7 +41,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
-| 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix; **no 2FA, no monitoring/alerting, no incident runbook** |
+| 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
 | 29 | Performance and QA | Not started | No load tests, no device matrix, no accessibility audit |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
@@ -111,7 +111,10 @@ consistent rather than a file copy; retention is two windows (daily for a bad de
 looked for a fortnight") rather than "the last seven files"; and verification compares the restored rows to
 the counts the backup recorded about itself, which is what makes it a test rather than a restatement.
 
-Still open, and named in the runbook rather than implied: no alerting on a failed backup, no encryption at
+Alerting now hangs off the heartbeat the job writes (`edumart_backup_age_seconds`, plus a verification
+flag), so a backup that stops running, or one that was never restored, pages instead of aging quietly.
+
+Still open, and named in the runbook rather than implied: no encryption at
 rest by this tooling, no cross-region replication, no drill against production-sized data, and the
 environment secrets (webhook, SMTP, verification) are not in the backup — restoring the database without
 them is half a restore.
@@ -408,10 +411,19 @@ flipped). The same review added:
 - `TestASelfSelectedRoleGrantsNothing` and `TestLoginFailuresDoNotRevealWhichPartWasWrong`, two Phase 8
   rules that were implemented but had no test standing behind them.
 
-Not done, and not claimed: no device-level 2FA or risk-based sign-in for staff, no security monitoring or
-alerting (audit rows are written; nothing watches them), no WAF or bot protection, no incident-response
-runbook, and no dependency-update automation. Each is a named residual risk in the threat model rather
-than a sentence in a wish list.
+**Monitoring, since this slice:** `GET /metrics` publishes fourteen metric families (requests by route
+pattern and status, error codes, webhook outcomes, refunds, reconciliation state, backup freshness, login
+failures), it fails closed, and no identifier is ever a label. `infra/observability/` holds the scrape
+config and fourteen alert rules, and `scripts/check-alerts.py` — run in CI — fails the build when a rule
+names a metric the API does not emit. That check is the part that matters: an alert referencing a renamed
+metric does not error anywhere, it just never fires, and nothing looks more like a healthy system than a
+pager that is not connected to anything. See [`OBSERVABILITY.md`](./OBSERVABILITY.md).
+
+Not done, and not claimed: no device-level 2FA or risk-based sign-in for staff, no alert *delivery* (the
+rules exist; routing them to a phone is deployment configuration), no monitoring of audit rows, so a refund
+or suspension spree is still visible only to someone reading the table, no WAF or bot protection, no
+incident-response runbook, and no dependency-update automation. Each is a named residual risk in the threat
+model rather than a sentence in a wish list.
 
 ### Phase 24 — Notifications · Partial (delivery is now real)
 
@@ -460,9 +472,9 @@ is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ## Recommended next three steps
 
-1. **Alerting on the things that are now measurable.** A failed backup, a reconciliation discrepancy and
-   an `INTERNAL_ERROR` spike all have somewhere to hang an alert now, and nothing watches them. This is
-   the gap that turns the controls into a control system.
+1. ~~Alerting on the things that are now measurable.~~ **Done.** `/metrics`, fourteen alert rules and a CI
+   check that every rule references a real metric. What is left is deployment: run Prometheus and route the
+   `severity: page` rules somewhere a person will see them.
 2. **A real refund adapter (Paystack).** Refunds are now recorded correctly but move no money. Wiring the
    provider call, and marking a refund `pending` until the provider confirms it, is the next honest step —
    and it is the difference between a ledger that describes money and one that describes intentions.

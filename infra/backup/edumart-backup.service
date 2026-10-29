@@ -26,9 +26,14 @@ ExecStart=/usr/bin/python3 /opt/edumart/scripts/backup.py \
     --dest ${EDUMART_BACKUP_DEST} \
     --mirror ${EDUMART_BACKUP_MIRROR} \
     --keep-daily ${EDUMART_BACKUP_KEEP_DAILY} \
-    --keep-weekly ${EDUMART_BACKUP_KEEP_WEEKLY}
-ExecStartPost=/usr/bin/python3 /opt/edumart/scripts/backup.py --verify --dest ${EDUMART_BACKUP_DEST}
-# A backup that fails must be loud: the unit failing is what an alert hangs off.
+    --keep-weekly ${EDUMART_BACKUP_KEEP_WEEKLY} \
+    --heartbeat ${EDUMART_BACKUP_HEARTBEAT}
+# The verify step re-writes the heartbeat with verified: true. Order matters: a heartbeat that says
+# "verified" before anything was restored would be the one lie this file exists to prevent.
+ExecStartPost=/usr/bin/python3 /opt/edumart/scripts/backup.py \
+    --verify --dest ${EDUMART_BACKUP_DEST} --heartbeat ${EDUMART_BACKUP_HEARTBEAT}
+# A backup that fails must be loud: the unit failing is what an alert hangs off — and so is a heartbeat that
+# stops advancing, since a unit that has been disabled fails at nothing at all.
 TimeoutStartSec=900
 Nice=10
 IOSchedulingClass=best-effort

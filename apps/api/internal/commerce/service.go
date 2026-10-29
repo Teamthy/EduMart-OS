@@ -23,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/metrics"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
@@ -81,10 +82,29 @@ type Service struct {
 	// courier is optional; see WithNotifier.
 	courier notify.Courier
 	logger  *slog.Logger
+	// platform carries the product metrics this service is the only witness to: webhook outcomes,
+	// refunds and reconciliation results. Optional, so the service stays usable without one.
+	platform *metrics.Platform
 	// qualifyReferral books a referral commission when an order is paid for the first time. It is a
 	// function rather than a dependency on the rewards package: commerce owns the payment fact, the
 	// rewards ledger owns what a referral is worth, and neither should import the other.
 	qualifyReferral func(ctx context.Context, userID, orderID string, totalMinor int) error
+}
+
+// WithMetrics attaches the metrics registry. Without it the service behaves identically and reports
+// nothing, which is the right default for a unit test.
+func (s *Service) WithMetrics(platform *metrics.Platform) *Service {
+	s.platform = platform
+	return s
+}
+
+// webhookOutcome records what happened to a callback. The four outcomes are deliberately distinct: a
+// duplicate is normal, a rejection is an attack or a rotated secret, and an ignore is a provider event we
+// do not act on — they need different responses, so they need different series.
+func (s *Service) webhookOutcome(outcome string) {
+	if s.platform != nil {
+		s.platform.Webhook(outcome)
+	}
 }
 
 // WithReferralQualifier attaches the commission hook. Without it, payments still settle; a referral
@@ -343,14 +363,17 @@ func (s *Service) VerifySignature(rawBody []byte, signature string) bool {
 // HandleWebhook applies a verified payment event exactly once and grants entitlements.
 func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature string) (map[string]any, error) {
 	if !s.VerifySignature(rawBody, signature) {
+		s.webhookOutcome("rejected")
 		return nil, httpx.NewError(httpx.CodeForbidden, "Invalid webhook signature.")
 	}
 
 	var event WebhookEvent
 	if err := json.Unmarshal(rawBody, &event); err != nil {
+		s.webhookOutcome("rejected")
 		return nil, httpx.NewError(httpx.CodeValidation, "Malformed webhook payload.")
 	}
 	if event.ID == "" || event.Reference == "" {
+		s.webhookOutcome("rejected")
 		return nil, httpx.NewError(httpx.CodeValidation, "Webhook is missing its event id or reference.")
 	}
 
@@ -476,6 +499,7 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 		return nil, err
 	}
 	if alreadyProcessed {
+		s.webhookOutcome("duplicate")
 		return map[string]any{"received": true, "duplicate": true}, nil
 	}
 	if orderPaid {
@@ -484,6 +508,11 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 		// money is already recorded, and a referral problem must not be able to fail a webhook that a
 		// provider would then retry into a duplicate.
 		s.qualifyCommission(ctx, event.Reference)
+		s.webhookOutcome("accepted")
+	} else {
+		// Recorded, verified and deliberately not acted on: a replay of a different event, an unknown
+		// reference, a non-success status. Worth seeing on a graph, never worth waking anyone for.
+		s.webhookOutcome("ignored")
 	}
 	return map[string]any{"received": true, "duplicate": false}, nil
 }
