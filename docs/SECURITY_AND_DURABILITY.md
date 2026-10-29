@@ -129,13 +129,31 @@ Not there yet — see `docs/PRODUCTION_READINESS.md` for the full list:
 
 ## Backup, restore and the honest gaps
 
-There is no backup configuration in this repository, and claiming otherwise would be worse than
-saying nothing. Before launch:
+**Restoration is demonstrated; scheduling is not.** `scripts/restore-drill.py` starts the API against an
+empty database, fingerprints it (row count of every table plus a real login), snapshots it consistently
+(`VACUUM INTO` on SQLite, `pg_dump --format=custom` on PostgreSQL), *destroys* the database and asserts
+it is gone, restores, boots the API again, and compares fingerprints table by table. It runs for both
+engines in the *Restore drill* CI job.
 
-1. Choose managed PostgreSQL with point-in-time recovery; replication is not a backup.
-2. Define RPO/RTO per data class — attempts and payments are the strictest, read models the loosest.
-3. Run a restore drill into a scratch environment and prove the app boots against it.
-4. Keep the append-only ledgers exportable independently of the primary database.
+Two details make the drill worth having rather than decorative:
+
+- It refuses to pass if the destruction step left anything behind, because "the data came back" is
+  meaningless if the data never left.
+- It compares rows per table, not a single total. A restore that drops one table and duplicates another
+  keeps the total intact.
+
+It found a genuine bug on its first run: `GET /v1/dashboard` used SQLite's `julianday()` and returned
+`500` on PostgreSQL. That is the argument for drills over unit tests — every unit test passed, because no
+fixture put an attempt inside the seven-day window the query needed.
+
+Still missing before launch:
+
+1. Managed PostgreSQL with point-in-time recovery; replication is not a backup.
+2. RPO/RTO per data class — attempts and payments are the strictest, read models the loosest.
+3. A schedule, off-site copies, retention and encryption at rest for those snapshots.
+4. A drill into a *scratch environment* from production data, which is the only version that proves the
+   real recovery path.
+5. Independent export of the append-only ledgers.
 
 ## Data minimisation
 
