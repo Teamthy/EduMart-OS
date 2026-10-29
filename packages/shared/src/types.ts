@@ -281,6 +281,8 @@ export interface StudyPlan {
 export interface ClassSummary {
   id: string;
   name: string;
+  /** The institution that owns the class; null for a teacher's personal class. */
+  organizationId: string | null;
   subjectId: string | null;
   joinCode: string;
   role: string;

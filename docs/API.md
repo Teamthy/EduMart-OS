@@ -54,6 +54,7 @@ Every non-2xx response has the same shape:
 | `POST` | `/organizations` | Create one; caller becomes owner. Requires a verified email. Starts `pending_verification` |
 | `GET` | `/organizations/{id}` | Members only; non-members get `404`, not `403` |
 | `GET` | `/organizations/{id}/members` | Owner/admin only (roster holds other people's contact details) |
+| `GET` | `/organizations/{id}/classes` | Owner/admin only: classes belonging to the institution |
 | `POST` | `/organizations/{id}/invitations` | `{email, role}` → `201 {invitation, token}`; the token is returned to the inviter **once** and the join link is also emailed to the invitee |
 | `GET` | `/organizations/{id}/invitations` | Open and recent invitations, never their tokens |
 | `DELETE` | `/organizations/{id}/invitations/{invitationId}` | Withdraw; the link stops working immediately |

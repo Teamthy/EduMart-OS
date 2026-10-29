@@ -828,6 +828,36 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/organizations/{id}/classes:
+    get:
+      tags: [organizations]
+      summary: An institution's classes
+      description: |
+        Owner or administrator only. Belonging to an institution is not the same as running it, so a
+        student member gets `403`.
+
+        Only classes explicitly created inside the institution appear here: a teacher's personal class
+        is theirs, not the institution's, whatever their employment.
+      operationId: listOrganizationClasses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Institution classes with member and assignment counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  classes:
+                    type: array
+                    items: { $ref: "#/components/schemas/Class" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/organizations/{id}/members:
     get:
       tags: [institutions]
@@ -1025,7 +1055,16 @@ paths:
     post:
       tags: [classroom]
       summary: Create a class
-      description: Teacher and above only.
+      description: |
+        Two permissions reach this endpoint, and they are deliberately different.
+
+        A **personal** class (no `organizationId`) needs a teaching capability: the caller must hold the
+        `teacher`, `org_admin` or `platform_admin` role.
+
+        An **institution** class needs authority inside that institution — an `owner` or `admin`
+        membership. A principal who has never taught may create their school's classes; a teacher who
+        belongs to another institution may not, and is told the institution was not found rather than
+        being told it exists.
       operationId: createClass
       requestBody:
         required: true
@@ -1037,9 +1076,13 @@ paths:
               properties:
                 name: { type: string }
                 subjectId: { type: string }
+                organizationId:
+                  type: string
+                  description: Attach the class to an institution. The caller must own or administer it.
       responses:
         "201": { description: Created }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/classes/join:
     post:
@@ -1499,6 +1542,22 @@ components:
           type: boolean
           description: True only after a code sent to the address was confirmed.
         phoneVerified: { type: boolean }
+
+    Class:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        subjectId: { type: string, nullable: true }
+        organizationId:
+          type: string
+          nullable: true
+          description: The institution that owns the class; null for a teacher's personal class.
+        joinCode: { type: string }
+        role: { type: string, enum: [teacher, student] }
+        members: { type: integer }
+        assignments: { type: integer }
+        createdAt: { type: string, format: date-time }
 
     Delivery:
       type: object

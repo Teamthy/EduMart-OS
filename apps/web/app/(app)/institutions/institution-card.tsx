@@ -4,7 +4,13 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { BadgeCheck, Loader2, ShieldQuestion, UserPlus } from "lucide-react";
 
-import { ApiError, type Invitation, type Organization, type OrganizationMember } from "@edumart/shared";
+import {
+  ApiError,
+  type ClassSummary,
+  type Invitation,
+  type Organization,
+  type OrganizationMember,
+} from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -24,17 +30,18 @@ const ROLE_LABEL: Record<string, string> = {
 /**
  * One institution: its verification state, its roster, and the invitation form.
  *
- * The invitation token is shown once, on creation, because it is a credential the server cannot
- * return again. Copying it is the administrator's job (or the mail worker's, once one exists) — this
- * screen deliberately does not pretend to have emailed anybody.
+ * The invitation is emailed to the invitee by the API's delivery queue, and the token is also shown
+ * once, on creation, for the case where mail is broken or the person is standing next to you.
  */
 export function InstitutionCard({
   organization,
   members,
+  classes,
   canAdminister,
 }: {
   organization: Organization;
   members: OrganizationMember[];
+  classes: ClassSummary[];
   canAdminister: boolean;
 }) {
   const router = useRouter();
@@ -100,6 +107,32 @@ export function InstitutionCard({
           <Alert tone="error" title="That didn't work">
             {error.message}
           </Alert>
+        ) : null}
+
+        {canAdminister ? (
+          <section aria-labelledby={`classes-${organization.id}`} className="space-y-2">
+            <h2 id={`classes-${organization.id}`} className="text-sm font-semibold">
+              Classes
+            </h2>
+            {classes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No classes yet. A class created for this institution by an owner or administrator appears
+                here; a teacher&apos;s personal class stays theirs.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border rounded-lg border border-border">
+                {classes.map((classroom) => (
+                  <li key={classroom.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                    <span className="font-medium">{classroom.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {classroom.members} {classroom.members === 1 ? "member" : "members"} ·{" "}
+                      {classroom.assignments} {classroom.assignments === 1 ? "assignment" : "assignments"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         ) : null}
 
         {canAdminister ? (
@@ -175,11 +208,12 @@ export function InstitutionCard({
             </form>
 
             {issued ? (
-              <Alert tone="success" title={`Invitation ready for ${issued.email}`}>
-                <span className="block break-all font-mono text-xs">{issued.token}</span>
-                <span className="mt-1 block">
-                  This is shown once. Send it to them; it expires in seven days and works for that address only.
+              <Alert tone="success" title={`Invitation emailed to ${issued.email}`}>
+                <span className="block">
+                  If it does not arrive, this is the fallback link. It expires in seven days and works once,
+                  for that address only.
                 </span>
+                <span className="mt-1 block break-all font-mono text-xs">{issued.token}</span>
               </Alert>
             ) : null}
           </section>

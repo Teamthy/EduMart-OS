@@ -20,7 +20,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
 | 6 | API platform and contracts | Done | 64 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification works, and its messages are now delivered through a durable queue with real retries; **no refresh-token rotation**, no account suspension |
-| 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations and audit events now exist; **no org-scoped class/dashboard data yet** |
+| 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
 | 11 | Taxonomy and syllabus | Partial | Exam → subject → topic; **no syllabus versioning** |
@@ -126,11 +126,15 @@ Implemented now (`internal/orgs`):
 | Role revocation | Removing a membership deletes the membership and the teacher role when no other organisation still grants it — access ends in the same transaction |
 | Tenant scoping | Every organisation query is scoped by membership; non-members get 404, not 403, so the API cannot be used to enumerate institutions |
 | Audit trail | `organization.*` events written to `audit_logs` with actor, resource and metadata, inside the same transaction as the change |
-| Negative tests | `TestCrossTenantIsolation`, `TestRosterIsForAdministrators`, `TestRemovingMembershipRemovesAccess`, `TestLastOwnerCannotBeRemoved` |
+| Institution classes | `POST /v1/classes` accepts `organizationId`; the caller must own or administer that institution. `GET /v1/organizations/{id}/classes` lists them for its owners and administrators |
+| Negative tests | `TestOrganizationLifecycle`, `TestInvitationIsEmailLockedAndSingleUse`, `TestInvitationRevocationAndExpiry`, `TestCrossTenantIsolation`, `TestRosterIsForAdministrators`, `TestRemovingMembershipRemovesAccess`, `TestLastOwnerCannotBeRemoved`, `TestInstitutionClassesBelongToTheInstitution`, `TestPersonalClassesAreUnaffected` |
 
-Still missing: classes are not yet linked to an organisation by any code path (the column exists and is
-`NULL` for classes created through the API), there is no org-scoped reporting, no membership suspension,
-no ownership transfer, and no admin surface that lists pending organisations.
+Class ownership is deliberately narrow: a teacher's personal class is theirs and never appears in an
+institution's reporting, and a class is only attached to an organisation when an owner or administrator
+creates it that way.
+
+Still missing: org-scoped reporting and analytics, membership suspension, ownership transfer, an admin
+surface that lists pending organisations, organisation-level billing, and SSO.
 
 ### Phase 20 — Institutions and administration · Partial
 

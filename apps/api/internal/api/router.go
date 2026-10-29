@@ -160,6 +160,9 @@ func NewRouter(d Deps) http.Handler {
 		v1.Post("/classes/join", wrap(classroomHandlers.Join))
 		v1.Get("/classes/{id}/roster", wrap(classroomHandlers.Roster))
 		v1.Get("/classes/{id}/assignments", wrap(classroomHandlers.Assignments))
+		// Institution classes belong to the organisation's own administrators, not to whoever holds a
+		// platform-wide teacher role.
+		v1.Get("/organizations/{id}/classes", wrap(classroomHandlers.OrganizationClasses))
 
 		// ── commerce ─────────────────────────────────────────────────────
 		v1.Get("/products", wrap(commerceHandlers.Products))

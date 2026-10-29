@@ -64,6 +64,21 @@ Delivery is at-least-once: a message that times out after the relay accepted it 
 Every message is therefore written to be idempotent — a second receipt for the same order references the
 same order and grants nothing, and a second verification code supersedes the first.
 
+### Tenancy boundaries
+
+| Rule | Enforced by |
+| --- | --- |
+| A resource is reachable only through a membership | every organisation query joins `organization_memberships` |
+| A non-member is told "not found", not "forbidden" | 404 on organisation, roster, invitations and classes — the API cannot be used to enumerate institutions |
+| Roles never come from a self-selected label | signup roles grant nothing; a teacher's platform role comes from an owner's invitation, and admin/student invitations grant nothing globally |
+| A membership ends an access in the same transaction | `RemoveMember` deletes the membership and the teacher role it uniquely carried |
+| Class ownership is explicit | `classes.organization_id` is set only when an owner or administrator creates the class for the institution |
+| Privileged actions are auditable | `organization.*` events in `audit_logs`, written inside the same transaction |
+
+The negative tests that hold these rules are `TestCrossTenantIsolation`, `TestRosterIsForAdministrators`,
+`TestRemovingMembershipRemovesAccess`, `TestLastOwnerCannotBeRemoved`, `TestInstitutionClassesBelongToTheInstitution`
+and `TestStudentCannotAdministerInstitutionClasses`, plus the institution section of the smoke run.
+
 ## Security baseline
 
 Implemented:

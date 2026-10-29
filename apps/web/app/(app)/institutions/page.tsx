@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import type { Organization, OrganizationMember } from "@edumart/shared";
+import type { ClassSummary, Organization, OrganizationMember } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,7 @@ export const dynamic = "force-dynamic";
 interface Roster {
   organization: Organization;
   members: OrganizationMember[];
+  classes: ClassSummary[];
 }
 
 export default async function InstitutionsPage() {
@@ -30,19 +31,20 @@ export default async function InstitutionsPage() {
       caught instanceof ServerApiError ? caught.message : "We could not load your institutions. Try again.";
   }
 
-  // Rosters are only fetched for the organisations this person administers: asking for the rest would
-  // be a request the API is going to refuse, and refusals make a page look broken.
+  // Rosters and classes are only fetched for the organisations this person administers: asking for the
+  // rest would be a request the API is going to refuse, and refusals make a page look broken.
   const administerable = organizations.filter((org) => org.role === "owner" || org.role === "admin");
   const rosters = await Promise.all(
     administerable.map(async (organization) => {
-      try {
-        const body = await serverFetch<{ members: OrganizationMember[] }>(
-          `/v1/organizations/${organization.id}/members`,
-        );
-        return { organization, members: body.members } satisfies Roster;
-      } catch {
-        return { organization, members: [] } satisfies Roster;
-      }
+      const [members, classes] = await Promise.all([
+        serverFetch<{ members: OrganizationMember[] }>(`/v1/organizations/${organization.id}/members`)
+          .then((body) => body.members)
+          .catch(() => []),
+        serverFetch<{ classes: ClassSummary[] }>(`/v1/organizations/${organization.id}/classes`)
+          .then((body) => body.classes)
+          .catch(() => []),
+      ]);
+      return { organization, members, classes } satisfies Roster;
     }),
   );
 
@@ -91,6 +93,7 @@ export default async function InstitutionsPage() {
           key={organization.id}
           organization={organization}
           members={rosters.find((roster) => roster.organization.id === organization.id)?.members ?? []}
+          classes={rosters.find((roster) => roster.organization.id === organization.id)?.classes ?? []}
           canAdminister={organization.role === "owner" || organization.role === "admin"}
         />
       ))}

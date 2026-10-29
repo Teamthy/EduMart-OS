@@ -53,7 +53,7 @@ func (h *harness) postSigned(payload map[string]any) (int, map[string]any) {
 // needs the link is not the person who created it, so "here it is in the API response" is not delivery.
 func TestInvitationIsEmailedToTheInvitee(t *testing.T) {
 	h := newHarness(t)
-	owner := h.registerVerified("owner-invite@example.com")
+	owner := h.registerAndVerify("owner-invite@example.com")
 	orgID := h.createOrg(owner, "Ikoyi Learning Hub")
 
 	before := len(h.mail.All())
@@ -83,12 +83,12 @@ func TestInvitationIsEmailedToTheInvitee(t *testing.T) {
 	token = strings.TrimPrefix(token, "/join?invitation=")
 
 	// And the emailed token must actually work, for the invited address only.
-	status, body := h.accept(h.registerVerified("someone-else@example.com"), token)
+	status, body := h.accept(h.registerAndVerify("someone-else@example.com"), token)
 	if status != http.StatusForbidden {
 		t.Fatalf("an invitation addressed to someone else must be refused, got %d %v", status, body)
 	}
 
-	invitee := h.registerVerified("invitee@example.com")
+	invitee := h.registerAndVerify("invitee@example.com")
 	status, body = h.accept(invitee, token)
 	if status != http.StatusOK {
 		t.Fatalf("the emailed invitation should be accepted: %d %v", status, body)
@@ -99,7 +99,7 @@ func TestInvitationIsEmailedToTheInvitee(t *testing.T) {
 // retries its webhook must not produce a second receipt any more than it produces a second entitlement.
 func TestDuplicatePaymentEventSendsOneReceipt(t *testing.T) {
 	h := newHarness(t)
-	buyer := h.registerVerified("buyer-receipt@example.com")
+	buyer := h.registerAndVerify("buyer-receipt@example.com")
 
 	status, body := h.do("POST", "/v1/orders", buyer, map[string]any{"productId": h.productID()})
 	if status != http.StatusCreated {
@@ -156,7 +156,7 @@ func TestDuplicatePaymentEventSendsOneReceipt(t *testing.T) {
 // TestPaymentFailureSendsNothing proves the receipt is tied to the state change, not to the request.
 func TestPaymentFailureSendsNothing(t *testing.T) {
 	h := newHarness(t)
-	buyer := h.registerVerified("buyer-noreceipt@example.com")
+	buyer := h.registerAndVerify("buyer-noreceipt@example.com")
 
 	_, body := h.do("POST", "/v1/orders", buyer, map[string]any{"productId": h.productID()})
 	order := body["order"].(map[string]any)

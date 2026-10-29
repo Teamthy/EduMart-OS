@@ -16,14 +16,17 @@ import (
 
 // Class is a teaching group.
 type Class struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	SubjectID   *string `json:"subjectId"`
-	JoinCode    string  `json:"joinCode"`
-	Role        string  `json:"role"`
-	Members     int     `json:"members"`
-	Assignments int     `json:"assignments"`
-	CreatedAt   string  `json:"createdAt"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// OrganizationID is set when the class belongs to an institution. A personal class (the default)
+	// has none: a teacher's own group is not an institution's asset, and must not appear in its reports.
+	OrganizationID *string `json:"organizationId"`
+	SubjectID      *string `json:"subjectId"`
+	JoinCode       string  `json:"joinCode"`
+	Role           string  `json:"role"`
+	Members        int     `json:"members"`
+	Assignments    int     `json:"assignments"`
+	CreatedAt      string  `json:"createdAt"`
 }
 
 // Member is a roster row.
@@ -58,7 +61,7 @@ func New(db *store.Store) *Service { return &Service{db: db} }
 // Classes lists the classes a user belongs to, with their role in each.
 func (s *Service) Classes(ctx context.Context, userID string) ([]Class, error) {
 	rows, err := s.db.DB.QueryContext(ctx, `
-		SELECT c.id, c.name, c.subject_id, c.join_code, cm.role, c.created_at,
+		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, cm.role, c.created_at,
 		       (SELECT COUNT(*) FROM class_memberships m WHERE m.class_id = c.id AND m.status = 'active'),
 		       (SELECT COUNT(*) FROM assessment_definitions d WHERE d.class_id = c.id AND d.status = 'published')
 		  FROM class_memberships cm
@@ -73,12 +76,16 @@ func (s *Service) Classes(ctx context.Context, userID string) ([]Class, error) {
 	out := []Class{}
 	for rows.Next() {
 		var c Class
-		var subjectID sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &subjectID, &c.JoinCode, &c.Role, &c.CreatedAt, &c.Members, &c.Assignments); err != nil {
+		var subjectID, organizationID sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &organizationID, &subjectID, &c.JoinCode, &c.Role, &c.CreatedAt,
+			&c.Members, &c.Assignments); err != nil {
 			return nil, err
 		}
 		if subjectID.Valid {
 			c.SubjectID = &subjectID.String
+		}
+		if organizationID.Valid {
+			c.OrganizationID = &organizationID.String
 		}
 		out = append(out, c)
 	}
@@ -209,17 +216,29 @@ func (s *Service) Assignments(ctx context.Context, userID, classID string) ([]As
 }
 
 // CreateClass is teacher-only; the join code is generated server-side.
-func (s *Service) CreateClass(ctx context.Context, userID, name, subjectID string) (*Class, error) {
+//
+// A class may be created inside an institution, in which case the caller must own or administer that
+// institution. The check is against the membership table rather than against the caller's global roles,
+// because "teacher" is a broad capability and "may create this institution's class" is not.
+func (s *Service) CreateClass(ctx context.Context, userID, name, subjectID, organizationID string) (*Class, error) {
 	if len(strings.TrimSpace(name)) < 3 {
 		return nil, httpx.Validation([]httpx.FieldError{{Field: "name", Message: "Give the class a name."}})
 	}
+	var orgValue any
+	if trimmed := strings.TrimSpace(organizationID); trimmed != "" {
+		if err := s.requireOrgAdmin(ctx, userID, trimmed); err != nil {
+			return nil, err
+		}
+		orgValue = trimmed
+	}
+
 	classID := store.NewID()
 	code := joinCode(name)
 	now := store.Now()
 
 	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO classes (id, organization_id, owner_user_id, name, subject_id, join_code, status, created_at)
-			VALUES (?,NULL,?,?,?,?,'active',?)`, classID, userID, strings.TrimSpace(name), nullIfEmpty(subjectID), code, now); err != nil {
+			VALUES (?,?,?,?,?,?,'active',?)`, classID, orgValue, userID, strings.TrimSpace(name), nullIfEmpty(subjectID), code, now); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO class_memberships (id, class_id, user_id, role, status, joined_at)
@@ -229,7 +248,73 @@ func (s *Service) CreateClass(ctx context.Context, userID, name, subjectID strin
 	if err != nil {
 		return nil, err
 	}
-	return &Class{ID: classID, Name: name, JoinCode: code, Role: "teacher", Members: 1}, nil
+	class := &Class{ID: classID, Name: name, JoinCode: code, Role: "teacher", Members: 1}
+	if orgValue != nil {
+		orgID := orgValue.(string)
+		class.OrganizationID = &orgID
+	}
+	return class, nil
+}
+
+// requireOrgAdmin checks that the caller administers the organisation. A non-member gets 404 rather
+// than 403, so the endpoint cannot be used to discover which organisation ids exist.
+func (s *Service) requireOrgAdmin(ctx context.Context, userID, organizationID string) error {
+	var role, status string
+	err := s.db.DB.QueryRowContext(ctx, `
+		SELECT m.role, o.status
+		  FROM organization_memberships m JOIN organizations o ON o.id = m.organization_id
+		 WHERE m.organization_id = ? AND m.user_id = ?`, organizationID, userID).Scan(&role, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return httpx.NewError(httpx.CodeNotFound, "That institution was not found.")
+	}
+	if err != nil {
+		return err
+	}
+	if status == "suspended" {
+		return httpx.NewError(httpx.CodeForbidden, "That institution is suspended.")
+	}
+	if role != "owner" && role != "admin" {
+		return httpx.NewError(httpx.CodeForbidden,
+			"Only an owner or administrator of that institution can create its classes.")
+	}
+	return nil
+}
+
+// OrganizationClasses lists an institution's classes for its administrators, with the numbers a
+// principal actually asks for: how many teachers, how many learners, and how much work is set.
+func (s *Service) OrganizationClasses(ctx context.Context, userID, organizationID string) ([]Class, error) {
+	if err := s.requireOrgAdmin(ctx, userID, organizationID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.DB.QueryContext(ctx, `
+		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, c.created_at,
+		       (SELECT COUNT(*) FROM class_memberships m WHERE m.class_id = c.id AND m.status = 'active'),
+		       (SELECT COUNT(*) FROM assessment_definitions d WHERE d.class_id = c.id AND d.status = 'published')
+		  FROM classes c
+		 WHERE c.organization_id = ? AND c.status = 'active'
+		 ORDER BY c.name`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Class{}
+	for rows.Next() {
+		var c Class
+		var subjectID, orgID sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &orgID, &subjectID, &c.JoinCode, &c.CreatedAt,
+			&c.Members, &c.Assignments); err != nil {
+			return nil, err
+		}
+		if subjectID.Valid {
+			c.SubjectID = &subjectID.String
+		}
+		if orgID.Valid {
+			c.OrganizationID = &orgID.String
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func joinCode(name string) string {
@@ -278,24 +363,48 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// Create handles POST /v1/classes (teacher, org admin, platform admin).
+// Create handles POST /v1/classes.
+//
+// Two different permissions reach this endpoint. A personal class needs a teaching capability, which is
+// a platform role. An institution class needs authority inside that institution, which is a membership —
+// a principal who has never taught is still entitled to create their school's classes, and a teacher
+// from elsewhere is not.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) error {
-	user, err := auth.RequireRole(r, auth.RoleTeacher, auth.RoleOrgAdmin, auth.RolePlatformAdmin)
+	user, err := auth.RequireUser(r)
 	if err != nil {
 		return err
 	}
 	var in struct {
-		Name      string `json:"name"`
-		SubjectID string `json:"subjectId"`
+		Name           string `json:"name"`
+		SubjectID      string `json:"subjectId"`
+		OrganizationID string `json:"organizationId"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
 	}
-	class, err := h.svc.CreateClass(r.Context(), user.ID, in.Name, in.SubjectID)
+	if strings.TrimSpace(in.OrganizationID) == "" &&
+		!user.HasAnyRole(auth.RoleTeacher, auth.RoleOrgAdmin, auth.RolePlatformAdmin) {
+		return httpx.NewError(httpx.CodeForbidden, "Only teachers and institution administrators can create classes.")
+	}
+	class, err := h.svc.CreateClass(r.Context(), user.ID, in.Name, in.SubjectID, in.OrganizationID)
 	if err != nil {
 		return err
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{"class": class})
+	return nil
+}
+
+// OrganizationClasses handles GET /v1/organizations/{id}/classes (owner or administrator).
+func (h *Handlers) OrganizationClasses(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	classes, err := h.svc.OrganizationClasses(r.Context(), user.ID, chi.URLParam(r, "id"))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"classes": classes})
 	return nil
 }
 
