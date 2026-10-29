@@ -11,7 +11,7 @@ interface StubResponse {
 
 function clientWith(response: StubResponse) {
   const fetchImpl = vi.fn(
-    async () =>
+    async (_input: RequestInfo | URL, _init?: RequestInit) =>
       ({
         ok: response.ok ?? true,
         status: response.status ?? 200,
@@ -138,7 +138,9 @@ describe("Verification requests", () => {
     const issued = await client.requestVerification("phone", "0803 123 4567");
 
     expect(issued.destination).toBe("+23••••••••567");
-    const [, init] = fetchImpl.mock.calls[0];
+    const call = fetchImpl.mock.calls[0];
+    expect(call).toBeDefined();
+    const [, init] = call!;
     expect(JSON.parse(String(init?.body))).toEqual({ channel: "phone", phone: "0803 123 4567" });
   });
 
@@ -150,7 +152,9 @@ describe("Verification requests", () => {
     const result = await client.confirmVerification("email", "123456");
 
     expect(result.user.emailVerified).toBe(true);
-    const [url, init] = fetchImpl.mock.calls[0];
+    const call = fetchImpl.mock.calls[0];
+    expect(call).toBeDefined();
+    const [url, init] = call!;
     expect(String(url)).toContain("/v1/auth/verification/confirm");
     expect(JSON.parse(String(init?.body))).toEqual({ channel: "email", code: "123456" });
   });
