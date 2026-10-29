@@ -35,6 +35,9 @@ const (
 	// RefInvitation marks a message carrying an invitation link. There is nothing to withdraw when it
 	// is abandoned: the invitation expires on its own and can be revoked explicitly.
 	RefInvitation = "invitation"
+	// RefReminder marks a scheduled reminder. There is no credential to withdraw when it is abandoned:
+	// the reminder simply did not arrive, which the staff view shows.
+	RefReminder = "reminder"
 	// RefOrder marks a receipt. Money has already moved; a missing receipt is an operator problem, not
 	// a reason to retry a payment.
 	RefOrder = "order"

@@ -1,7 +1,15 @@
 import type { Metadata } from "next";
 import { AlertTriangle, Banknote, BookCheck, Users } from "lucide-react";
 
-import { formatMoney, formatRelativeDate, type PlatformMetrics, type ReviewQueueItem, type SupportCase } from "@edumart/shared";
+import {
+  formatMoney,
+  formatRelativeDate,
+  type PlatformMetrics,
+  type Reminder,
+  type ReminderStats,
+  type ReviewQueueItem,
+  type SupportCase,
+} from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewActions } from "./review-actions";
 import { CaseActions } from "./case-actions";
+import { RemindersPanel } from "./reminders-panel";
 import { ServerApiError, serverFetch } from "@/lib/server-api";
 import { requireRole } from "@/lib/session";
 
@@ -21,11 +30,16 @@ export default async function AdminPage() {
   const canReview = user.roles.some((role) => role === "content_editor" || role === "platform_admin");
   const canSeeMetrics = user.roles.some((role) => role === "platform_admin" || role === "finance");
   const canSeeCases = user.roles.some((role) => role === "support" || role === "platform_admin");
+  // The reminder queue names who is being emailed and why, so it follows the same rule as deliveries:
+  // support answers "was this learner told?", not the general staff roster.
+  const canSeeReminders = user.roles.some((role) => role === "support" || role === "platform_admin");
 
   const errors: string[] = [];
   let metrics: PlatformMetrics | null = null;
   let queue: ReviewQueueItem[] = [];
   let cases: SupportCase[] = [];
+  let reminders: Reminder[] = [];
+  let reminderStats: ReminderStats | null = null;
 
   if (canSeeMetrics) {
     try {
@@ -46,6 +60,17 @@ export default async function AdminPage() {
   if (canSeeCases) {
     try {
       ({ cases } = await serverFetch<{ cases: SupportCase[] }>("/v1/admin/cases?status=open"));
+    } catch (error) {
+      if (error instanceof ServerApiError) errors.push(error.message);
+      else throw error;
+    }
+  }
+
+  if (canSeeReminders) {
+    try {
+      const body = await serverFetch<{ reminders: Reminder[]; stats: ReminderStats }>("/v1/admin/reminders?limit=20");
+      reminders = body.reminders;
+      reminderStats = body.stats;
     } catch (error) {
       if (error instanceof ServerApiError) errors.push(error.message);
       else throw error;
@@ -109,6 +134,8 @@ export default async function AdminPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      {canSeeReminders && reminderStats ? <RemindersPanel reminders={reminders} stats={reminderStats} /> : null}
 
       {canSeeCases ? (
         <Card>
