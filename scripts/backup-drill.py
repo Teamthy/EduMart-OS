@@ -45,8 +45,10 @@ class DrillError(RuntimeError):
     pass
 
 
-def run(command: list[str], *, env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(command, capture_output=True, text=True, env={**os.environ, **(env or {})})
+def run(command: list[str], *, env: dict | None = None, check: bool = True,
+        cwd: str | None = None) -> subprocess.CompletedProcess:
+    result = subprocess.run(command, capture_output=True, text=True, cwd=cwd,
+                            env={**os.environ, **(env or {})})
     if check and result.returncode != 0:
         raise DrillError(f"{' '.join(command)} failed ({result.returncode}):\n{result.stdout}{result.stderr}")
     return result
@@ -57,7 +59,9 @@ def api_binary() -> str:
     if configured and os.path.exists(configured):
         return configured
     target = os.path.join(tempfile.gettempdir(), "edumart-api-backup-drill")
-    run(["go", "build", "-o", target, "./cmd/api"], env={"GOFLAGS": "-mod=mod"}, check=True)
+    # `go build ./cmd/api` has to run inside the module: from the repository root there is no go.mod, and
+    # the drill fails with a build error rather than anything to do with backups.
+    run(["go", "build", "-o", target, "./cmd/api"], env={"GOFLAGS": "-mod=mod"}, check=True, cwd=API_DIR)
     return target
 
 

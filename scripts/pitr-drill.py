@@ -84,8 +84,9 @@ def pg_tool(name: str) -> str:
     )
 
 
-def run(command: list[str], *, check: bool = True, env: dict | None = None, input_text: str | None = None):
-    result = subprocess.run(command, capture_output=True, text=True,
+def run(command: list[str], *, check: bool = True, env: dict | None = None,
+        input_text: str | None = None, cwd: str | None = None):
+    result = subprocess.run(command, capture_output=True, text=True, cwd=cwd,
                             env={**os.environ, **(env or {})}, input=input_text)
     if check and result.returncode != 0:
         raise DrillError(f"{' '.join(command)} failed ({result.returncode}):\n{result.stderr.strip()}")
@@ -174,7 +175,7 @@ def api_binary() -> str:
     if configured and os.path.exists(configured):
         return configured
     target = os.path.join(tempfile.gettempdir(), "edumart-api-pitr-drill")
-    run(["go", "build", "-o", target, "./cmd/api"], env={"GOFLAGS": "-mod=mod"})
+    run(["go", "build", "-o", target, "./cmd/api"], env={"GOFLAGS": "-mod=mod"}, cwd=API_DIR)
     return target
 
 
