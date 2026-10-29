@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 )
 
@@ -21,6 +23,19 @@ func NewHandlers(svc *Service, logger *slog.Logger) *Handlers {
 }
 
 type ctxUserKey struct{}
+
+type ctxSessionKey struct{}
+
+// WithSessionID stores the id of the session that authenticated this request.
+func WithSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, ctxSessionKey{}, id)
+}
+
+// SessionIDFrom returns the current session id, or "" for anonymous requests.
+func SessionIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(ctxSessionKey{}).(string)
+	return id
+}
 
 // WithUser stores the authenticated principal on the request context.
 func WithUser(ctx context.Context, user *User) context.Context {
@@ -58,7 +73,7 @@ func RequireRole(r *http.Request, roles ...string) (*User, error) {
 // Authentication is optional here: individual routes decide whether it is required.
 func (h *Handlers) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, err := h.svc.Authenticate(r.Context(), r)
+		user, sessionID, err := h.svc.AuthenticateSession(r.Context(), r)
 		if err != nil {
 			h.logger.Error("authentication failed", "error", err.Error(), "request_id", httpx.RequestID(r.Context()))
 			next.ServeHTTP(w, r)
@@ -66,9 +81,43 @@ func (h *Handlers) Middleware(next http.Handler) http.Handler {
 		}
 		if user != nil {
 			r = r.WithContext(WithUser(r.Context(), user))
+			r = r.WithContext(WithSessionID(r.Context(), sessionID))
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Sessions handles GET /v1/me/sessions — the caller's active devices.
+func (h *Handlers) Sessions(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	sessions, err := h.svc.ListSessions(r.Context(), user.ID, SessionIDFrom(r.Context()))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	return nil
+}
+
+// RevokeSession handles DELETE /v1/me/sessions/{id}.
+func (h *Handlers) RevokeSession(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	sessionID := chi.URLParam(r, "id")
+	if sessionID == "" {
+		return httpx.NewError(httpx.CodeValidation, "A session id is required.")
+	}
+	if err := h.svc.RevokeSessionForUser(r.Context(), user.ID, sessionID); err != nil {
+		return err
+	}
+	// Revoking your own current session is allowed and ends this request's session too.
+	current := sessionID == SessionIDFrom(r.Context())
+	httpx.JSON(w, http.StatusOK, map[string]any{"revoked": true, "wasCurrent": current})
+	return nil
 }
 
 func sessionCookie(token string, expires time.Time, secure bool) *http.Cookie {

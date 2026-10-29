@@ -82,30 +82,6 @@ func Open(driver, dsn string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) migrate() error {
-	dir := "migrations/sqlite"
-	if s.Driver == "postgres" {
-		dir = "migrations/postgres"
-	}
-	entries, err := migrations.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("read migrations: %w", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		raw, err := migrations.ReadFile(dir + "/" + entry.Name())
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
-		}
-		if _, err := s.DB.Exec(string(raw)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
-		}
-	}
-	return nil
-}
-
 // Close releases the pool.
 func (s *Store) Close() error { return s.DB.Close() }
 

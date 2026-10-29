@@ -43,6 +43,10 @@ paths:
   /healthz:
     get:
       summary: Liveness and driver in use
+      description: |
+        Cheap and dependency-free by design. It answers "is this process alive", never "can it serve
+        traffic" — failing liveness because a dependency is down would restart a healthy process and
+        turn one outage into two.
       operationId: healthz
       security: []
       responses:
@@ -57,6 +61,30 @@ paths:
                   status: { type: string, const: ok }
                   time: { type: string, format: date-time }
                   driver: { type: string, enum: [sqlite3] }
+
+  /readyz:
+    get:
+      summary: Readiness — real dependency checks
+      description: |
+        Used by load balancers and deploy gates. Probes the database (ping plus a real read) and
+        verifies that every embedded migration is applied. Returns 503 with a per-check breakdown
+        when anything is wrong, so an operator learns *which* dependency failed from the body.
+
+        `healthz` staying green while `readyz` is red is the intended signal: restarting the process
+        would not help.
+      operationId: readyz
+      security: []
+      responses:
+        "200":
+          description: Ready to serve
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: A dependency is unavailable or the schema is out of date
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
 
   /v1/auth/register:
     post:
@@ -279,6 +307,54 @@ paths:
       responses:
         "200": { description: Updated }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/me/sessions:
+    get:
+      tags: [identity]
+      summary: Active sessions (devices) for the caller
+      description: |
+        Expired and revoked sessions are omitted. `id` is the stored session key — a hash of the
+        token — so it can be used to revoke a session but cannot be replayed as credentials.
+      operationId: listSessions
+      responses:
+        "200":
+          description: Live sessions, newest first, exactly one marked current
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/SessionView" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/me/sessions/{id}:
+    delete:
+      tags: [identity]
+      summary: Revoke one of the caller's sessions
+      description: |
+        Scoped to the caller by user id in the query itself, so a session id from another account
+        cannot be used to sign somebody else out (404, not 403 — the id is not confirmed to exist).
+        Revoking the current session is allowed and ends it.
+      operationId: revokeSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: boolean }
+                  wasCurrent: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/exam-pathways:
     get:
@@ -1101,6 +1177,40 @@ components:
         token:
           type: string
           description: Returned only on creation.
+
+    Readiness:
+      type: object
+      required: [status, time, driver, checks]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        time: { type: string, format: date-time }
+        driver: { type: string }
+        request_id: { type: string }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name: { type: string, enum: [database, migrations] }
+              status: { type: string, enum: [ok, fail] }
+              detail: { type: string }
+              latency: { type: string }
+
+    SessionView:
+      type: object
+      required: [id, client, createdAt, expiresAt, current]
+      properties:
+        id:
+          type: string
+          description: Hash of the session token; not usable as a credential.
+        client: { type: string, enum: [web, mobile] }
+        userAgent: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        current:
+          type: boolean
+          description: True for the session that authenticated this request.
 
     Subject:
       type: object

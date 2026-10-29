@@ -22,7 +22,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 
 | Area | Gap |
 | --- | --- |
-| Database | SQLite is the tested path. The PostgreSQL schema is ported (`migrations/postgres/`) but the pgx driver is not linked and no migration has been run against a live server, so `EDUMART_DRIVER=postgres` stops at startup by design |
+| Database | SQLite is the tested path; migrations are versioned and checksummed. The PostgreSQL schema is ported (`migrations/postgres/`) but the pgx driver is not linked and no migration has been run against a live server, so `EDUMART_DRIVER=postgres` stops at startup by design |
 | Sessions | Opaque tokens with revocation; no rotation, no device list, no idle timeout |
 | Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused) |
 | Payments | Only the sandbox provider is wired; no live adapter, refunds or reconciliation |
@@ -34,8 +34,8 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 
 | Area | Why it matters |
 | --- | --- |
-| Migration strategy | The bootstrap uses `CREATE TABLE IF NOT EXISTS`; schema changes need a versioned runner before production data exists |
-| Observability | No metrics, no tracing, no error aggregation, no alerting |
+| Migration strategy | **Versioned runner now exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). What is still missing is a forward-fix/rollback rehearsal against a production-shaped database, and any PostgreSQL execution at all |
+| Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
 | Backups | No snapshot policy, no tested restore |
 | Notification delivery | No email or push provider; password-reset tokens are logged server-side in development |
 | Live payment provider | No adapter, no key management, no webhook replay window |

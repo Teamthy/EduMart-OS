@@ -921,3 +921,140 @@ func TestGradedAssessmentSessionsAreFrozenOnSubmit(t *testing.T) {
 		t.Fatalf("expected 409 once attempts are exhausted, got %d %v", status, body)
 	}
 }
+
+func TestReadinessChecksRealDependencies(t *testing.T) {
+	h := newHarness(t)
+
+	status, body := h.do("GET", "/readyz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected ready, got %d %v", status, body)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", body["status"])
+	}
+
+	checks := body["checks"].([]any)
+	seen := map[string]string{}
+	for _, raw := range checks {
+		check := raw.(map[string]any)
+		seen[check["name"].(string)] = check["status"].(string)
+	}
+	for _, name := range []string{"database", "migrations"} {
+		if seen[name] != "ok" {
+			t.Fatalf("check %q should be ok, got %q (%v)", name, seen[name], checks)
+		}
+	}
+
+	// A readiness probe must fail, not reassure, when the database is gone — otherwise a load
+	// balancer keeps routing traffic to an instance that cannot serve it.
+	if err := h.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	status, body = h.do("GET", "/readyz", "", nil)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the database is down, got %d %v", status, body)
+	}
+	if body["status"] != "unavailable" {
+		t.Fatalf("expected unavailable, got %v", body["status"])
+	}
+
+	// Liveness must stay green: restarting a healthy process because a dependency is down turns one
+	// outage into two.
+	if status, _ = h.do("GET", "/healthz", "", nil); status != http.StatusOK {
+		t.Fatalf("liveness should not depend on the database, got %d", status)
+	}
+}
+
+func TestSessionListAndRevocation(t *testing.T) {
+	h := newHarness(t)
+
+	// Two devices: a browser and the native app.
+	web := h.login("student@edumart.ng", "Student123!")
+	mobile := h.login("student@edumart.ng", "Student123!")
+
+	status, body := h.do("GET", "/v1/me/sessions", web, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list sessions: %d %v", status, body)
+	}
+	sessions := body["sessions"].([]any)
+	if len(sessions) < 2 {
+		t.Fatalf("expected both sessions listed, got %d", len(sessions))
+	}
+
+	current := 0
+	var mobileSessionID string
+	for _, raw := range sessions {
+		session := raw.(map[string]any)
+		if session["current"] == true {
+			current++
+		}
+		for _, forbidden := range []string{"token", "password"} {
+			if _, leaked := session[forbidden]; leaked {
+				t.Fatalf("session list leaked %q: %v", forbidden, session)
+			}
+		}
+		if session["id"] == nil {
+			t.Fatal("each session needs an id to be revocable")
+		}
+	}
+	if current != 1 {
+		t.Fatalf("exactly one session should be marked current, got %d", current)
+	}
+
+	// Revoke the other device; it must stop working immediately.
+	status, body = h.do("GET", "/v1/me/sessions", mobile, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list sessions as the mobile client: %d", status)
+	}
+	for _, raw := range body["sessions"].([]any) {
+		session := raw.(map[string]any)
+		if session["current"] != true {
+			mobileSessionID = session["id"].(string)
+		}
+	}
+	if mobileSessionID == "" {
+		t.Fatal("could not identify the web session")
+	}
+
+	status, body = h.do("DELETE", "/v1/me/sessions/"+mobileSessionID, mobile, nil)
+	if status != http.StatusOK || body["revoked"] != true {
+		t.Fatalf("revoke: %d %v", status, body)
+	}
+	if status, _ = h.do("GET", "/v1/me", web, nil); status != http.StatusUnauthorized {
+		t.Fatalf("a revoked session must be rejected, got %d", status)
+	}
+	// The device that did the revoking keeps working.
+	if status, _ = h.do("GET", "/v1/me", mobile, nil); status != http.StatusOK {
+		t.Fatalf("the revoking session should survive, got %d", status)
+	}
+
+	// Unknown ids 404 rather than silently succeeding.
+	status, _ = h.do("DELETE", "/v1/me/sessions/does-not-exist", mobile, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown session, got %d", status)
+	}
+
+	// Another learner cannot sign this one out even with a valid id from their own list.
+	other := h.login("teacher@edumart.ng", "Teacher123!")
+	status, body = h.do("GET", "/v1/me/sessions", other, nil)
+	if status != http.StatusOK {
+		t.Fatalf("list teacher sessions: %d", status)
+	}
+	var teacherSessionID string
+	for _, raw := range body["sessions"].([]any) {
+		session := raw.(map[string]any)
+		if session["current"] != true {
+			teacherSessionID = session["id"].(string)
+		}
+	}
+	if teacherSessionID != "" {
+		if status, _ = h.do("DELETE", "/v1/me/sessions/"+teacherSessionID, mobile, nil); status != http.StatusNotFound {
+			t.Fatalf("a learner must not revoke another user's session, got %d", status)
+		}
+	}
+
+	// Anonymous callers get nothing.
+	if status, _ = h.do("GET", "/v1/me/sessions", "", nil); status != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous session listing, got %d", status)
+	}
+}
