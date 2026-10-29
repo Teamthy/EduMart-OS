@@ -6,6 +6,12 @@
 # store (S3/GCS) via your CSI driver, or let the mirror step copy to a second PVC on another node.
 # What matters is that the volume is not the database's own volume, and that `--verify` runs — a CronJob
 # that only dumps is a CronJob that has never been read back.
+#
+# The heartbeat is written to the backup volume at /backups/heartbeat.json. For the alerts to see it, the
+# API deployment must mount the same claim read-only and set
+# EDUMART_BACKUP_HEARTBEAT=/backups/heartbeat.json. Without that mount the API reports no backup at all and
+# EdumartBackupMissing pages — which is the correct outcome for "the alert cannot see the backup", not a
+# reason to remove the alert.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -35,8 +41,9 @@ spec:
                     --dsn "$EDUMART_BACKUP_DSN" \
                     --dest /backups \
                     --mirror /offsite \
-                    --keep-daily 7 --keep-weekly 4
-                  python3 scripts/backup.py --verify --dest /backups
+                    --keep-daily 7 --keep-weekly 4 \
+                    --heartbeat /backups/heartbeat.json
+                  python3 scripts/backup.py --verify --dest /backups --heartbeat /backups/heartbeat.json
               env:
                 - name: EDUMART_PG_DSN
                   valueFrom: { secretKeyRef: { name: edumart-backup, key: dsn } }

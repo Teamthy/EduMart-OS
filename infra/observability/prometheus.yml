@@ -1,0 +1,47 @@
+# A scrape configuration for Edumart, as a starting point rather than a deployment.
+#
+#   prometheus --config.file=infra/observability/prometheus.yml \
+#              --web.enable-lifecycle
+#
+# This repository does not ship Prometheus, Grafana or Alertmanager. What it ships is the part that has to
+# agree with the application: the metric names, the scrape path and the rule file. Everything below that is
+# environment configuration.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: edumart
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: edumart-api
+    metrics_path: /metrics
+    # The API refuses a scrape without its token once one is configured. Reading the token from a file
+    # rather than inlining it keeps it out of the config, which is the file people paste into a chat when
+    # something breaks.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/edumart/metrics-token
+    static_configs:
+      - targets: ["api-1:8080"]
+        labels:
+          env: production
+
+  # Readiness probed from the outside, which is a different question from "is the process up": a load
+  # balancer refusing traffic looks like a healthy process with no traffic.
+  - job_name: edumart-readyz
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://api-1:8080/readyz"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

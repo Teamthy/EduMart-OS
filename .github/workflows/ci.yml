@@ -272,3 +272,67 @@ jobs:
       - name: Stop PostgreSQL API
         if: always()
         run: kill "$(cat /tmp/api-pg.pid)" 2>/dev/null || true
+
+  observability:
+    name: Observability
+    runs-on: ubuntu-latest
+    needs: [api]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: apps/api/go.sum
+      - name: Install checker dependencies
+        run: pip install pyyaml
+      - name: Prove the alert checker still catches a rename
+        # Before trusting a green result from the checker, check the checker. This is the same principle as
+        # the secret detector's own fixture: a gate that has only ever passed is not known to work.
+        run: python3 scripts/check-alerts.py --self-test
+      - name: Start the API
+        working-directory: apps/api
+        run: |
+          go build -o /tmp/edumart-api ./cmd/api
+          EDUMART_DSN=/tmp/ci-metrics.db PORT=8080 \
+          EDUMART_BACKUP_HEARTBEAT=/tmp/heartbeat.json /tmp/edumart-api & echo $! > /tmp/api.pid
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/readyz && break; sleep 1; done
+      - name: Take a backup that reports a heartbeat
+        # Runs the real backup tool rather than hand-writing the JSON: if the tool's output shape and the API's
+        # reader ever drift apart, this step is where it shows up instead of in production at 3am.
+        run: |
+          python3 scripts/backup.py --engine sqlite --dsn /tmp/ci-metrics.db --dest /tmp/backups \
+            --heartbeat /tmp/heartbeat.json
+          python3 scripts/backup.py --engine sqlite --dsn /tmp/ci-metrics.db --dest /tmp/backups \
+            --verify --heartbeat /tmp/heartbeat.json
+      - name: Every alert rule must be able to fire
+        run: |
+          curl -sf http://localhost:8080/metrics -o /tmp/metrics.txt
+          cat /tmp/metrics.txt
+          python3 scripts/check-alerts.py --metrics /tmp/metrics.txt
+      - name: The backup heartbeat must reach the metric the backup alerts watch
+        run: |
+          curl -sf http://localhost:8080/metrics -o /tmp/metrics-after-backup.txt
+          grep -q '^edumart_backup_age_seconds ' /tmp/metrics-after-backup.txt \
+            || { echo "::error::the backup heartbeat did not produce edumart_backup_age_seconds"; exit 1; }
+          grep -q '^edumart_backup_last_run_succeeded 1' /tmp/metrics-after-backup.txt \
+            || { echo "::error::a verified backup was not reported as verified"; exit 1; }
+      - name: With a token configured, the scrape endpoint fails closed
+        # A second instance on another port, because the token is read at startup. This is the production
+        # configuration: no token, no metrics — with a 404, so a prober does not learn the endpoint exists.
+        run: |
+          EDUMART_DSN=/tmp/ci-metrics-token.db PORT=8082 EDUMART_METRICS_TOKEN=s3cret-scrape \
+            /tmp/edumart-api & echo $! > /tmp/api-token.pid
+          for i in $(seq 1 30); do curl -sf http://localhost:8082/healthz && break; sleep 1; done
+          unauthorised=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/metrics)
+          wrong=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer s3cret-scrap' \
+            http://localhost:8082/metrics)
+          authorised=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer s3cret-scrape' \
+            http://localhost:8082/metrics)
+          echo "no token: $unauthorised | wrong token: $wrong | right token: $authorised"
+          [ "$unauthorised" = "404" ] || { echo "::error::/metrics answered $unauthorised without a token"; exit 1; }
+          [ "$wrong" = "404" ] || { echo "::error::/metrics accepted a wrong token ($wrong)"; exit 1; }
+          [ "$authorised" = "200" ] || { echo "::error::/metrics refused the correct token ($authorised)"; exit 1; }
+          kill "$(cat /tmp/api-token.pid)" 2>/dev/null || true
+      - name: Stop the API
+        if: always()
+        run: kill "$(cat /tmp/api.pid)" 2>/dev/null || true

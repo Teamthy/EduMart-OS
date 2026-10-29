@@ -16,6 +16,9 @@ by attacking the places backups actually fail:
      `--keep-daily 0 --keep-weekly 0`, and the daily/weekly windows keep what they promise.
   4. **The off-site copy is the same bytes.** A mirror is re-read and compared, because a copy that was
      never read back is an assumption.
+  5. **The heartbeat says what actually happened.** A backup writes `verified: false` and only `--verify`
+     flips it, so the alert on "the last backup was never restored" cannot be satisfied by a dump that was
+     never read back. A monitoring hook that lies is worse than no monitoring hook.
 
 Exits non-zero on the first broken claim. Standard library only.
 """
@@ -303,6 +306,47 @@ def claim_mirror_is_identical(workdir: str, engine: str, dsn: str) -> None:
     print("  the copy matches the recorded checksum and carries its own manifest")
 
 
+def claim_heartbeat_tracks_verification(workdir: str, engine: str, dsn: str) -> None:
+    """The metric the backup alerts watch is only as trustworthy as what writes it."""
+    print("\nclaim 5: the heartbeat reports a backup as unverified until it has been restored")
+    dest = os.path.join(workdir, "heartbeat-backups")
+    heartbeat = os.path.join(workdir, "heartbeat", "backup-heartbeat.json")
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.rmtree(os.path.dirname(heartbeat), ignore_errors=True)
+
+    backup(dest, engine, dsn, ["--heartbeat", heartbeat])
+    first = read_heartbeat(heartbeat)
+    if first.get("verifiedAt") is not False:
+        raise DrillError(f"a backup that has not been restored reported verifiedAt={first.get('verifiedAt')!r}")
+    if first.get("rows") != manifest(dest)["backups"][-1]["rows"]:
+        raise DrillError("the heartbeat's row count disagrees with the manifest")
+
+    run([sys.executable, BACKUP, "--engine", engine, "--dsn", dsn, "--dest", dest,
+         "--verify", "--heartbeat", heartbeat], check=True)
+    second = read_heartbeat(heartbeat)
+    if second.get("verifiedAt") is not True:
+        raise DrillError("a verified backup still reports itself as unverified, so the alert would never clear")
+    if second.get("at") != first.get("at"):
+        raise DrillError("verification rewrote the backup timestamp: the age metric would keep resetting")
+    print("  unverified after the dump, verified after --verify, with the timestamp preserved")
+
+
+def read_heartbeat(path: str) -> dict:
+    """Read the file the way the API does: every field it needs must be present and correctly typed."""
+    if not os.path.exists(path):
+        raise DrillError(f"no heartbeat was written at {path}")
+    with open(path, encoding="utf-8") as handle:
+        beat = json.load(handle)
+    for field, kind in (("at", str), ("engine", str), ("file", str), ("rows", int), ("verifiedAt", bool)):
+        if not isinstance(beat.get(field), kind):
+            raise DrillError(f"heartbeat field {field!r} is {beat.get(field)!r}, the API expects {kind.__name__}")
+    # The API parses `at` as RFC3339; a heartbeat it cannot parse is a heartbeat it silently ignores.
+    import datetime
+
+    datetime.datetime.fromisoformat(beat["at"].replace("Z", "+00:00"))
+    return beat
+
+
 def drill_engine(binary: str, engine: str, workdir: str, port: int, dsn: str | None) -> None:
     print(f"\n=== {engine} ===")
     if engine == "sqlite":
@@ -314,6 +358,7 @@ def drill_engine(binary: str, engine: str, workdir: str, port: int, dsn: str | N
         claim_tampering_is_caught(workdir)
         claim_retention_keeps_what_matters(workdir)
         claim_mirror_is_identical(workdir, "sqlite", database)
+        claim_heartbeat_tracks_verification(workdir, "sqlite", database)
         run([sys.executable, BACKUP, "--verify", "--dest", os.path.join(workdir, "live-backups")])
         print("  --verify restored the newest backup into a scratch database and counted its rows")
         return
@@ -331,6 +376,7 @@ def drill_engine(binary: str, engine: str, workdir: str, port: int, dsn: str | N
     run([sys.executable, BACKUP, "--verify", "--dest", dest])
     print("  --verify restored the dump into a scratch database and counted its rows")
     claim_mirror_is_identical(workdir, "postgres", dsn)
+    claim_heartbeat_tracks_verification(workdir, "postgres", dsn)
 
 
 PGBIN_CANDIDATES = [
@@ -386,7 +432,8 @@ def main() -> int:
         if args.engine in ("postgres", "both"):
             os.makedirs(os.path.join(workdir, "postgres"), exist_ok=True)
             drill_engine(binary, "postgres", os.path.join(workdir, "postgres"), args.port + 1, args.dsn)
-        print("\nbackup drill passed: the snapshot restores, corruption is caught, retention behaves")
+        print("\nbackup drill passed: the snapshot restores, corruption is caught, retention behaves, "
+              "and the heartbeat tells the truth about verification")
         return 0
     except DrillError as caught:
         print(f"\nbackup drill FAILED: {caught}", file=sys.stderr)

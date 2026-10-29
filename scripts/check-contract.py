@@ -47,13 +47,23 @@ def spec_routes(text):
     return routes
 
 
+# Routes registered on the root router that are deliberately absent from the published contract. `/metrics` is
+# infrastructure: its shape is chosen by the monitoring system, its labels are an implementation detail, and
+# documenting it would invite a client to depend on either. It is still checked — by
+# scripts/check-alerts.py, which asserts every alert rule names a metric the exposition actually emits.
+EXEMPT = {("GET", "/metrics")}
+
+
 def router_routes(text):
     """Collect (method, path) from chi registrations."""
     routes = set()
     # v1.Get("/me", …), g.Post("/practice-sessions", …), r.Get("/healthz", …)
     for match in re.finditer(r'\b(?:v1|g|r)\.(Get|Post|Put|Patch|Delete)\("([^"]+)"', text):
         method, path = match.group(1).upper(), match.group(2)
-        if not path.startswith("/v1") and path not in ("/healthz", "/readyz"):
+        # A route registered on the root router without a /v1 prefix is still part of the product API, except
+        # for the infrastructure endpoints, which keep the path they are reached at.
+        if not path.startswith("/v1") and path not in ("/healthz", "/readyz") + tuple(
+                p for _, p in EXEMPT):
             path = "/v1" + path
         routes.add((method, normalise(path)))
     return routes
@@ -70,7 +80,8 @@ def main():
     spec = spec_routes(SPEC.read_text())
     router = router_routes(ROUTER.read_text())
 
-    undocumented = sorted(router - spec)
+    exempt = sorted(router & EXEMPT)
+    undocumented = sorted(router - spec - EXEMPT)
     phantom = sorted(spec - router)
 
     for method, path in undocumented:
@@ -86,7 +97,8 @@ def main():
         )
         return 1
 
-    print(f"contract matches the router: {len(router)} documented route(s)")
+    note = f" ({len(exempt)} exempt: {', '.join(f'{m} {p}' for m, p in exempt)})" if exempt else ""
+    print(f"contract matches the router: {len(router)} documented route(s){note}")
     return 0
 
 

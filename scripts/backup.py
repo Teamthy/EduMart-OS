@@ -206,7 +206,38 @@ def backup(args) -> int:
     if args.mirror:
         mirror(record, dest, args.mirror)
     prune(dest, manifest, args.keep_daily, args.keep_weekly, dry_run=args.dry_run)
+
+    # The heartbeat is what the API's /metrics reads, and therefore what the freshness alert watches.
+    # `verified: false` here on purpose: the backup has been taken, not yet proven restorable. `--verify`
+    # flips it. A job that dumps and never verifies therefore alerts, which is the point.
+    if args.heartbeat:
+        write_heartbeat(args.heartbeat, record, verified=False)
     return 0
+
+
+def write_heartbeat(path: str, record: dict, *, verified: bool) -> None:
+    """Record the most recent successful backup where the API can read it.
+
+    Written atomically: the API reads this file on every scrape, and a scrape that catches a half-written
+    file would report a missing backup — an alert firing on its own writer is the fastest way to get an
+    alert switched off.
+    """
+    heartbeat = {
+        "at": record["createdAt"],
+        "engine": record["engine"],
+        "file": record["file"],
+        "rows": record["rows"],
+        "sha256": record["sha256"],
+        "verifiedAt": verified,
+    }
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(heartbeat, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+    print(f"heartbeat: {path} (verified={str(verified).lower()})")
 
 
 # ── retention ──────────────────────────────────────────────────────────────────────────────────
@@ -320,6 +351,8 @@ def verify(args) -> int:
     if problems:
         raise BackupError("the backup does not restore what it claims:\n  " + "\n  ".join(problems))
     print(f"verify: OK — {sum(counts.values())} rows restored from {record['file']}")
+    if args.heartbeat:
+        write_heartbeat(args.heartbeat, record, verified=True)
     return 0
 
 
@@ -405,6 +438,7 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="show what is in the destination")
     parser.add_argument("--verify", action="store_true", help="restore the newest backup into a scratch database")
     parser.add_argument("--file", help="verify this backup instead of the newest")
+    parser.add_argument("--heartbeat", help="write a heartbeat file the API's /metrics reads (EDUMART_BACKUP_HEARTBEAT)")
     args = parser.parse_args()
 
     try:

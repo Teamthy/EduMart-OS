@@ -101,6 +101,10 @@ func main() {
 			// Opt-in: believing X-Forwarded-For without a proxy in front means any caller can pick
 			// their own rate-limit bucket, and guessing a password becomes a matter of a loop.
 			TrustProxy: env("EDUMART_TRUST_PROXY", "false") == "true",
+			// Empty by default: /metrics is then loopback-only, which is right for a laptop and wrong
+			// for a deployment, so production sets a token and Prometheus sends it.
+			MetricsToken:    os.Getenv("EDUMART_METRICS_TOKEN"),
+			BackupHeartbeat: os.Getenv("EDUMART_BACKUP_HEARTBEAT"),
 		},
 	})
 

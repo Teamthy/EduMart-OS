@@ -241,6 +241,11 @@ func (s *Service) RefundOrder(ctx context.Context, actorID, orderID string, amou
 	if replayed {
 		s.loggerInfo("refund replayed", "orderId", orderID, "refundId", refund.ID)
 	}
+	// Counted once per recorded refund, not per request: a replay returned the same row and must not
+	// look like more money going out.
+	if s.platform != nil && !replayed && refund != nil {
+		s.platform.Refund(refund.Currency, refund.AmountMinor)
+	}
 	return refund, nil
 }
 
@@ -459,6 +464,17 @@ func (s *Service) Reconcile(ctx context.Context, from, to time.Time) (*Reconcili
 				AmountMinor: amount,
 			})
 		}
+	}
+
+	// Published so an alert can see a discrepancy without anyone remembering to open the report. The
+	// gauges are set rather than counted: "the books disagree by one row right now" is the fact, and a
+	// cumulative count of every disagreement ever found would only ever grow and mean nothing.
+	if s.platform != nil {
+		byKind := map[string]int{}
+		for _, discrepancy := range report.Discrepancies {
+			byKind[discrepancy.Kind] = discrepancy.Count
+		}
+		s.platform.ReconciliationReport(time.Now().UTC(), report.PaidOrders, byKind)
 	}
 
 	return report, nil
