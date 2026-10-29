@@ -1,0 +1,13 @@
+# Nightly at 02:17 — an odd minute on purpose, so it does not collide with every other job that starts at
+# 02:00 and with the hourly checkpoint it would otherwise overlap.
+[Unit]
+Description=Nightly Edumart database backup
+
+[Timer]
+OnCalendar=*-*-* 02:17:00 UTC
+# If the machine was off at 02:17, run the backup when it comes back rather than skipping the day.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

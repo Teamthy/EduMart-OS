@@ -177,6 +177,47 @@ jobs:
         run: |
           python3 scripts/restore-drill.py both \
             --dsn 'postgres://edumart:edumart@localhost:5432/edumart_restore?sslmode=disable'
+      - name: Prove the backup strategy, not just one restore
+        # A restore proves the system can recover. This proves the *backups* are worth keeping: a live
+        # snapshot restores completely, one flipped byte is refused, retention cannot delete the only
+        # copy, and the off-site copy is byte-identical.
+        env:
+          PGBIN: /usr/lib/postgresql/17/bin
+          EDUMART_PG_DSN: postgres://edumart:edumart@localhost:5432/edumart_backup?sslmode=disable
+        # The report goes into annotations as well as the log: the log of a CI job is not always
+        # reachable from where the failure is being read, and a drill that fails invisibly teaches people
+        # to skip it.
+        run: |
+          set +e
+          {
+            psql "$EDUMART_PG_DSN" -c 'SELECT 1' >/dev/null 2>&1 || \
+              psql 'postgres://edumart:edumart@localhost:5432/edumart_restore?sslmode=disable' \
+                -c 'CREATE DATABASE edumart_backup'
+            python3 scripts/backup-drill.py both --dsn "$EDUMART_PG_DSN"
+          } > /tmp/backup-drill.log 2>&1
+          CODE=$?
+          cat /tmp/backup-drill.log
+          if [ "$CODE" -ne 0 ]; then
+            head -40 /tmp/backup-drill.log | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$CODE"
+      - name: Prove point-in-time recovery
+        # Needs server binaries, not just the client, because the drill builds its own cluster with WAL
+        # archiving. Installed here rather than assumed: a skipped drill is not a demonstrated capability.
+        env:
+          PGBIN: /usr/lib/postgresql/17/bin
+        run: |
+          set +e
+          {
+            sudo apt-get install -y postgresql-17
+            python3 scripts/pitr-drill.py
+          } > /tmp/pitr-drill.log 2>&1
+          CODE=$?
+          cat /tmp/pitr-drill.log
+          if [ "$CODE" -ne 0 ]; then
+            head -40 /tmp/pitr-drill.log | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$CODE"
 
   e2e-smoke:
     name: End-to-end smoke

@@ -1,0 +1,52 @@
+# The same schedule as the systemd timer, for a cluster.
+#
+#   kubectl apply -f infra/backup/k8s-cronjob.yaml
+#
+# The dump goes to a PersistentVolumeClaim here; in production replace `backup-claim` with an object
+# store (S3/GCS) via your CSI driver, or let the mirror step copy to a second PVC on another node.
+# What matters is that the volume is not the database's own volume, and that `--verify` runs — a CronJob
+# that only dumps is a CronJob that has never been read back.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: edumart-backup
+spec:
+  schedule: "17 2 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: ghcr.io/teamthy/edumart-tooling:latest # python3 + postgresql-client
+              command: ["/bin/sh", "-eu", "-c"]
+              args:
+                - |
+                  python3 scripts/backup.py \
+                    --engine postgres \
+                    --dsn "$EDUMART_BACKUP_DSN" \
+                    --dest /backups \
+                    --mirror /offsite \
+                    --keep-daily 7 --keep-weekly 4
+                  python3 scripts/backup.py --verify --dest /backups
+              env:
+                - name: EDUMART_PG_DSN
+                  valueFrom: { secretKeyRef: { name: edumart-backup, key: dsn } }
+                - name: EDUMART_BACKUP_DSN
+                  valueFrom: { secretKeyRef: { name: edumart-backup, key: dsn } }
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+                - { name: offsite, mountPath: /offsite }
+          volumes:
+            - name: backups
+              persistentVolumeClaim: { claimName: backup-claim }
+            - name: offsite
+              persistentVolumeClaim: { claimName: offsite-claim }

@@ -26,7 +26,10 @@
     "assets": "python3 scripts/render-assets.py",
     "contract": "python3 scripts/check-contract.py",
     "scan:secrets": "python3 scripts/scan-secrets.py",
-    "audit": "npm audit --omit=dev --audit-level=high"
+    "audit": "npm audit --omit=dev --audit-level=high",
+    "backup": "python3 scripts/backup.py",
+    "backup:drill": "python3 scripts/backup-drill.py",
+    "pitr:drill": "python3 scripts/pitr-drill.py"
   },
   "engines": {
     "node": ">=20.11"
