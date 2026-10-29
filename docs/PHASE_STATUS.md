@@ -7,7 +7,8 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the refund and reconciliation work (Phase 22, plus the session model from Phase 7).
+Last updated with the Phase 28 slice: threat model, dependency and secret scanning, and the API hardening
+review that came out of it.
 
 ## The whole board
 
@@ -40,7 +41,7 @@ Last updated with the refund and reconciliation work (Phase 22, plus the session
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
-| 28 | Security and resilience | Not started as a phase | Controls exist; **no threat model, no scanning, no drills** |
+| 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix; **no 2FA, no monitoring/alerting, no incident runbook** |
 | 29 | Performance and QA | Not started | No load tests, no device matrix, no accessibility audit |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
@@ -346,6 +347,49 @@ Paystack refund API call, so a real deployment would need that adapter before fi
 alone. No credit notes or PDFs, no disputes or chargebacks, no scheduled reconciliation job (the report is
 pulled, not pushed), and no commission approval or payout workflow.
 
+### Phase 28 — Security and resilience · Partial, and now measured
+
+The phase's exit gate is "critical vulnerabilities are closed, residual risks have named owners, recovery
+targets are tested, and incident procedures are operational". This slice delivers the first two, and says
+plainly which parts of the last two are still missing.
+
+**A threat model, not a checklist.** [`THREAT_MODEL.md`](./THREAT_MODEL.md) names the assets, the
+adversaries (including insiders, because a refund and an account suspension are legitimate staff actions
+rather than bugs), the controls that actually exist with the file or test that proves each one, and eleven
+residual risks with severity, consequence and an owner.
+
+**Two scanners, both wired into CI as the `Security` job:**
+
+| Gate | What it catches | Why it is credible |
+| --- | --- | --- |
+| `scripts/scan-secrets.py` | Provider keys, private keys, JWTs, credentials in URLs, and file shapes that should never be tracked (`.env`, `*.pem`, database dumps) | `--self-test` asserts 14 fixtures: what must be caught is caught, and local development defaults are left alone. A scanner nobody has shown a secret is a scanner nobody should trust |
+| `govulncheck ./...` | Vulnerabilities **reachable** from our code, via the Go vulnerability database | Reports the call path, so a finding is actionable rather than a version diff |
+| `npm audit --omit=dev --audit-level=high` | Reachable production JavaScript advisories | Test-only tooling is excluded, because failing on a vulnerable test runner pushes people to skip the gate |
+
+The npm gate immediately earned its place: it found a **high-severity advisory in `postcss@8.4.31`** nested
+inside Next 15 (arbitrary file read via attacker-controlled `sourceMappingURL`). Fixed with an `overrides`
+pin to `postcss@8.5.32` rather than a framework major upgrade, and the web build, typecheck and unit tests
+were re-run against the patched tree. Advisory count is now zero.
+
+**A real vulnerability, found by the review and closed:** `X-Forwarded-For` was believed unconditionally.
+Every rate limit in the system was therefore keyed on a value the caller chose — rotating one header gave
+unlimited password attempts against any known address. Forwarding headers are now honoured only when
+`EDUMART_TRUST_PROXY=true` says a proxy is genuinely in front of the process, and
+`TestAForwardingHeaderCannotBuyMorePasswordAttempts` proves the difference (it fails if the switch is
+flipped). The same review added:
+
+- `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and
+  `Cache-Control: no-store` on **every** API response, asserted on a success, a refusal and a 404.
+- Budgets on the routes an unauthenticated caller could previously hammer without limit: signup drafts,
+  referral-code lookup, and the webhook endpoint that verifies an HMAC on every unsigned request.
+- `TestASelfSelectedRoleGrantsNothing` and `TestLoginFailuresDoNotRevealWhichPartWasWrong`, two Phase 8
+  rules that were implemented but had no test standing behind them.
+
+Not done, and not claimed: no device-level 2FA or risk-based sign-in for staff, no security monitoring or
+alerting (audit rows are written; nothing watches them), no WAF or bot protection, no incident-response
+runbook, and no dependency-update automation. Each is a named residual risk in the threat model rather
+than a sentence in a wish list.
+
 ### Phase 24 — Notifications · Partial (delivery is now real)
 
 `internal/notify` owns delivery end to end:
@@ -393,9 +437,9 @@ is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ## Recommended next three steps
 
-1. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill, the
-   session model and the money-correction path are done; "we believe our dependencies are clean" is still
-   a belief.
+1. **Scheduled, off-site backups and PITR (Phase 5's remaining gate).** The restore path is proven; what
+   is unproven is that a copy exists when the disk dies. This is now the largest gap that can be closed
+   without a product decision.
 2. **A real refund adapter (Paystack).** Refunds are now recorded correctly but move no money. Wiring the
    provider call, and marking a refund `pending` until the provider confirms it, is the next honest step —
    and it is the difference between a ledger that describes money and one that describes intentions.

@@ -55,6 +55,40 @@ jobs:
       - name: Build
         run: go build -o /tmp/edumart-api ./cmd/api
 
+  security:
+    # "We believe our dependencies are clean" is not a control. This job is what turns it into one, and
+    # it is separate from the others so a stale advisory cannot be mistaken for a test failure.
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove the secret detector still detects
+        # A scanner that has never been shown a secret is a scanner nobody should trust, so the pattern
+        # fixtures are asserted before the tree is scanned.
+        run: python3 scripts/scan-secrets.py --self-test
+      - name: Scan the tree for committed secrets
+        run: python3 scripts/scan-secrets.py
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: apps/api/go.sum
+      - name: Scan Go dependencies for known vulnerabilities
+        working-directory: apps/api
+        # govulncheck reports only vulnerabilities reachable from this code, using the Go vulnerability
+        # database. Exit code 3 means a reachable advisory, which is exactly a merge blocker.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Scan JavaScript dependencies for known vulnerabilities
+        # Production dependencies only: a vulnerable test runner cannot be reached by a learner, and
+        # failing on one would push people to skip the gate entirely.
+        run: npm audit --omit=dev --audit-level=high
+
   web:
     name: Web (Next.js)
     runs-on: ubuntu-latest

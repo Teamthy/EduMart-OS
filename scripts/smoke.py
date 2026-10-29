@@ -36,6 +36,20 @@ def call(method, path, body=None, token=None):
         return error.code, json.loads(raw) if raw else {}
 
 
+def headers_of(method, path, body=None, token=None):
+    """Return the response headers, for the assertions about what the API says about itself."""
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(BASE + path, data=data, method=method)
+    request.add_header("Content-Type", "application/json")
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return dict(response.headers)
+    except urllib.error.HTTPError as error:
+        return dict(error.headers)
+
+
 def expect(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -51,6 +65,16 @@ def main():
     checked = {check["name"]: check["status"] for check in body["checks"]}
     expect(checked.get("database") == "ok", "the database probe is real and passing")
     expect(checked.get("migrations") == "ok", "the schema is up to date")
+
+    print("hardening")
+    headers = headers_of("GET", "/products")
+    expect(headers.get("X-Content-Type-Options") == "nosniff",
+           "responses are not sniffable as another content type")
+    expect(headers.get("X-Frame-Options") == "DENY",
+           "an API response cannot be framed")
+    expect(headers.get("Cache-Control") == "no-store",
+           "no intermediary may cache a response that can carry one learner's data")
+    expect(headers.get("X-Request-Id"), "every response carries a correlation id")
 
     print("taxonomy")
     status, body = call("GET", "/subjects")

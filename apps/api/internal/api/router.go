@@ -29,6 +29,9 @@ type Config struct {
 	AllowedOrigins    []string
 	AllowSandboxPay   bool
 	SandboxWebhookKey string
+	// TrustProxy must be true only when a known proxy sits in front of the process. It decides whether
+	// X-Forwarded-For is believed, which decides what every rate limit is keyed on.
+	TrustProxy bool
 }
 
 // Deps are the constructed services the router needs.
@@ -68,6 +71,10 @@ func NewRouter(d Deps) http.Handler {
 	signupHandlers := signup.NewHandlers(d.Signup)
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 
+	// Forwarded headers are believed only when an operator has said a proxy is in front of us. Without
+	// this, a caller rotating X-Forwarded-For bypasses every rate limit in the system.
+	r.Use(httpx.TrustProxy(d.Config.TrustProxy))
+	r.Use(httpx.SecurityHeaders())
 	r.Use(httpx.RequestIDMiddleware)
 	r.Use(httpx.Recover(d.Logger))
 	r.Use(httpx.AccessLog(d.Logger))
@@ -109,10 +116,14 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/auth/verification/request", wrap(authHandlers.RequestVerification))
 			g.Post("/auth/verification/confirm", wrap(authHandlers.ConfirmVerification))
 		})
-		// Anonymous signup wizard: progress is persisted server-side before an account exists.
-		v1.Get("/signup-drafts/current", wrap(signupHandlers.Current))
-		v1.Post("/signup-drafts", wrap(signupHandlers.Create))
-		v1.Patch("/signup-drafts/current", wrap(signupHandlers.Update))
+		// Anonymous signup wizard: progress is persisted server-side before an account exists. Each
+		// draft is a database row created by an unauthenticated caller, so it needs its own budget.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("signup-draft", 60, time.Minute))
+			g.Get("/signup-drafts/current", wrap(signupHandlers.Current))
+			g.Post("/signup-drafts", wrap(signupHandlers.Create))
+			g.Patch("/signup-drafts/current", wrap(signupHandlers.Update))
+		})
 
 		v1.Get("/me", wrap(authHandlers.Me))
 		v1.Get("/me/sessions", wrap(authHandlers.Sessions))
@@ -123,7 +134,12 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/exam-pathways", wrap(contentHandlers.Pathways))
 		v1.Get("/subjects", wrap(contentHandlers.Subjects))
 		v1.Get("/subjects/{subjectId}/topics", wrap(contentHandlers.Topics))
-		v1.Get("/referrals/validate/{code}", wrap(rewardsHandlers.ValidateCode))
+		// Referral codes are short and guessable-ish; validating one must not be a free oracle for
+		// harvesting who refers whom.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("referral-lookup", 60, time.Minute))
+			g.Get("/referrals/validate/{code}", wrap(rewardsHandlers.ValidateCode))
+		})
 
 		// ── learner home and analytics ───────────────────────────────────
 		v1.Get("/dashboard", wrap(insightsHandlers.Dashboard))
@@ -181,8 +197,13 @@ func NewRouter(d Deps) http.Handler {
 		if d.Config.AllowSandboxPay {
 			v1.Post("/orders/{id}/simulate-payment", wrap(commerceHandlers.Simulate))
 		}
-		// Webhooks are authenticated by signature, never by session.
-		v1.Post("/webhooks/payments/{provider}", wrap(commerceHandlers.Webhook))
+		// Webhooks are authenticated by signature, never by session. The signature check is what makes
+		// a forged call harmless, but verifying an HMAC in Go costs more than rejecting it, so the
+		// endpoint still gets a ceiling: unsigned traffic must not be able to consume the process.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("webhook", 600, time.Minute))
+			g.Post("/webhooks/payments/{provider}", wrap(commerceHandlers.Webhook))
+		})
 
 		// ── rewards ──────────────────────────────────────────────────────
 		v1.Get("/rewards", wrap(rewardsHandlers.Summary))

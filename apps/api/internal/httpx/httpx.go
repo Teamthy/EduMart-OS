@@ -253,6 +253,28 @@ func Decode(r *http.Request, dst any) error {
 	return nil
 }
 
+// SecurityHeaders sets the response headers that stop a browser from reinterpreting an API response
+// as something it is not.
+//
+// These are not decoration. A JSON error body that a browser sniffs and renders as HTML is a
+// reflected-XSS primitive; an API response a page can frame is a clickjacking surface; and any
+// response cached by an intermediary may be another learner's order. The API is also the thing behind
+// the web app's own proxy, so headers set here cover the native and proxy paths both.
+func SecurityHeaders() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			// Every response here can carry someone's data: orders, answers, scores. None of it may be
+			// stored by a browser, a proxy or a shared cache.
+			h.Set("Cache-Control", "no-store")
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // ───────────────────────────── rate limiting ─────────────────────────────
 //
 // In-process sliding window. Production swaps the backing store for Redis behind the same method.
@@ -314,16 +336,36 @@ func (l *Limiter) Limit(name string, limit int, per time.Duration) Middleware {
 	}
 }
 
-// ClientIP prefers the proxy-provided client address and falls back to the socket address.
-func ClientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		if i := strings.Index(v, ","); i >= 0 {
-			return strings.TrimSpace(v[:i])
-		}
-		return strings.TrimSpace(v)
+type trustProxyKey struct{}
+
+// TrustProxy records whether forwarded headers may be believed, for the lifetime of one request.
+//
+// Forwarding headers are set by a proxy and are trivially spoofable by anyone who can reach the
+// process directly. Believing them unconditionally means every rate limit in the system is keyed on a
+// value the caller chooses: an attacker rotating `X-Forwarded-For` gets unlimited password attempts
+// against a known address. So the default is to ignore them, and an operator behind a load balancer
+// opts in once, at the edge.
+func TrustProxy(enabled bool) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), trustProxyKey{}, enabled)))
+		})
 	}
-	if v := r.Header.Get("X-Real-Ip"); v != "" {
-		return v
+}
+
+// ClientIP returns the caller's address, believing forwarded headers only when the request was told
+// a trusted proxy is in front of the process.
+func ClientIP(r *http.Request) string {
+	if trusted, _ := r.Context().Value(trustProxyKey{}).(bool); trusted {
+		if v := r.Header.Get("X-Forwarded-For"); v != "" {
+			if i := strings.Index(v, ","); i >= 0 {
+				return strings.TrimSpace(v[:i])
+			}
+			return strings.TrimSpace(v)
+		}
+		if v := r.Header.Get("X-Real-Ip"); v != "" {
+			return v
+		}
 	}
 	host := r.RemoteAddr
 	if i := strings.LastIndex(host, ":"); i > 0 {

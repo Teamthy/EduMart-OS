@@ -19,7 +19,9 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Money handling | Integer minor units end to end; formatting tested |
 | Error contract | One envelope, request ids on every response, mapped statuses |
 | Seedable, reproducible environments | Idempotent deterministic seed; a fresh DB boots to a working product |
-| CI | Go format/vet/test/build, OpenAPI-vs-router contract check, web typecheck/test/build, mobile typecheck + Metro bundle for Android/iOS/web, HTTP smoke of the learner journey |
+| CI | Go format/vet/test/build, OpenAPI-vs-router contract check, web typecheck/test/build, mobile typecheck + Metro bundle for Android/iOS/web, HTTP smoke of the learner journey, restore drill on both engines |
+| Security scanning | A `Security` job fails the build on a committed secret (`scripts/scan-secrets.py`, with a self-test asserting the detector), a reachable Go advisory (`govulncheck`) or a high-severity production npm advisory (`npm audit --omit=dev`). Zero production advisories at the time of writing |
+| Threat model | `docs/THREAT_MODEL.md`: assets, adversaries, the control behind each mitigation, and eleven residual risks with severity, consequence and owner |
 
 ## Partially ready
 
@@ -28,9 +30,9 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Database | Both engines are tested: the suite, the HTTP smoke journey and the restore drill run on SQLite and on PostgreSQL 17 in CI. What is still untested is a *production-like* PostgreSQL: managed instance, TLS, connection limits and real data volume |
 | Migrations | Versioned runner with checksums, proven on both engines. No rehearsal of a forward-fix on a database carrying production data |
 | Driver | `lib/pq` rather than `pgx`, because pgx's module graph is unfetchable in the build environment (`gopkg.in`). Swapping is a one-file change |
-| Sessions | Opaque tokens with revocation; no rotation, no device list, no idle timeout |
-| Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused) |
-| Payments | Only the sandbox provider is wired; no live adapter, refunds or reconciliation |
+| Sessions | Argon2id hashing, rotating single-use refresh tokens with reuse detection and family revocation, server-side revocation and a device list; no idle timeout and no device-level 2FA |
+| Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused). Keyed on the socket address unless `EDUMART_TRUST_PROXY=true`, so a forwarded header cannot buy extra attempts |
+| Payments | Only the sandbox provider is wired. Refunds and reconciliation exist and are auditable, but a refund **records** money rather than moving it — there is no provider refund adapter |
 | Offline | Shell cached; attempts require connectivity by design |
 | Accessibility | Designed to WCAG 2.2 AA; not verified with assistive technology on real devices |
 | Mobile builds | Bundles verified for all three platforms; signed `.apk`/`.aab`/`.ipa` still come from EAS (no SDK or signing identity here) |
@@ -42,10 +44,13 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). Migrations now run on SQLite and PostgreSQL 17 in CI. What is still missing is a forward-fix/rollback rehearsal against a production-shaped database |
 | Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
 | Backups | A restore **is** demonstrated: `scripts/restore-drill.py` (CI job *Restore drill*) destroys both databases and recovers them, verifying every table's row count and a login. What is missing is the operational half — a schedule, off-site copies, retention, encryption at rest, and a measured recovery objective |
-| Notification delivery | Email is real: a durable outbox with exponential backoff, SMTP or log adapters, and per-message delivery records in the admin console. Codes are written atomically with their message and withdrawn if the send fails. No SMS or push channel, and no scheduled reminders |
+| Notification delivery | Email is real: a durable outbox with exponential backoff, SMTP or log adapters, per-message delivery records, and scheduled reminders that are planned once, claimed before sending and withdrawn when their reason disappears. No SMS or push channel, no unsubscribe or quiet hours |
 | Live payment provider | No adapter, no key management, no webhook replay window |
 | Content operations | 50 demo questions; no editorial pipeline or licensing workflow in practice |
 | Load testing | No measurement of concurrent attempts against a realistic PostgreSQL instance |
+| Security operations | No monitoring or alerting (audit rows are written and nothing watches them), no WAF or bot protection, no incident-response runbook, no dependency-update automation |
+| Staff 2FA | No device-level second factor, so one phished finance password is refund and reconciliation authority |
+| Backup schedule | No schedule, no off-site copy and no PITR: a disk failure loses everything since the last manual snapshot, even though the restore path itself is proven |
 
 ## Pre-launch checklist
 

@@ -40,3 +40,7 @@ apps/mobile/android/
 *.db
 *.db-shm
 *.db-wal
+
+# python
+__pycache__/
+*.pyc
