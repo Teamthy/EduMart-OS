@@ -1,6 +1,0 @@
-apps/web/                 Next.js web + PWA shell and five-step signup
-apps/mobile/              Expo React Native mobile app and signup wizard
-services/api/             Go REST API skeleton, health/readiness endpoints
-packages/contracts/       OpenAPI API contract baseline
-infra/docker/             Local PostgreSQL and Redis dependencies
-docs/                     Architecture, signup, security, production readiness

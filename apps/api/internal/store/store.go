@@ -33,8 +33,9 @@ type Store struct {
 var ErrNotFound = errors.New("not found")
 
 // Open connects to the database, applies the schema for the selected driver and returns the store.
-// Supported drivers: "sqlite3" (default) and "postgres" (requires a pgx-backed driver registration
-// in cmd/api, kept out of this package so the default build needs no extra dependency).
+// Supported drivers: "sqlite3" (default, the tested path) and "postgres" (the production target;
+// needs github.com/jackc/pgx/v5/stdlib registered here, which this build does not link yet — asking
+// for it fails loudly with that instruction rather than silently falling back).
 func Open(driver, dsn string) (*Store, error) {
 	if driver == "" {
 		driver = "sqlite3"
@@ -55,6 +56,12 @@ func Open(driver, dsn string) (*Store, error) {
 
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
+		if driver == "postgres" || driver == "pgx" {
+			// Naming the missing piece beats "unknown driver" at 2am.
+			return nil, fmt.Errorf("open postgres: %w — this build links only the SQLite driver; "+
+				"register github.com/jackc/pgx/v5/stdlib in this package to enable PostgreSQL "+
+				"(see docs/PRODUCTION_READINESS.md)", err)
+		}
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	// SQLite serialises writes anyway; a single connection avoids "database is locked" churn.

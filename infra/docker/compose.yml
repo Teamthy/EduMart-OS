@@ -1,0 +1,55 @@
+# Local dependencies for the production-shaped path.
+#
+#   docker compose -f infra/docker/compose.yml up -d
+#
+# The API's default and CI-tested driver is SQLite (`EDUMART_DRIVER=sqlite3`, a file on disk), so
+# nothing here is needed to run the product locally. This file exists for the two things SQLite
+# cannot stand in for:
+#
+#   postgres — the production system of record. The schema is ported
+#              (`apps/api/internal/store/migrations/postgres/`) but the Go driver is not linked into
+#              the build yet, so `EDUMART_DRIVER=postgres` stops at startup with an explicit error.
+#              Wiring `github.com/jackc/pgx/v5/stdlib` is the one remaining step; see
+#              docs/PRODUCTION_READINESS.md.
+#   redis    — reserved for cross-instance rate limiting and background jobs. The API does not talk
+#              to it today: rate limiting is in-process.
+#
+# Credentials below are local-only and must never be reused anywhere real.
+
+name: edumart
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: edumart
+      POSTGRES_USER: edumart
+      POSTGRES_PASSWORD: local_only_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - edumart_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edumart -d edumart"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - edumart_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  edumart_pgdata:
+  edumart_redisdata:

@@ -16,15 +16,15 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Money handling | Integer minor units end to end; formatting tested |
 | Error contract | One envelope, request ids on every response, mapped statuses |
 | Seedable, reproducible environments | Idempotent deterministic seed; a fresh DB boots to a working product |
-| CI | Go format/vet/test/build, web typecheck/test/build, mobile typecheck + Metro bundle for Android/iOS/web, HTTP smoke of the learner journey |
+| CI | Go format/vet/test/build, OpenAPI-vs-router contract check, web typecheck/test/build, mobile typecheck + Metro bundle for Android/iOS/web, HTTP smoke of the learner journey |
 
 ## Partially ready
 
 | Area | Gap |
 | --- | --- |
-| Database | SQLite is the tested path; PostgreSQL migrations exist and are structurally identical but have not been run against a live server in CI |
+| Database | SQLite is the tested path. The PostgreSQL schema is ported (`migrations/postgres/`) but the pgx driver is not linked and no migration has been run against a live server, so `EDUMART_DRIVER=postgres` stops at startup by design |
 | Sessions | Opaque tokens with revocation; no rotation, no device list, no idle timeout |
-| Rate limiting | In-process only — resets on deploy and does not coordinate across instances |
+| Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused) |
 | Payments | Only the sandbox provider is wired; no live adapter, refunds or reconciliation |
 | Offline | Shell cached; attempts require connectivity by design |
 | Accessibility | Designed to WCAG 2.2 AA; not verified with assistive technology on real devices |
