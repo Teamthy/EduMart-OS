@@ -7,7 +7,7 @@ Three deliverables, one product:
 
 | Surface | Stack | Path |
 | --- | --- | --- |
-| **API** | Go 1.24+, chi router, SQLite (dev/CI) **or PostgreSQL (production)** — same query layer | `apps/api` |
+| **API** | Go 1.27+, chi router, SQLite (dev/CI) **or PostgreSQL (production)** — same query layer | `apps/api` |
 | **Web / PWA** | Next.js 15 App Router, Tailwind CSS v4, shadcn/ui primitives | `apps/web` |
 | **Mobile app** | React Native + Expo (Router), shipping alongside the PWA | `apps/mobile` |
 | **Shared contract** | TypeScript wire types, validation, design tokens | `packages/shared` |
@@ -20,7 +20,7 @@ one commit without drifting.
 
 ## Quick start
 
-Requirements: **Go 1.24+**, **Node 20.11+**. No database server is needed — SQLite is embedded.
+Requirements: **Go 1.27+**, **Node 20.11+**. No database server is needed — SQLite is embedded.
 
 ```bash
 npm install                 # web + shared workspaces

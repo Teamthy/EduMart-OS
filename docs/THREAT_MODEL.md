@@ -123,7 +123,8 @@ at our own users.
 
 | Control | Evidence |
 | --- | --- |
-| Reachable Go vulnerabilities | `govulncheck ./...` in the **Security** CI job |
+| Reachable Go vulnerabilities | `govulncheck ./...` in the **Security** CI job, summarised as annotations by `scripts/summarise-vulns.py` |
+| A current Go toolchain | `go 1.27.3` in `apps/api/go.mod`. govulncheck decides which standard-library fixes apply from that line, so a stale toolchain silently widens the blast radius of every advisory filed against `net/http` |
 | Reachable production npm advisories | `npm audit --omit=dev --audit-level=high` in the same job |
 | Committed secrets | `scripts/scan-secrets.py`, with a self-test that asserts the detector catches what it claims |
 | Forbidden file shapes | The same script refuses to track `.env`, key material, database files and netrc |

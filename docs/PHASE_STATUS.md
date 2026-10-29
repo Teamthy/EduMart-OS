@@ -366,6 +366,11 @@ residual risks with severity, consequence and an owner.
 | `govulncheck ./...` | Vulnerabilities **reachable** from our code, via the Go vulnerability database | Reports the call path, so a finding is actionable rather than a version diff |
 | `npm audit --omit=dev --audit-level=high` | Reachable production JavaScript advisories | Test-only tooling is excluded, because failing on a vulnerable test runner pushes people to skip the gate |
 
+The Go gate immediately earned its place too: against a `go 1.24` directive it reported reachable
+standard-library advisories across `net/http`, `crypto/x509` and CORS header handling, all fixed in later
+releases. The project now builds on **Go 1.27.3**, and the scan reports nothing reachable. This is the
+argument for the gate in one line: the toolchain had quietly aged, and no test could have told us.
+
 The npm gate immediately earned its place: it found a **high-severity advisory in `postcss@8.4.31`** nested
 inside Next 15 (arbitrary file read via attacker-controlled `sourceMappingURL`). Fixed with an `overrides`
 pin to `postcss@8.5.32` rather than a framework major upgrade, and the web build, typecheck and unit tests
