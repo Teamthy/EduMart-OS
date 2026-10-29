@@ -1,0 +1,10 @@
+{
+  "name": "Edumart",
+  "short_name": "Edumart",
+  "description": "Learn and prepare with Edumart",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#142b5f",
+  "icons": []
+}

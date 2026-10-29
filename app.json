@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Edumart",
+    "slug": "edumart",
+    "scheme": "edumart",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#142b5f"
+      }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+openapi: 3.1.0
+info:
+  title: Edumart API
+  version: 1.0.0
+  description: Initial API contract baseline. Expand schemas before production.
+servers:
+  - url: http://localhost:8080/api/v1
+paths:
+  /health:
+    get:
+      summary: API health
+      responses:
+        '200':
+          description: API process is healthy
+  /auth/register:
+    post:
+      summary: Create an account after signup flow validation
+      description: Production implementation must verify contact and apply abuse controls. Use Idempotency-Key to avoid duplicate creation.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, display_name, intent]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12, writeOnly: true }
+                display_name: { type: string, minLength: 1, maxLength: 100 }
+                intent: { type: string, enum: [student, teacher, institution, publisher] }
+                exam_type: { type: [string, 'null'] }
+                subjects:
+                  type: array
+                  items: { type: string }
+      responses:
+        '201': { description: Account created or registration flow initiated }
+        '400': { description: Invalid request }
+        '409': { description: Idempotency or account conflict }
+        '429': { description: Rate limit exceeded }
+  /auth/login:
+    post:
+      summary: Authenticate a user
+      responses:
+        '200': { description: Authentication result }
+        '401': { description: Invalid credentials }
+        '429': { description: Rate limit exceeded }

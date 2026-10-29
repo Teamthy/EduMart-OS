@@ -1,31 +1,24 @@
 {
-  "name": "edumart-os",
+  "name": "@edumart/mobile",
   "private": true,
-  "version": "1.0.0",
-  "description": "Edumart OS \u2014 exam preparation for Nigerian learners. Go API, Next.js web, React Native app.",
-  "workspaces": [
-    "apps/web",
-    "packages/shared"
-  ],
+  "version": "0.1.0",
+  "main": "expo/AppEntry",
   "scripts": {
-    "dev": "npm run dev --workspace @edumart/web",
-    "dev:web": "npm run dev --workspace @edumart/web",
-    "dev:api": "cd apps/api && go run ./cmd/api",
-    "dev:mobile": "npm --prefix apps/mobile run start",
-    "build": "npm run build --workspace @edumart/web",
-    "build:api": "cd apps/api && go build -o ../../dist/edumart-api ./cmd/api",
-    "test": "npm run test:api && npm run test:web",
-    "test:api": "cd apps/api && go test ./...",
-    "test:web": "npm run test --workspace @edumart/web",
-    "typecheck": "npm run typecheck --workspace @edumart/shared && npm run typecheck --workspace @edumart/web",
-    "lint": "npm run lint --workspace @edumart/web",
-    "seed": "cd apps/api && go run ./cmd/seed",
-    "typecheck:mobile": "npm --prefix apps/mobile run typecheck",
-    "install:mobile": "npm --prefix apps/mobile install --legacy-peer-deps",
-    "smoke": "python3 scripts/smoke.py",
-    "assets": "python3 scripts/render-assets.py"
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit"
   },
-  "engines": {
-    "node": ">=20.11"
+  "dependencies": {
+    "expo": "~52.0.0",
+    "expo-status-bar": "~2.0.1",
+    "expo-secure-store": "~14.0.0",
+    "react": "18.3.1",
+    "react-native": "0.76.5"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.12",
+    "typescript": "~5.3.3"
   }
 }
