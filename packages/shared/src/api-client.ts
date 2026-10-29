@@ -272,6 +272,12 @@ export class ApiClient {
     this.get<{ refunds: Refund[]; totalMinor: number; refundedMinor: number }>(
       `/v1/admin/orders/${orderId}/refunds`,
     );
+  /**
+   * Close a refund whose provider outcome was ambiguous. Finance only: the operator checks the provider's
+   * dashboard and reports what they found, because retrying automatically could pay the customer twice.
+   */
+  resolveRefund = (refundId: string, input: { outcome: "succeeded" | "failed"; note: string }) =>
+    this.post<{ refund: Refund }>(`/v1/admin/refunds/${refundId}/resolve`, input);
   reconciliation = (range?: { from?: string; to?: string }) => {
     const query = new URLSearchParams();
     if (range?.from) query.set("from", range.from);

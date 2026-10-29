@@ -43,6 +43,11 @@ frozen on submit.
 - **Money movements are attributable**: every refund writes `payment.refunded` to `audit_logs` with the
   amount, the full flag and the order reference (no customer PII), and a reason is mandatory at the API
   boundary — an unexplained refund is a loss nobody can account for later.
+- **A refund is a request until a provider confirms it**: `refunds.status` is
+  `pending`/`succeeded`/`failed`/`needs_review`, and the money effects (order status, entitlement
+  revocation, commission reversal) hang off the transition to `succeeded`. An ambiguous provider answer is
+  never retried automatically, because a timeout may mean the refund already happened; it is recorded as
+  `needs_review`, alerted on, and closed by a person whose note is audited.
 - **Constraints in the schema**, not only in Go: foreign keys, uniqueness on session tokens, class
   memberships, provider event ids and referral codes.
 - **Silent-failure avoidance**: the API refuses to boot when the database is unreachable, and names

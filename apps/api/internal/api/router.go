@@ -241,6 +241,9 @@ func NewRouter(d Deps) http.Handler {
 		// and only one of them is accountable for the total.
 		v1.Post("/admin/orders/{id}/refund", wrap(commerceHandlers.Refund))
 		v1.Get("/admin/orders/{id}/refunds", wrap(commerceHandlers.OrderRefunds))
+		// Resolving a refund closes a question the provider left open. It moves money in the ledger, so it is
+		// finance or admin, and it is audited against the person who decided.
+		v1.Post("/admin/refunds/{id}/resolve", wrap(commerceHandlers.ResolveRefund))
 		v1.Get("/admin/finance/reconciliation", wrap(commerceHandlers.ReconciliationReport))
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))

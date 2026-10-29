@@ -188,18 +188,34 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | --- | --- | --- | --- |
 | `POST` | `/admin/orders/{id}/refund` | finance, platform_admin | `{amountMinor?, reason, idempotencyKey?}` — omit the amount to refund the remainder |
 | `GET` | `/admin/orders/{id}/refunds` | finance, platform_admin, support | Refund history plus `{totalMinor, refundedMinor}` |
-| `GET` | `/admin/finance/reconciliation?from=&to=` | finance, platform_admin | Five contradiction checks; reports how many ran |
+| `POST` | `/admin/refunds/{id}/resolve` | finance, platform_admin | `{outcome: succeeded\|failed, note}` — close a refund the provider left ambiguous |
+| `GET` | `/admin/finance/reconciliation?from=&to=` | finance, platform_admin | Six contradiction checks; reports how many ran |
 
 A refund is an **append-only compensating entry**: `orders.totalMinor` keeps saying what was charged,
 the refund rows say what came back, and `status` becomes `partially_refunded` or `refunded` as a derived
-value recomputed in the same transaction. An amount beyond the remainder is a `409 CONFLICT` whose
-`details` carry `{totalMinor, refundedMinor, remainingMinor, attemptedMinor}` — a refusal has to say what
-is left. Repeating a request with the same `idempotencyKey` returns the original refund; providers retry.
-A full refund revokes the entitlements that order granted and books a proportional negative entry in the
-commission ledger, so the earning stays in history and the payout total stays explainable. Every refund
-writes `payment.refunded` to `audit_logs` with the amount, the full flag and the order reference.
+value recomputed when a refund settles. An amount beyond the remainder is a `409 CONFLICT` whose `details`
+carry `{totalMinor, reservedMinor, remainingMinor, attemptedMinor}` — a refusal has to say what is left.
+Repeating a request with the same `idempotencyKey` returns the original refund and does not call the
+provider again; providers retry.
 
-Refunds here are **recorded, not transferred**: the sandbox has no refund API, so no money moves yet.
+**A refund is a request until the provider confirms it**, and `refund.status` says which:
+
+| Status | Meaning | Money effects |
+| --- | --- | --- |
+| `pending` | Accepted, confirmation still to come | Amount reserved against the order; order, entitlements and commission untouched |
+| `succeeded` | Confirmed | Order recomputed, entitlements revoked on a full refund, commission reversed proportionally, receipt queued |
+| `failed` | Provider refused | Nothing moved; the reservation is released |
+| `needs_review` | Ambiguous answer (timeout, 5xx) | Nothing moved and **nothing retried** — a person checks the provider and resolves it |
+
+`POST /admin/refunds/{id}/resolve` is how `needs_review` is closed: the operator reports what they found,
+the same settlement path runs, and `payment.refund_resolved` records who decided and why. Every attempt is
+audited — `payment.refund_requested`, then `payment.refunded` or `payment.refund_failed` /
+`payment.refund_needs_review` — with the amount, refund id and provider reference, never customer details.
+
+The sandbox provider settles in-process, so a local refund is `succeeded` immediately. With
+`EDUMART_PAYMENT_PROVIDER=paystack` the refund is posted to the provider's API, stays `pending` until its
+`refund.processed` callback arrives, and callbacks are verified with the provider's HMAC-SHA512 header
+rather than the API's own signature scheme.
 
 ## Staff
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -32,6 +31,18 @@ type Refund struct {
 	Provider          string `json:"provider"`
 	ProviderReference string `json:"providerReference,omitempty"`
 	CreatedAt         string `json:"createdAt"`
+
+	// Status is the lifecycle: pending, succeeded, failed or needs_review. Only `succeeded` is money that
+	// actually went back — the other three are things we know or suspect about a request, and reporting them
+	// as a refund would make the ledger describe an intention.
+	Status string `json:"status"`
+	// ProviderStatus is the provider's own word for the state, kept verbatim: "we think it is pending" and
+	// "Paystack says it is pending" are different claims, and only one is evidence.
+	ProviderStatus string `json:"providerStatus,omitempty"`
+	// FailureReason explains a failure, or why a human resolved an ambiguous refund the way they did.
+	FailureReason string `json:"failureReason,omitempty"`
+	// SettledAt is when the money moved, as distinct from when the refund was requested.
+	SettledAt *string `json:"settledAt,omitempty"`
 }
 
 const (
@@ -45,17 +56,18 @@ const (
 
 // RefundOrder returns money for a paid order.
 //
-// The whole operation is one transaction, and every part of it is append-only or derived:
+// It is two phases on purpose, and the split is the whole design:
 //
-//   - the refund row is inserted, never an edit of the order;
-//   - the order's status is recomputed from the refund rows in the same transaction;
-//   - a full refund revokes the entitlements that payment granted, because keeping access to a product
-//     somebody has been given their money back for is a gift, not a correction;
-//   - a referral commission earned on the order is reversed with a *negative* entry, so the commission
-//     balance stays explainable from its own entries rather than quietly losing a row.
+//  1. **Reserve.** One transaction validates the request, checks it against the order total and inserts the
+//     refund row as `pending`. The row is the reservation — the unique idempotency key means a retried
+//     request gets this same row back instead of a second refund.
+//  2. **Ask the provider**, outside any transaction, then record what came back: `succeeded` (the money
+//     moved, effects applied), `pending` (accepted, the confirmation webhook will settle it), `failed` (the
+//     provider refused, nothing moved), or `needs_review` (the answer was ambiguous — no automatic retry).
 //
-// The over-refund check happens inside the transaction against the current sum, and the unique index on
-// idempotency_key is what makes a retried request safe even when two of them arrive together.
+// Nothing about the order changes until the refund settles. The order status, the entitlement revocation
+// and the commission reversal are applied at settlement, because applying them at request time is how a
+// customer loses access for money that never left the account.
 func (s *Service) RefundOrder(ctx context.Context, actorID, orderID string, amountMinor int, reason, idempotencyKey string) (*Refund, error) {
 	reason = strings.TrimSpace(reason)
 	if len(reason) < 3 {
@@ -75,178 +87,20 @@ func (s *Service) RefundOrder(ctx context.Context, actorID, orderID string, amou
 		idempotencyKey = "refund:" + store.NewID()
 	}
 
-	var refund *Refund
-	var replayed bool
-	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
-		// A replay of the same key must return the original refund rather than fail: a provider that
-		// times out and retries is behaving correctly, and the answer it needs is "already done".
-		existing, err := loadRefundByKey(ctx, tx, idempotencyKey)
-		if err != nil {
-			return err
-		}
-		if existing != nil {
-			refund, replayed = existing, true
-			return nil
-		}
-
-		var status, currency, reference string
-		var totalMinor int
-		err = tx.QueryRowContext(ctx, `
-			SELECT status, currency, total_minor, reference FROM orders WHERE id = ?`, orderID).
-			Scan(&status, &currency, &totalMinor, &reference)
-		if errors.Is(err, sql.ErrNoRows) {
-			return httpx.NewError(httpx.CodeNotFound, "That order could not be found.")
-		}
-		if err != nil {
-			return err
-		}
-		// Only paid money can be returned. Refunding a pending order would move money that never
-		// arrived, and the ledger would then describe a transaction that did not happen.
-		if status != "paid" && status != OrderStatusPartiallyRefunded {
-			return httpx.NewError(httpx.CodeConflict,
-				"Only a paid order can be refunded. This one is "+status+".")
-		}
-
-		// An order that cost nothing has nothing to return. Recording a zero refund would put a row in
-		// the ledger that describes no money movement at all.
-		if totalMinor <= 0 {
-			return httpx.NewError(httpx.CodeConflict,
-				"This order took no money, so there is nothing to refund.")
-		}
-
-		var alreadyRefunded int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(amount_minor), 0) FROM refunds WHERE order_id = ?`, orderID).
-			Scan(&alreadyRefunded); err != nil {
-			return err
-		}
-
-		if amountMinor <= 0 {
-			// A missing amount means "all of what is left", which is what an operator asking for a
-			// refund almost always means.
-			amountMinor = totalMinor - alreadyRefunded
-		}
-		if amountMinor <= 0 {
-			return httpx.NewError(httpx.CodeConflict, "This order has already been refunded in full.")
-		}
-		if alreadyRefunded+amountMinor > totalMinor {
-			return httpx.NewError(httpx.CodeConflict,
-				fmt.Sprintf("That is more than is left. The order total is %s and %s has already been refunded.",
-					formatMoney(totalMinor, currency), formatMoney(alreadyRefunded, currency)),
-				map[string]any{
-					"totalMinor":     totalMinor,
-					"refundedMinor":  alreadyRefunded,
-					"remainingMinor": totalMinor - alreadyRefunded,
-					"attemptedMinor": amountMinor,
-				})
-		}
-
-		full := alreadyRefunded+amountMinor == totalMinor
-		refund = &Refund{
-			ID:          store.NewID(),
-			OrderID:     orderID,
-			AmountMinor: amountMinor,
-			Currency:    currency,
-			Reason:      reason,
-			FullRefund:  full,
-			ActorUserID: actorID,
-			Provider:    s.provider,
-			CreatedAt:   store.Now(),
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO refunds (id, order_id, amount_minor, currency, reason, full_refund,
-			                     actor_user_id, provider, provider_reference, idempotency_key, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			refund.ID, orderID, amountMinor, currency, reason, boolAsInt(full),
-			nullIfEmpty(actorID), s.provider, "", idempotencyKey, refund.CreatedAt); err != nil {
-			return err
-		}
-
-		newStatus := OrderStatusPartiallyRefunded
-		if full {
-			newStatus = OrderStatusRefunded
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE orders SET status = ? WHERE id = ?`, newStatus, orderID); err != nil {
-			return err
-		}
-
-		if full {
-			// Access follows the money. A learner who has been refunded in full has not bought the
-			// product, and leaving the entitlement active would make refunds a way to keep it.
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE entitlements SET status = 'revoked', revoked_at = ?
-				 WHERE order_id = ? AND status = 'active'`, store.Now(), orderID); err != nil {
-				return err
-			}
-		}
-
-		// The commission ledger is separate from the money ledger (Phase 23), and it gets its own
-		// correcting entry rather than a delete, so a payout total can always be explained.
-		var commissionPaid int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(amount_minor), 0) FROM commission_ledger_entries
-			 WHERE source_type = 'order' AND source_id = ?`, orderID).Scan(&commissionPaid); err != nil {
-			return err
-		}
-		if commissionPaid > 0 {
-			var ownerID string
-			err := tx.QueryRowContext(ctx, `
-				SELECT user_id FROM commission_ledger_entries
-				 WHERE source_type = 'order' AND source_id = ? AND entry_type = 'earn'
-				 ORDER BY created_at LIMIT 1`, orderID).Scan(&ownerID)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			// Reversal is proportional: a half refund reverses half the commission. Money out has to
-			// take the same fraction of the incentive with it, or a partial refund becomes a payout.
-			reversal := commissionPaid * amountMinor / totalMinor
-			if reversal > 0 {
-				if _, err := tx.ExecContext(ctx, `
-					INSERT INTO commission_ledger_entries
-						(id, user_id, amount_minor, currency, entry_type, source_type, source_id,
-						 status, idempotency_key, created_at)
-					VALUES (?,?,?,?,'reversal','refund',?,'pending',?,?)
-					ON CONFLICT (idempotency_key) DO NOTHING`,
-					store.NewID(), ownerID, -reversal, currency, refund.ID,
-					"commission:reversal:"+refund.ID, store.Now()); err != nil {
-					return err
-				}
-			}
-		}
-
-		// The audit entry names the amount and the reason, and never the customer's details.
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO audit_logs (id, actor_user_id, action, resource_type, resource_id, reason,
-			                        metadata_json, occurred_at)
-			VALUES (?,?,'payment.refunded','order',?,?,?,?)`,
-			store.NewID(), nullIfEmpty(actorID), orderID, reason,
-			fmt.Sprintf(`{"amountMinor":%d,"fullRefund":%t,"reference":"%s"}`, amountMinor, full, reference),
-			store.Now()); err != nil {
-			return err
-		}
-
-		return nil
-	})
+	refund, replayed, err := s.reserveRefund(ctx, actorID, orderID, amountMinor, reason, idempotencyKey)
 	if err != nil {
 		return nil, err
 	}
-	// The receipt is queued *after* the commit, on a different connection. Doing it inside the
-	// transaction would ask SQLite for a second connection while the write transaction holds the
-	// database, which is a deadlock rather than a slow path — and on PostgreSQL it would hold a
-	// transaction open across a network round trip to the mail relay.
-	if !replayed && refund != nil {
-		s.sendRefundReceipt(ctx, refund.OrderID, refund)
-	}
 	if replayed {
-		s.loggerInfo("refund replayed", "orderId", orderID, "refundId", refund.ID)
+		// The interesting case: a caller retried. Return what the first attempt recorded, whatever state it
+		// reached, and do not call the provider again.
+		s.loggerInfo("refund replayed", "orderId", orderID, "refundId", refund.ID, "status", refund.Status)
+		return refund, nil
 	}
-	// Counted once per recorded refund, not per request: a replay returned the same row and must not
-	// look like more money going out.
-	if s.platform != nil && !replayed && refund != nil {
-		s.platform.Refund(refund.Currency, refund.AmountMinor)
+	if err := s.requestRefund(ctx, refund); err != nil {
+		return nil, err
 	}
-	return refund, nil
+	return s.Refund(ctx, refund.ID)
 }
 
 // loadRefundByKey fetches a previously recorded refund for an idempotency key.
@@ -254,12 +108,14 @@ func loadRefundByKey(ctx context.Context, tx *sql.Tx, key string) (*Refund, erro
 	var r Refund
 	var full int
 	var actor sql.NullString
+	var settledAt sql.NullString
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, order_id, amount_minor, currency, reason, full_refund, actor_user_id,
-		       provider, provider_reference, created_at
+		       provider, provider_reference, created_at, status, provider_status, failure_reason, settled_at
 		  FROM refunds WHERE idempotency_key = ?`, key).
 		Scan(&r.ID, &r.OrderID, &r.AmountMinor, &r.Currency, &r.Reason, &full, &actor,
-			&r.Provider, &r.ProviderReference, &r.CreatedAt)
+			&r.Provider, &r.ProviderReference, &r.CreatedAt, &r.Status, &r.ProviderStatus,
+			&r.FailureReason, &settledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -268,6 +124,9 @@ func loadRefundByKey(ctx context.Context, tx *sql.Tx, key string) (*Refund, erro
 	}
 	r.FullRefund = full == 1
 	r.ActorUserID = actor.String
+	if settledAt.Valid {
+		r.SettledAt = &settledAt.String
+	}
 	return &r, nil
 }
 
@@ -275,7 +134,7 @@ func loadRefundByKey(ctx context.Context, tx *sql.Tx, key string) (*Refund, erro
 func (s *Service) RefundsFor(ctx context.Context, orderID string) ([]Refund, error) {
 	rows, err := s.db.DB.QueryContext(ctx, `
 		SELECT id, order_id, amount_minor, currency, reason, full_refund, actor_user_id,
-		       provider, provider_reference, created_at
+		       provider, provider_reference, created_at, status, provider_status, failure_reason, settled_at
 		  FROM refunds WHERE order_id = ? ORDER BY created_at`, orderID)
 	if err != nil {
 		return nil, err
@@ -287,12 +146,17 @@ func (s *Service) RefundsFor(ctx context.Context, orderID string) ([]Refund, err
 		var r Refund
 		var full int
 		var actor sql.NullString
+		var settledAt sql.NullString
 		if err := rows.Scan(&r.ID, &r.OrderID, &r.AmountMinor, &r.Currency, &r.Reason, &full, &actor,
-			&r.Provider, &r.ProviderReference, &r.CreatedAt); err != nil {
+			&r.Provider, &r.ProviderReference, &r.CreatedAt, &r.Status, &r.ProviderStatus,
+			&r.FailureReason, &settledAt); err != nil {
 			return nil, err
 		}
 		r.FullRefund = full == 1
 		r.ActorUserID = actor.String
+		if settledAt.Valid {
+			r.SettledAt = &settledAt.String
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -310,12 +174,16 @@ type Reconciliation struct {
 	// Currency is reported with every amount because a total without a currency is not a number.
 	Currency string `json:"currency"`
 
-	PaidOrders      int `json:"paidOrders"`
-	GrossMinor      int `json:"grossMinor"`
-	RefundedOrders  int `json:"refundedOrders"`
-	RefundsMinor    int `json:"refundsMinor"`
-	NetMinor        int `json:"netMinor"`
-	CommissionMinor int `json:"commissionMinor"`
+	PaidOrders     int `json:"paidOrders"`
+	GrossMinor     int `json:"grossMinor"`
+	RefundedOrders int `json:"refundedOrders"`
+	RefundsMinor   int `json:"refundsMinor"`
+	// PendingRefunds is money promised back that has not moved. It is never part of RefundsMinor: a report
+	// that counted it would say the money is gone when it is still in the account.
+	PendingRefunds      int `json:"pendingRefunds"`
+	PendingRefundsMinor int `json:"pendingRefundsMinor"`
+	NetMinor            int `json:"netMinor"`
+	CommissionMinor     int `json:"commissionMinor"`
 
 	Webhooks WebhookHealth `json:"webhooks"`
 
@@ -371,11 +239,20 @@ func (s *Service) Reconcile(ctx context.Context, from, to time.Time) (*Reconcili
 		Scan(&report.PaidOrders, &report.GrossMinor); err != nil {
 		return nil, err
 	}
+	// Only settled refunds are money that left. 0010 gave refunds a lifecycle, and this is the query where
+	// that distinction is worth money: a pending refund counted here would make the net look smaller than
+	// the bank account.
 	var refundedOrders int
 	if err := s.db.DB.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT order_id), COALESCE(SUM(amount_minor), 0) FROM refunds
-		 WHERE created_at >= ? AND created_at < ?`, store.TS(from), store.TS(to)).
+		 WHERE status = 'succeeded' AND created_at >= ? AND created_at < ?`, store.TS(from), store.TS(to)).
 		Scan(&refundedOrders, &report.RefundsMinor); err != nil {
+		return nil, err
+	}
+	if err := s.db.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(amount_minor), 0) FROM refunds
+		 WHERE status IN ('pending','needs_review')`).Scan(
+		&report.PendingRefunds, &report.PendingRefundsMinor); err != nil {
 		return nil, err
 	}
 	report.RefundedOrders = refundedOrders
@@ -422,9 +299,18 @@ func (s *Service) Reconcile(ctx context.Context, from, to time.Time) (*Reconcili
 		{
 			"refund_exceeds_total",
 			`SELECT COUNT(*), COALESCE(SUM(r.total - o.total_minor), 0) FROM (
-			        SELECT order_id, SUM(amount_minor) AS total FROM refunds GROUP BY order_id) r
+			        SELECT order_id, SUM(amount_minor) AS total FROM refunds
+			         WHERE status <> 'failed' GROUP BY order_id) r
 			  JOIN orders o ON o.id = r.order_id
 			  WHERE r.total > o.total_minor`,
+		},
+		{
+			// A refund stuck in flight is money a customer is waiting for and nobody is watching. The
+			// threshold is 24 hours: providers confirm in minutes when they confirm at all, so a day means
+			// either the provider lost it or the webhook never arrived.
+			"refund_unsettled",
+			`SELECT COUNT(*), COALESCE(SUM(amount_minor), 0) FROM refunds
+			  WHERE status IN ('pending','needs_review') AND created_at < ?`,
 		},
 		{
 			"succeeded_attempt_unpaid",
@@ -443,6 +329,19 @@ func (s *Service) Reconcile(ctx context.Context, from, to time.Time) (*Reconcili
 
 	for _, check := range checks {
 		var count, amount int
+		if check.name == "refund_unsettled" {
+			cutoff := time.Now().UTC().Add(-24 * time.Hour)
+			if err := s.db.DB.QueryRowContext(ctx, check.query, store.TS(cutoff)).Scan(&count, &amount); err != nil {
+				return nil, err
+			}
+			report.Checked++
+			if count > 0 {
+				report.Discrepancies = append(report.Discrepancies, Discrepancy{
+					Kind: check.name, Detail: discrepancyDetail(check.name), Count: count, AmountMinor: amount,
+				})
+			}
+			continue
+		}
 		// Both placeholders are the same window; a check that does not use them still takes the args
 		// harmlessly because the driver only binds what the statement asks for.
 		if strings.Count(check.query, "?") == 2 {
@@ -488,6 +387,8 @@ func discrepancyDetail(kind string) string {
 		return "Access is active behind an order that is not paid. Find out which path granted it."
 	case "refund_exceeds_total":
 		return "More was refunded than charged. This is a real loss and a bug in the refund path."
+	case "refund_unsettled":
+		return "A refund has been in flight for over a day. Check the provider's dashboard, then resolve it."
 	case "succeeded_attempt_unpaid":
 		return "The provider reports a successful payment but the order is not paid. The webhook was probably lost."
 	case "paid_without_attempt":
@@ -561,6 +462,30 @@ func (h *Handlers) OrderRefunds(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"refunds": refunds})
+	return nil
+}
+
+// ResolveRefund handles POST /v1/admin/refunds/{id}/resolve.
+//
+// Finance and platform admin only: it is a statement about money that has (or has not) left the account,
+// and it is recorded against the person who made it.
+func (h *Handlers) ResolveRefund(w http.ResponseWriter, r *http.Request) error {
+	actor, err := auth.RequireRole(r, auth.RoleFinance, auth.RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Outcome string `json:"outcome"`
+		Note    string `json:"note"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	refund, err := h.svc.ResolveRefund(r.Context(), actor.ID, chi.URLParam(r, "id"), in.Outcome, in.Note)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"refund": refund})
 	return nil
 }
 

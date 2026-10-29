@@ -10,7 +10,7 @@ test that can be read; every residual risk is stated in plain language with a na
 blueprint's exit gate ("critical vulnerabilities closed, residual risks have named owners") cannot be met
 by a document that says "we follow best practice".
 
-**Last reviewed:** Phase 28 slice, with the refund and reconciliation work in place.
+**Last reviewed:** the refund-provider slice, with refunds moving money through an adapter and a lifecycle.
 
 ---
 
@@ -94,9 +94,10 @@ it on, two real addresses get two honest budgets.
 Payment truth is a verified webhook, never a browser redirect. Webhooks are HMAC-verified over the raw
 body, deduplicated on `provider`+`event_id`, and checked for amount and currency before anything is
 granted. Refunds are append-only compensating entries; the charge is never rewritten, over-refund is
-impossible, and every refund is audited with an actor and a mandatory reason. Reconciliation reports five
-classes of contradiction rather than a revenue total. See `SECURITY_AND_DURABILITY.md` and
-`ARCHITECTURE.md`.
+impossible, and every refund is audited with an actor and a mandatory reason — plus an adapter that
+distinguishes a provider's refusal from its silence, so an ambiguous timeout is never retried into a second
+refund. Reconciliation reports six classes of contradiction rather than a revenue total. See
+`SECURITY_AND_DURABILITY.md` and `ARCHITECTURE.md`.
 
 ### 3.5 Outbound messages
 
@@ -152,7 +153,7 @@ Each of these is real, known, and owned. None is closed by this document.
 
 | # | Risk | Severity | Consequence | Owner | The honest mitigation today |
 | --- | --- | --- | --- | --- | --- |
-| R1 | **No live payment provider adapter.** Only the sandbox is wired, and refunds record money without moving it | High | A real launch could take money without a verified provider path, and a refund would not reach a customer's bank | Backend lead | Sandbox payments are off by default in production config; refunds are explicitly documented as recorded-not-transferred |
+| R1 | **Payments still run through the sandbox; refunds do not.** A refund adapter exists (Paystack, with its callbacks verified), but taking a payment through the live provider is not wired, and the adapter has never run against the live API from this repository | High | A real launch could take money through a path nobody has exercised, and a refund could fail in a way only a fake server has ever tested | Backend lead | Sandbox payments are off by default in production config; refunds carry a lifecycle that refuses to guess at an ambiguous outcome, and every unresolved refund is reported and pages |
 | R2 | **Rate limiting is in-process.** A second instance has its own windows; a restart clears them | Medium | Limits are per-instance, so horizontal scaling weakens them | Platform lead | Single-instance deployment; the limiter is behind one method so a shared store can replace it |
 | R3 | **No device-level 2FA or risk signals** on staff accounts | High | One phished finance password is a refund and reconciliation authority | Security lead | Role separation, audit trail on every money movement, session revocation, short-lived access tokens |
 | R4 | **No staging environment**, so deploy and rollback are unproven | High | The first real deploy is also the first rehearsal | Release lead | Restore drill and CI cover data recovery; a rollback rehearsal is Phase 4's remaining gate |

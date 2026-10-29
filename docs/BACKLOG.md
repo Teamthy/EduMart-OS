@@ -25,8 +25,11 @@ is a change, not a rewrite.
    compose a mock. This is the largest remaining product gap.
 7. **Notifications.** Exam countdown and "your mock is due" reminders. `job_queue_items` exists;
    nothing drains it. Email provider + native push tokens are missing.
-8. **Payments beyond the sandbox.** Refunds, partial refunds, disputes, and a reconciliation report
-   that compares `provider_events` with `orders`.
+8. **Payments beyond the sandbox.** *Partly done.* Refunds and partial refunds now move money through a
+   provider adapter with a pending/settled lifecycle, Paystack's signed callbacks are normalised, and the
+   reconciliation report compares `provider_events` with `orders`. What is left: **run the adapter against
+   the live API once** (it has only ever spoken to a fake server), take payments themselves through
+   Paystack rather than the sandbox, and handle disputes and chargebacks.
 9. **Content volume.** 50 seeded questions is a demo. The review queue, provenance and licence fields
    are ready; the editorial pipeline is not.
 10. **Full offline mode.** The PWA caches the shell and the runner retries writes, but questions are

@@ -1831,16 +1831,24 @@ paths:
       summary: Refund an order, in full or in part
       description: |
         Money is corrected by appending a refund, never by editing the order. `orders.totalMinor`
-        keeps stating what was charged; the refund rows state what came back, and the order status
-        becomes `partially_refunded` or `refunded` as a derived value.
+        keeps stating what was charged; the refund rows state what came back.
 
-        Omit `amountMinor` to refund whatever is left. An amount greater than the remainder is
-        refused with `409 CONFLICT` and details naming the total, what has already been refunded and
-        what remains. Repeating a request with the same `idempotencyKey` returns the original refund
-        instead of creating a second one, because providers retry.
+        The call is a **request**: it reserves the amount, asks the payment provider to return the
+        money, and records what came back. The response's `refund.status` says which of four things
+        happened — `pending` (accepted, confirmation still to come), `succeeded` (settled now),
+        `failed` (the provider refused, nothing moved, the amount is available again), or
+        `needs_review` (the provider's answer was ambiguous and no automatic retry happened, because a
+        blind retry against an API that may already have paid out refunds twice).
 
-        A full refund revokes the entitlements that order granted and books a proportional negative
-        entry in the commission ledger.
+        Omit `amountMinor` to refund whatever is left. An amount greater than the remainder is refused
+        with `409 CONFLICT` and details naming the total, what has been refunded or reserved, and what
+        remains — pending refunds count, because money already promised cannot be promised again.
+        Repeating a request with the same `idempotencyKey` returns the original refund instead of
+        creating a second one, and does not call the provider again.
+
+        The order's status, its entitlements and the commission reversal change when the refund
+        **settles**, not when it is requested: revoking access for money that has not moved is the bug
+        this lifecycle exists to prevent.
       operationId: refundOrder
       parameters:
         - name: id
@@ -1867,7 +1875,57 @@ paths:
                   description: Client-generated; a retry with the same key returns the original refund.
       responses:
         "200":
-          description: Refund recorded
+          description: Refund requested and its lifecycle state recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund: { $ref: "#/components/schemas/Refund" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/admin/refunds/{id}/resolve:
+    post:
+      tags: [commerce, staff]
+      summary: Resolve a refund whose provider outcome was ambiguous
+      description: |
+        Finance and platform admins only. A refund in `needs_review` means the provider never answered
+        clearly — a timeout, a 5xx, a dropped connection — and the system refused to guess, because
+        guessing there means moving money twice.
+
+        The operator checks the provider's dashboard and reports what they found. `succeeded` settles the
+        refund through the same path a provider confirmation would (order status, entitlements, commission
+        reversal, receipt); `failed` records that no money moved and releases the reservation. The note is
+        required and the decision is audited against the person who made it.
+
+        A settled refund cannot be re-resolved: `409 CONFLICT`. Records are not rewritten.
+      operationId: resolveRefund
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, note]
+              properties:
+                outcome:
+                  type: string
+                  enum: [succeeded, failed]
+                note:
+                  type: string
+                  minLength: 3
+                  description: What was checked. "Done" is not an audit trail.
+      responses:
+        "200":
+          description: The refund, in its resolved state
           content:
             application/json:
               schema:
@@ -2244,9 +2302,20 @@ components:
     Refund:
       type: object
       description: |
-        One recorded return of money. Refunds are append-only: two partial refunds are two rows, and
-        the amount returned so far is their sum. Nothing here edits the charge it compensates.
-      required: [id, orderId, amountMinor, currency, fullRefund, reason, createdAt]
+        One return of money. Refunds are append-only: two partial refunds are two rows, and the amount
+        returned so far is their sum. Nothing here edits the charge it compensates.
+
+        A refund is a **request** until a provider confirms it, and `status` is what says which:
+
+        - `pending` — accepted by the provider, not yet confirmed. No money has moved, so the order is
+          unchanged and the amount is reserved against its total.
+        - `succeeded` — the provider confirmed it. The only status counted as money returned; the order
+          becomes `partially_refunded` or `refunded` and a full refund revokes entitlements.
+        - `failed` — the provider refused. No money moved, and the amount is available again.
+        - `needs_review` — the provider's answer was ambiguous (a timeout, a 5xx). Deliberately not retried:
+          a blind retry against an API that may already have paid out is how a customer is refunded twice.
+          A human resolves it via `POST /v1/admin/refunds/{id}/resolve`.
+      required: [id, orderId, amountMinor, currency, fullRefund, reason, status, createdAt]
       properties:
         id: { type: string }
         orderId: { type: string }
@@ -2254,11 +2323,26 @@ components:
         currency: { type: string }
         fullRefund:
           type: boolean
-          description: True when this refund returned everything that was left on the order.
+          description: True when this refund returns everything that was left on the order.
         reason: { type: string }
         actorUserId: { type: string, nullable: true }
-        provider: { type: string, description: The payment provider the refund was recorded against. }
-        providerRefundId: { type: string, nullable: true }
+        provider: { type: string, description: The provider that was asked to move the money. }
+        providerReference:
+          type: string
+          description: The provider's id for the refund, used to match its confirmation webhook.
+        status:
+          type: string
+          enum: [pending, succeeded, failed, needs_review]
+        providerStatus:
+          type: string
+          description: The provider's own untranslated word for the state, kept as evidence.
+        failureReason:
+          type: string
+          description: Why it failed, or why a human resolved an ambiguous refund the way they did.
+        settledAt:
+          type: string
+          format: date-time
+          description: When the money actually moved, as distinct from when the refund was requested.
         idempotencyKey: { type: string }
         createdAt: { type: string, format: date-time }
 
@@ -2272,6 +2356,7 @@ components:
             - paid_without_entitlement
             - entitlement_without_payment
             - refund_exceeds_total
+            - refund_unsettled
             - succeeded_attempt_unpaid
             - paid_without_attempt
         orderId: { type: string }
@@ -2287,7 +2372,13 @@ components:
           type: integer
           description: How many distinct checks ran. A report that checked nothing is not a clean report.
         paidOrders: { type: integer }
-        refundedMinor: { type: integer }
+        refundedMinor:
+          type: integer
+          description: Money that actually went back. Refunds still in flight are excluded.
+        pendingRefunds:
+          type: integer
+          description: Refunds promised but not settled. Never part of refundedMinor.
+        pendingRefundsMinor: { type: integer }
         webhookFailures: { type: integer }
         discrepancies:
           type: array

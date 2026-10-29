@@ -15,7 +15,8 @@ discrepancy sits in a report nobody opens. This is the part that turns controls 
 | `edumart_http_request_duration_seconds{route,method}` | histogram | How long it took, by route |
 | `edumart_api_errors_total{code}` | counter | Which refusals and failures, by API error code |
 | `edumart_webhook_events_total{outcome}` | counter | `accepted`, `duplicate`, `rejected`, `ignored` — four different problems |
-| `edumart_refunds_total{currency}` / `edumart_refunded_minor_total{currency}` | counter | Money going back out |
+| `edumart_refunds_total{currency}` / `edumart_refunded_minor_total{currency}` | counter | Money that went back out |
+| `edumart_refund_outcomes_total{outcome}` | counter | `succeeded`, `failed`, `pending`, `needs_review` — four different situations, one of which needs a person |
 | `edumart_reconciliation_discrepancies{kind}` | gauge | What the books said the last time anyone asked |
 | `edumart_reconciliation_last_run_timestamp_seconds` | gauge | Whether anybody has asked recently |
 | `edumart_backup_age_seconds`, `edumart_backup_rows`, `edumart_backup_last_run_succeeded` | gauge | Whether a usable backup exists |
@@ -81,7 +82,7 @@ restored the backup and compared row counts. A job that dumps and never verifies
 
 ## Alerts, and why each threshold is the number it is
 
-Fourteen rules in `infra/observability/alerts.yml`. `severity: page` means a person is woken;
+Sixteen rules in `infra/observability/alerts.yml`. `severity: page` means a person is woken;
 `severity: ticket` means it is dealt with the next working day. `scripts/check-alerts.py` verifies that
 every rule's runbook anchor exists in this document and that every metric it names is really exposed —
 because the failure mode of an alerting setup is silence, not noise.
@@ -145,6 +146,27 @@ to do:
 | `paid_without_attempt` | Paid, but no attempt recorded the money | Investigate before touching the order |
 
 The report itself is at `GET /v1/admin/finance/reconciliation` and names the orders and amounts.
+
+### Refund failures
+
+More than two refunds refused by the provider in an hour. The usual cause is a funding or balance problem
+on the merchant account, and the consequence is customers told to wait. Each failure is recorded with the
+provider's reason on the refund row, so `GET /v1/admin/orders/{id}/refunds` answers "why did this fail?"
+
+A refusal is safe: the provider said no, no money moved, and the amount stays available to refund once the
+cause is fixed.
+
+### Refunds need review
+
+**Any** occurrence pages, because the state means the system does not know whether it owes someone money.
+A timeout or a 5xx from the refund API could mean the refund happened; retrying on that basis is how a
+customer is paid twice, so nothing is retried and nobody guesses.
+
+What to do: look the transaction up on the provider's dashboard, then
+`POST /v1/admin/refunds/{id}/resolve` with `{"outcome":"succeeded"|"failed","note":"what you checked"}`.
+Settling through that endpoint applies exactly the effects a provider confirmation would. The note is
+required and the decision is audited against the person who made it. A refund left unresolved for over a
+day also appears in the reconciliation report as `refund_unsettled`.
 
 ### Reconciliation missing
 
