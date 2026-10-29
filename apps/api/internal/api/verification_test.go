@@ -1,11 +1,13 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // registerFresh creates a new account and returns its token, so verification tests are not sharing
@@ -287,27 +289,99 @@ func TestVerificationRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestUndeliveredCodeIsNotUsable: if the provider is down, the code must not stay valid. A user who
-// never received anything must not be left with a live credential in the database.
-func TestUndeliveredCodeIsNotUsable(t *testing.T) {
+// TestUndeliveredCodeIsRetriedThenWithdrawn walks the whole delivery lifecycle for a code that never
+// arrives: the request is accepted (not failed), retries are attempted on a backoff, and when they run
+// out the code is withdrawn instead of remaining a live credential nobody holds.
+func TestUndeliveredCodeIsRetriedThenWithdrawn(t *testing.T) {
 	h := newHarness(t)
 	token := h.registerFresh("outage@example.com")
 
 	h.mail.Fail(errors.New("smtp unavailable"))
 	status, body := h.do("POST", "/v1/auth/verification/request", token, map[string]any{"channel": "email"})
-	if status != http.StatusInternalServerError {
-		t.Fatalf("a delivery failure must surface, got %d %v", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("an accepted-but-undelivered code is still a 202, got %d %v", status, body)
 	}
-	var live int
+
+	// The attempt was recorded, with the failure visible to an operator.
+	var deliveryStatus, lastError string
+	var attempts int
 	if err := h.store.DB.QueryRow(
-		`SELECT COUNT(*) FROM verification_codes WHERE consumed_at IS NULL`).Scan(&live); err != nil {
+		`SELECT status, attempts, last_error FROM notification_deliveries ORDER BY created_at DESC LIMIT 1`).
+		Scan(&deliveryStatus, &attempts, &lastError); err != nil {
+		t.Fatalf("read delivery: %v", err)
+	}
+	if deliveryStatus != "pending" || attempts != 1 || lastError == "" {
+		t.Fatalf("expected a pending delivery with one failed attempt, got %s/%d/%q", deliveryStatus, attempts, lastError)
+	}
+
+	// While retries remain, the code is still valid: the user may yet receive it.
+	var live int
+	if err := h.store.DB.QueryRow(`SELECT COUNT(*) FROM verification_codes WHERE consumed_at IS NULL`).Scan(&live); err != nil {
+		t.Fatalf("count codes: %v", err)
+	}
+	if live != 1 {
+		t.Fatalf("a code with retries left must remain usable, %d live", live)
+	}
+
+	// Exhaust the retry budget by moving the clock past each backoff window.
+	for i := 0; i < 5; i++ {
+		h.clock.Advance(time.Hour)
+		if _, _, err := h.courier.RunOnce(context.Background(), 10); err != nil {
+			t.Fatalf("run sweep: %v", err)
+		}
+	}
+
+	if err := h.store.DB.QueryRow(
+		`SELECT status FROM notification_deliveries ORDER BY created_at DESC LIMIT 1`).Scan(&deliveryStatus); err != nil {
+		t.Fatalf("read delivery: %v", err)
+	}
+	if deliveryStatus != "failed" {
+		t.Fatalf("expected the delivery to be abandoned, got %s", deliveryStatus)
+	}
+	if err := h.store.DB.QueryRow(`SELECT COUNT(*) FROM verification_codes WHERE consumed_at IS NULL`).Scan(&live); err != nil {
 		t.Fatalf("count codes: %v", err)
 	}
 	if live != 0 {
-		t.Fatalf("an undelivered code must be spent, %d still live", live)
+		t.Fatalf("an abandoned code must be withdrawn, %d still live", live)
 	}
 
 	// Recovery: once the provider is back, the user can simply ask again.
 	h.mail.Fail(nil)
 	h.requestCode(token, "email", nil)
+}
+
+// TestDeliveryIsRecordedAndVisibleToStaff covers the operator side: messages are recorded, bodies are
+// not exposed, and only staff can look.
+func TestDeliveryIsRecordedAndVisibleToStaff(t *testing.T) {
+	h := newHarness(t)
+	token := h.registerFresh("delivery@example.com")
+	h.requestCode(token, "email", nil)
+
+	status, body := h.do("GET", "/v1/admin/deliveries", token, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("a learner must not read delivery records, got %d %v", status, body)
+	}
+
+	admin := h.login("admin@edumart.ng", "Admin123!")
+	status, body = h.do("GET", "/v1/admin/deliveries", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin deliveries: %d %v", status, body)
+	}
+	deliveries, _ := body["deliveries"].([]any)
+	if len(deliveries) == 0 {
+		t.Fatal("expected the verification message to be recorded")
+	}
+	first := deliveries[len(deliveries)-1].(map[string]any)
+	if first["status"] != "sent" {
+		t.Fatalf("expected a sent delivery, got %v", first["status"])
+	}
+	for key := range first {
+		if strings.Contains(key, "body") || strings.Contains(key, "code") {
+			t.Fatalf("delivery records must not expose message bodies or codes, found field %q", key)
+		}
+	}
+	stats, _ := body["stats"].(map[string]any)
+	if stats["sent"].(float64) < 1 {
+		t.Fatalf("expected at least one sent delivery in the stats, got %v", stats)
+	}
 }

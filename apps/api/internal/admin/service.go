@@ -6,12 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -244,10 +246,52 @@ func (s *Service) ResolveCase(ctx context.Context, actorID, caseID string) error
 }
 
 // Handlers exposes staff endpoints.
-type Handlers struct{ svc *Service }
+type Handlers struct {
+	svc        *Service
+	deliveries DeliveryReader
+}
+
+// DeliveryReader exposes outbound message state to staff. It is an interface rather than a concrete
+// type so the admin package does not depend on the notification implementation.
+type DeliveryReader interface {
+	Recent(ctx context.Context, limit int) ([]notify.Delivery, error)
+	Stats(ctx context.Context) (*notify.Stats, error)
+}
 
 // NewHandlers builds staff HTTP handlers.
-func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
+func NewHandlers(svc *Service, deliveries DeliveryReader) *Handlers {
+	return &Handlers{svc: svc, deliveries: deliveries}
+}
+
+// Deliveries handles GET /v1/admin/deliveries: recent outbound messages and their health.
+//
+// Message bodies are deliberately absent. An operator needs to know that a verification email was
+// attempted three times and failed; they do not need to read the code, and giving them the ability
+// would turn a support tool into a credential store.
+func (h *Handlers) Deliveries(w http.ResponseWriter, r *http.Request) error {
+	if _, err := auth.RequireRole(r, auth.RolePlatformAdmin, auth.RoleSupport); err != nil {
+		return err
+	}
+	if h.deliveries == nil {
+		return httpx.NewError(httpx.CodeInternal, "Delivery reporting is not configured.")
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	items, err := h.deliveries.Recent(r.Context(), limit)
+	if err != nil {
+		return err
+	}
+	stats, err := h.deliveries.Stats(r.Context())
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"deliveries": items, "stats": stats})
+	return nil
+}
 
 // ReviewQueue handles GET /v1/admin/review-queue.
 func (h *Handlers) ReviewQueue(w http.ResponseWriter, r *http.Request) error {

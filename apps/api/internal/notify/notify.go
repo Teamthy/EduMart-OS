@@ -34,6 +34,9 @@ type Message struct {
 	To      string
 	Subject string
 	Text    string
+	// TemplateKey names the message kind ("verify_email", "password_reset"), so delivery records can
+	// be grouped without storing the code they carried.
+	TemplateKey string
 	// Code is the one-time secret the message carries, if any. Senders must not persist it.
 	Code string
 }

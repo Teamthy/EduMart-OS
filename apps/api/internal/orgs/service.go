@@ -17,12 +17,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -97,6 +99,17 @@ type Invitation struct {
 // Service exposes institution use cases.
 type Service struct {
 	db *store.Store
+	// courier is optional. An invitation is written to the database whether or not a message can be
+	// sent, so a relay outage degrades to "share the link yourself" rather than "invitation failed".
+	courier notify.Courier
+	webURL  string
+}
+
+// WithNotifier attaches a courier and the web origin used to build invitation links.
+func (s *Service) WithNotifier(c notify.Courier, webURL string) *Service {
+	s.courier = c
+	s.webURL = strings.TrimRight(webURL, "/")
+	return s
 }
 
 // New builds the organisation service.
@@ -423,10 +436,50 @@ func (s *Service) Invite(ctx context.Context, actor *auth.User, orgID, email, ro
 		return nil, "", err
 	}
 
+	s.sendInvitation(ctx, actor, orgID, email, role, invitationID, token, expires.Sub(now))
+
 	return &Invitation{
 		ID: invitationID, Email: email, Role: role, Status: "pending",
 		ExpiresAt: store.TS(expires), CreatedAt: store.TS(now), MaxUses: 1, UseCount: 0,
 	}, token, nil
+}
+
+// sendInvitation emails the link. It is deliberately best-effort: the invitation row is already
+// committed and the token is returned to the inviter, so a failed send costs a retry, not the invite.
+func (s *Service) sendInvitation(ctx context.Context, actor *auth.User, orgID, email, role, invitationID, token string, ttl time.Duration) {
+	if s.courier == nil {
+		return
+	}
+	var organisation string
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT name FROM organizations WHERE id = ?`, orgID).Scan(&organisation); err != nil {
+		organisation = "an Edumart institution"
+	}
+	link := s.webURL
+	if link == "" {
+		link = "https://edumart.ng"
+	}
+	msg := notify.Render(notify.TemplateInvitation, notify.ChannelEmail, email, map[string]string{
+		"inviter":      actor.DisplayName,
+		"organisation": organisation,
+		"role":         role,
+		"link":         link + "/join?invitation=" + token,
+		"ttl":          humaniseTTL(ttl),
+	})
+	// errors are the caller's queue problem: Send records the message and reports transport failures
+	// through the delivery record, and there is nothing useful the inviter could do about a relay.
+	_ = s.courier.Send(ctx, msg, notify.Ref{Type: notify.RefInvitation, ID: invitationID})
+}
+
+// humaniseTTL renders a duration the way a person would say it.
+func humaniseTTL(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days >= 1 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	return fmt.Sprintf("%d minutes", int(d.Minutes()))
 }
 
 // Invitations lists open and recent invitations for administrators.

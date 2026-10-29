@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -54,9 +55,10 @@ func main() {
 		}
 	}
 
-	// Codes go out through a notifier. With no provider configured, the log sender is used and
-	// codes are redacted whenever the deployment is not a development one.
-	notifier, notifyProduction := buildNotifier(logger)
+	// Codes and reset links go out through a durable courier: the message is recorded first, attempted
+	// once, then retried by a worker. With no provider configured the log sender is used, and the
+	// bodies are redacted whenever the deployment is not a development one.
+	notifier, notifyProduction := buildCourier(db, logger)
 	codeSecret := env("EDUMART_VERIFICATION_SECRET", "")
 	if codeSecret == "" {
 		codeSecret = auth.DefaultCodeSecret
@@ -70,7 +72,13 @@ func main() {
 		auth.WithCodeSecret(codeSecret),
 		auth.WithLogger(logger),
 	)
-	shop := commerce.New(db, env("EDUMART_PAYMENT_PROVIDER", "sandbox"), env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret"))
+	shop := commerce.New(db, env("EDUMART_PAYMENT_PROVIDER", "sandbox"), env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret")).
+		WithNotifier(notifier).
+		WithLogger(logger)
+
+	// Links in invitations point at the web app, which is a different origin from the API.
+	webURL := env("EDUMART_WEB_URL", "http://localhost:3000")
+	institutions := orgs.New(db).WithNotifier(notifier, webURL)
 
 	router := api.NewRouter(api.Deps{
 		Store:    db,
@@ -83,7 +91,8 @@ func main() {
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
-		Orgs:     orgs.New(db),
+		Orgs:     institutions,
+		Notifier: notifier,
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:    splitList(env("EDUMART_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")),
@@ -95,6 +104,12 @@ func main() {
 	exams := assessment.New(db)
 	stopExpiry := startExpiryWorker(logger, exams)
 	defer stopExpiry()
+
+	// The retry sweep: whatever failed to send is attempted again on its backoff schedule, across
+	// restarts, because the queue lives in the database rather than in memory.
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	notifier.Start(workerCtx, 30*time.Second)
 
 	port := env("PORT", "8080")
 	server := &http.Server{
@@ -126,17 +141,42 @@ func main() {
 	logger.Info("api stopped")
 }
 
-// buildNotifier returns the delivery implementation for this deployment. The second result reports
-// whether the environment looks like production, which callers use to decide how loudly to warn.
-func buildNotifier(logger *slog.Logger) (notify.Sender, bool) {
+// buildCourier chooses how messages leave the process and wraps it in the durable delivery queue.
+//
+// A misconfigured mail provider stops the process at startup. The alternative — booting happily and
+// silently failing every verification email — is the failure mode that costs a launch.
+func buildCourier(db *store.Store, logger *slog.Logger) (*notify.Service, bool) {
 	production := env("EDUMART_ENV", "development") == "production"
-	if production {
-		// No provider is integrated yet, so production would silently drop every code. Failing
-		// loudly here is better than letting users wait for a message that will never arrive.
-		logger.Warn("no notification provider is configured; verification codes will not be delivered",
-			"hint", "implement notify.Sender for your provider and wire it in cmd/api")
+	mode := env("EDUMART_NOTIFY", "log")
+
+	var sender notify.Sender
+	switch mode {
+	case "smtp":
+		config := notify.SMTPConfig{
+			Host:          env("EDUMART_SMTP_HOST", ""),
+			Port:          atoi(env("EDUMART_SMTP_PORT", "587")),
+			Username:      env("EDUMART_SMTP_USERNAME", ""),
+			Password:      env("EDUMART_SMTP_PASSWORD", ""),
+			From:          env("EDUMART_SMTP_FROM", ""),
+			TLSMode:       env("EDUMART_SMTP_TLS", "starttls"),
+			AllowInsecure: env("EDUMART_SMTP_ALLOW_INSECURE", "false") == "true",
+		}
+		if err := config.Validate(production); err != nil {
+			logger.Error("smtp configuration is invalid", "error", err.Error())
+			os.Exit(1)
+		}
+		sender = notify.NewSMTPSender(config)
+		logger.Info("sending mail over smtp", "host", config.Host, "port", config.Port, "tls", config.TLSMode)
+	default:
+		if production {
+			// Redacting keeps production logs from becoming a code archive; the warning says plainly
+			// that nothing is actually being delivered.
+			logger.Warn("no notification provider is configured; codes and reset links are only logged",
+				"hint", "set EDUMART_NOTIFY=smtp with EDUMART_SMTP_* to deliver mail")
+		}
+		sender = notify.NewLogSender(logger, production)
 	}
-	return notify.NewLogSender(logger, production), production
+	return notify.NewService(db, sender, logger), production
 }
 
 // startExpiryWorker finalizes attempts whose deadline passed. This is a safety net in front of
@@ -170,6 +210,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// atoi parses an integer setting, falling back to zero so a typo surfaces in config validation rather
+// than as a panic at startup.
+func atoi(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func splitList(value string) []string {

@@ -194,6 +194,16 @@ def main():
     status, body = call("GET", "/organizations/" + organization["id"], None, outsider_token)
     expect(status == 404, "removing the membership removes the access it carried")
 
+    print("deliveries")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    status, records = call("GET", "/admin/deliveries", None, admin_token)
+    expect(status == 200 and records["deliveries"], "outbound messages are recorded")
+    expect(records["stats"]["sent"] >= 1, "delivered messages are counted as sent")
+    expect(all("body" not in d and "code" not in d for d in records["deliveries"]),
+           "delivery records never expose message bodies")
+    expect(call("GET", "/admin/deliveries", None, token)[0] == 403,
+           "learners cannot read delivery records")
+
     print("\nsmoke passed")
 
 

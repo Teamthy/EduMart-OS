@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/teamthy/edumart/apps/api/internal/admin"
 	"github.com/teamthy/edumart/apps/api/internal/api"
@@ -40,6 +42,28 @@ type harness struct {
 	// mail captures what a user would have received. Verification codes are out-of-band secrets,
 	// so a test that cannot read them cannot test the flow at all.
 	mail *notify.Recorder
+	// courier is the durable delivery service, so a test can drive the retry sweep and inspect what
+	// happened to a message after the first attempt failed.
+	courier *notify.Service
+	clock   *testClock
+}
+
+// testClock lets a test move time forward instead of sleeping through a retry backoff.
+type testClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -59,18 +83,21 @@ func newHarness(t *testing.T) *harness {
 	}
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	mail := notify.NewRecorder()
+	clock := &testClock{at: time.Now().UTC()}
+	courier := notify.NewService(db, mail, logger).WithClock(clock.Now)
 	router := api.NewRouter(api.Deps{
 		Store:    db,
-		Auth:     auth.New(db, auth.WithNotifier(mail), auth.WithLogger(logger)),
+		Auth:     auth.New(db, auth.WithNotifier(courier), auth.WithLogger(logger)),
 		Items:    content.New(db),
 		Exams:    assessment.New(db),
 		Classes:  classroom.New(db),
-		Shop:     commerce.New(db, "sandbox", webhookSecret),
+		Shop:     commerce.New(db, "sandbox", webhookSecret).WithNotifier(courier).WithLogger(logger),
 		Rewards:  rewards.New(db),
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
-		Orgs:     orgs.New(db),
+		Orgs:     orgs.New(db).WithNotifier(courier, "http://localhost:3000"),
+		Notifier: courier,
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:  []string{"http://localhost:3000"},
@@ -79,7 +106,7 @@ func newHarness(t *testing.T) *harness {
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return &harness{t: t, server: server, store: db, mail: mail}
+	return &harness{t: t, server: server, store: db, mail: mail, courier: courier, clock: clock}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {

@@ -236,11 +236,13 @@ func (h *Handlers) Forgot(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
 	}
-	token, exists := h.svc.RequestPasswordReset(r.Context(), in.Email)
+	// The response is identical whether or not the address exists: telling an anonymous caller which
+	// emails are registered is how account enumeration starts.
+	exists := h.svc.RequestPasswordReset(r.Context(), in.Email)
 	if exists {
-		// A notification worker would deliver this. In development the token is logged so the
-		// flow remains testable without an email provider.
-		h.logger.Info("password reset requested", "email", NormalizeEmail(in.Email), "token", token)
+		// The token itself is never logged — it is a credential. In development the courier's log
+		// sender prints the message body, which is the same capability with a narrower blast radius.
+		h.logger.Info("password reset queued", "email", NormalizeEmail(in.Email))
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"sent":    true,

@@ -17,6 +17,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
@@ -43,6 +44,7 @@ type Deps struct {
 	Staff    *admin.Service
 	Signup   *signup.Service
 	Orgs     *orgs.Service
+	Notifier *notify.Service
 	Logger   *slog.Logger
 	Config   Config
 }
@@ -59,7 +61,7 @@ func NewRouter(d Deps) http.Handler {
 	commerceHandlers := commerce.NewHandlers(d.Shop)
 	rewardsHandlers := rewards.NewHandlers(d.Rewards)
 	insightsHandlers := insights.NewHandlers(d.Insights)
-	staffHandlers := admin.NewHandlers(d.Staff)
+	staffHandlers := admin.NewHandlers(d.Staff, d.Notifier)
 	signupHandlers := signup.NewHandlers(d.Signup)
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 
@@ -184,6 +186,9 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))
 		v1.Post("/admin/organizations/{id}/verify", wrap(orgHandlers.Verify))
+		// Delivery health, so "the emails are not arriving" is answerable from the API instead of
+		// from a mail provider's dashboard.
+		v1.Get("/admin/deliveries", wrap(staffHandlers.Deliveries))
 	})
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
