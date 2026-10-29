@@ -28,6 +28,7 @@ import type {
   SupportCase,
   Topic,
   User,
+  VerificationIssued,
 } from "./types";
 
 export class ApiError extends Error {
@@ -146,6 +147,13 @@ export class ApiClient {
   logout = () => this.post<{ signedOut: boolean }>("/v1/auth/logout");
   me = () => this.get<{ user: User }>("/v1/me");
   updateMe = (input: unknown) => this.patch<{ user: User }>("/v1/me", input);
+  requestVerification = (channel: "email" | "phone", phone?: string) =>
+    this.post<VerificationIssued>("/v1/auth/verification/request", { channel, phone });
+  confirmVerification = (channel: "email" | "phone", code: string) =>
+    this.post<{ verified: boolean; channel: string; user: User }>("/v1/auth/verification/confirm", {
+      channel,
+      code,
+    });
   forgotPassword = (email: string) => this.post<{ sent: boolean; message: string }>("/v1/auth/password/forgot", { email });
   resetPassword = (token: string, password: string) =>
     this.post<{ reset: boolean }>("/v1/auth/password/reset", { token, password });

@@ -5,6 +5,7 @@ import { serverFetch } from "@/lib/server-api";
 import { requireUser } from "@/lib/session";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SettingsForm } from "./settings-form";
+import { VerificationCard } from "./verification-card";
 import type { Pathway, Subject } from "@edumart/shared";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -23,6 +24,8 @@ export default async function SettingsPage() {
         <h1 className="text-2xl">Settings</h1>
         <p className="text-sm text-muted-foreground">Signed in as {user.email}</p>
       </header>
+
+      <VerificationCard user={user} />
 
       <SettingsForm user={user} subjects={subjects} pathways={pathways} />
 

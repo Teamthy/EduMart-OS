@@ -262,17 +262,19 @@ func seedDemoUsers(ctx context.Context, tx *sql.Tx, subjectIDs map[string]string
 			}
 			// Deterministic ids keep seeded attempts and referrals stable across resets.
 			target := time.Now().UTC().AddDate(0, 0, 45).Format("2006-01-02")
+			// Demo accounts are fixtures for an established cohort, so their email is already
+			// proven. Real signups are not: they must confirm before the address is trusted.
 			if _, err := tx.ExecContext(ctx, `INSERT INTO users
 				(id, email_normalized, password_hash, display_name, status, exam_pathway_id, target_date, timezone,
-				 daily_minutes, onboarding_step, onboarding_done_at, created_at, updated_at)
-				VALUES (?,?,?,?,'active',?,?, 'Africa/Lagos', 30, 5, ?,?,?)`,
+				 daily_minutes, onboarding_step, onboarding_done_at, email_verified_at, created_at, updated_at)
+				VALUES (?,?,?,?,'active',?,?, 'Africa/Lagos', 30, 5, ?, ?,?,?)`,
 				userID, email, hash, demo.DisplayName,
 				func() any {
 					var id string
 					_ = tx.QueryRowContext(ctx, `SELECT id FROM exam_pathways WHERE key = 'jamb'`).Scan(&id)
 					return nullable(id)
 				}(),
-				target, now, now, now); err != nil {
+				target, now, now, now, now); err != nil {
 				return err
 			}
 		}

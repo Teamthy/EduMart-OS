@@ -23,6 +23,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
@@ -35,6 +36,9 @@ type harness struct {
 	t      *testing.T
 	server *httptest.Server
 	store  *store.Store
+	// mail captures what a user would have received. Verification codes are out-of-band secrets,
+	// so a test that cannot read them cannot test the flow at all.
+	mail *notify.Recorder
 }
 
 func newHarness(t *testing.T) *harness {
@@ -53,9 +57,10 @@ func newHarness(t *testing.T) *harness {
 		logWriter = os.Stderr
 	}
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
+	mail := notify.NewRecorder()
 	router := api.NewRouter(api.Deps{
 		Store:    db,
-		Auth:     auth.New(db),
+		Auth:     auth.New(db, auth.WithNotifier(mail), auth.WithLogger(logger)),
 		Items:    content.New(db),
 		Exams:    assessment.New(db),
 		Classes:  classroom.New(db),
@@ -72,7 +77,7 @@ func newHarness(t *testing.T) *harness {
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return &harness{t: t, server: server, store: db}
+	return &harness{t: t, server: server, store: db, mail: mail}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {

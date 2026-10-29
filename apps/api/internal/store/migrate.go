@@ -40,6 +40,11 @@ func (s *Store) migrationDir() string {
 	return "migrations/sqlite"
 }
 
+// Adoption contract: the baseline migration (0001) is replayed against databases created before the
+// ledger existed, so its statements must stay idempotent (CREATE ... IF NOT EXISTS). Later migrations
+// run exactly once against a recorded database and do not need to be idempotent — 0002 alters a
+// table, which SQLite cannot express defensively.
+//
 // migrationFiles lists embedded migrations in version order (filenames sort lexicographically, so
 // they are zero-padded for exactly this reason).
 func (s *Store) migrationFiles() ([]fs.DirEntry, error) {

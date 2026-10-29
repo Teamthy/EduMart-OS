@@ -23,6 +23,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
@@ -52,7 +53,22 @@ func main() {
 		}
 	}
 
-	authService := auth.New(db)
+	// Codes go out through a notifier. With no provider configured, the log sender is used and
+	// codes are redacted whenever the deployment is not a development one.
+	notifier, notifyProduction := buildNotifier(logger)
+	codeSecret := env("EDUMART_VERIFICATION_SECRET", "")
+	if codeSecret == "" {
+		codeSecret = auth.DefaultCodeSecret
+		if notifyProduction {
+			logger.Warn("EDUMART_VERIFICATION_SECRET is unset: stored verification codes share a " +
+				"well-known key. Set it before handling real accounts.")
+		}
+	}
+	authService := auth.New(db,
+		auth.WithNotifier(notifier),
+		auth.WithCodeSecret(codeSecret),
+		auth.WithLogger(logger),
+	)
 	shop := commerce.New(db, env("EDUMART_PAYMENT_PROVIDER", "sandbox"), env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret"))
 
 	router := api.NewRouter(api.Deps{
@@ -106,6 +122,19 @@ func main() {
 		logger.Error("shutdown error", "error", err.Error())
 	}
 	logger.Info("api stopped")
+}
+
+// buildNotifier returns the delivery implementation for this deployment. The second result reports
+// whether the environment looks like production, which callers use to decide how loudly to warn.
+func buildNotifier(logger *slog.Logger) (notify.Sender, bool) {
+	production := env("EDUMART_ENV", "development") == "production"
+	if production {
+		// No provider is integrated yet, so production would silently drop every code. Failing
+		// loudly here is better than letting users wait for a message that will never arrive.
+		logger.Warn("no notification provider is configured; verification codes will not be delivered",
+			"hint", "implement notify.Sender for your provider and wire it in cmd/api")
+	}
+	return notify.NewLogSender(logger, production), production
 }
 
 // startExpiryWorker finalizes attempts whose deadline passed. This is a safety net in front of

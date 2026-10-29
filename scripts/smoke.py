@@ -10,6 +10,7 @@ backend change. Anything that fails here is a real regression, not a cosmetic di
 
 import json
 import sys
+import uuid
 import urllib.error
 import urllib.request
 
@@ -113,6 +114,37 @@ def main():
     status, products = call("GET", "/products", None, token)
     expect(status == 200 and products["products"], "the store lists products")
     expect(all(isinstance(p["priceMinor"], int) for p in products["products"]), "prices are integer minor units")
+
+    print("verification")
+    verified_user = call("GET", "/me", None, token)[1]["user"]
+    expect(verified_user["emailVerified"] is True, "a seeded account has a proven address")
+
+    # A brand-new account is unverified, and the money path refuses it until it proves the address.
+    # The code itself travels out of band, so this script asserts the gate rather than the code.
+    fresh_email = "smoke-%s@example.com" % uuid.uuid4().hex[:10]
+    status, registered = call(
+        "POST",
+        "/auth/register",
+        {
+            "displayName": "Smoke Learner",
+            "email": fresh_email,
+            "password": "SmokeTest123!",
+            "dailyMinutes": 30,
+            "client": "web",
+        },
+    )
+    expect(status == 201, "a new account can be registered")
+    fresh_token = registered["token"]
+    expect(registered["user"]["emailVerified"] is False, "a new account starts unverified")
+
+    status, attempt = call("POST", "/orders", {"productId": products["products"][0]["id"]}, fresh_token)
+    expect(status == 403 and attempt["error"]["code"] == "EMAIL_NOT_VERIFIED",
+           "buying is refused until the address is confirmed")
+
+    status, issued = call("POST", "/auth/verification/request", {"channel": "email"}, fresh_token)
+    expect(status == 202 and issued["sent"] is True, "a verification code is accepted for delivery")
+    expect(issued["destination"] != fresh_email and "@example.com" in issued["destination"],
+           "the destination is masked in the response")
 
     print("\nsmoke passed")
 

@@ -9,12 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -48,6 +50,9 @@ type User struct {
 	OnboardingDone bool     `json:"onboardingComplete"`
 	Roles          []string `json:"roles"`
 	Subjects       []string `json:"subjectIds"`
+	Phone          *string  `json:"phone"`
+	EmailVerified  bool     `json:"emailVerified"`
+	PhoneVerified  bool     `json:"phoneVerified"`
 	CreatedAt      string   `json:"createdAt"`
 }
 
@@ -73,11 +78,47 @@ func (u *User) HasAnyRole(roles ...string) bool {
 
 // Service exposes identity use cases.
 type Service struct {
-	db *store.Store
+	db         *store.Store
+	notifier   notify.Sender
+	codeSecret []byte
+	logger     *slog.Logger
+}
+
+// Option configures the identity service.
+type Option func(*Service)
+
+// WithNotifier sets where verification and recovery messages are delivered. Without one, codes
+// would be generated and dropped on the floor, so a silent notifier is the default: tests must opt
+// in and a misconfigured server fails loudly instead of pretending to have sent a code.
+func WithNotifier(sender notify.Sender) Option {
+	return func(s *Service) { s.notifier = sender }
+}
+
+// WithCodeSecret sets the HMAC key that protects stored verification codes. Rotating it invalidates
+// outstanding codes, which is the intended behaviour after a suspected disclosure.
+func WithCodeSecret(secret string) Option {
+	return func(s *Service) { s.codeSecret = []byte(secret) }
+}
+
+// WithLogger sets the logger used for delivery failures.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Service) { s.logger = logger }
 }
 
 // New builds the auth service.
-func New(db *store.Store) *Service { return &Service{db: db} }
+func New(db *store.Store, opts ...Option) *Service {
+	s := &Service{db: db, notifier: discardSender{}, codeSecret: []byte(DefaultCodeSecret), logger: slog.Default()}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// discardSender accepts messages and drops them. It is the safe default: an unstubbed notifier in
+// a test produces no code, which the test then fails on, rather than silently hitting a real inbox.
+type discardSender struct{}
+
+func (discardSender) Send(context.Context, notify.Message) error { return nil }
 
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
@@ -316,16 +357,17 @@ func bearerToken(r *http.Request) string {
 func (s *Service) UserByID(ctx context.Context, userID string) (*User, error) {
 	var user User
 	var email, display, status, timezone string
-	var pathwayID, targetDate, doneAt sql.NullString
+	var pathwayID, targetDate, doneAt, phone, emailVerified, phoneVerified sql.NullString
 	var onboardingStep, daily int
 	var createdAt string
 
 	err := s.db.DB.QueryRowContext(ctx, `
 		SELECT id, email_normalized, display_name, status, exam_pathway_id, target_date, timezone,
-		       daily_minutes, onboarding_step, onboarding_done_at, created_at
+		       daily_minutes, onboarding_step, onboarding_done_at, created_at,
+		       phone_e164, email_verified_at, phone_verified_at
 		  FROM users WHERE id = ?`, userID).Scan(
 		&user.ID, &email, &display, &status, &pathwayID, &targetDate, &timezone,
-		&daily, &onboardingStep, &doneAt, &createdAt)
+		&daily, &onboardingStep, &doneAt, &createdAt, &phone, &emailVerified, &phoneVerified)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httpx.NewError(httpx.CodeUnauthenticated, "Please sign in to continue.")
 	}
@@ -343,6 +385,11 @@ func (s *Service) UserByID(ctx context.Context, userID string) (*User, error) {
 	if targetDate.Valid {
 		user.TargetDate = &targetDate.String
 	}
+	if phone.Valid && phone.String != "" {
+		user.Phone = &phone.String
+	}
+	user.EmailVerified = emailVerified.Valid && emailVerified.String != ""
+	user.PhoneVerified = phoneVerified.Valid && phoneVerified.String != ""
 
 	rows, err := s.db.DB.QueryContext(ctx, `SELECT role FROM role_assignments WHERE user_id = ? ORDER BY role`, userID)
 	if err != nil {

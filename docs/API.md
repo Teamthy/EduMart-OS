@@ -41,7 +41,9 @@ Every non-2xx response has the same shape:
 | `POST` | `/auth/logout` | Revokes the session server-side |
 | `POST` | `/auth/password/forgot` | Always 200; never reveals whether the email exists |
 | `POST` | `/auth/password/reset` | Consumes a single-use token, revokes all sessions |
-| `GET` | `/me` | Current principal with roles and subject preferences |
+| `POST` | `/auth/verification/request` | `{channel: "email"\|"phone", phone?}` → `202 {sent, channel, destination (masked), expires_at, resend_after, attempts_allowed}` |
+| `POST` | `/auth/verification/confirm` | `{channel, code}` → `{verified, channel, user}`; single-use, 15-minute, 5 attempts |
+| `GET` | `/me` | Current principal with roles, subject preferences, `emailVerified`, `phoneVerified`, `phone` |
 | `PATCH` | `/me` | Profile, plan and onboarding progress |
 
 ### Signup wizard
