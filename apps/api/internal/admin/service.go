@@ -249,6 +249,15 @@ func (s *Service) ResolveCase(ctx context.Context, actorID, caseID string) error
 type Handlers struct {
 	svc        *Service
 	deliveries DeliveryReader
+	reminders  ReminderReader
+}
+
+// ReminderReader exposes scheduled reminders to staff, so "was the learner told?" is answerable.
+type ReminderReader interface {
+	Reminders(ctx context.Context, limit int) ([]notify.Reminder, error)
+	ReminderStats(ctx context.Context) (*notify.ReminderStats, error)
+	Plan(ctx context.Context) (int, error)
+	RunReminders(ctx context.Context, limit int) (int, int, error)
 }
 
 // DeliveryReader exposes outbound message state to staff. It is an interface rather than a concrete
@@ -261,6 +270,77 @@ type DeliveryReader interface {
 // NewHandlers builds staff HTTP handlers.
 func NewHandlers(svc *Service, deliveries DeliveryReader) *Handlers {
 	return &Handlers{svc: svc, deliveries: deliveries}
+}
+
+// WithReminders attaches the reminder queue. Optional, like deliveries: a deployment without a mail
+// provider has nothing to schedule and the endpoints say so rather than pretending.
+func (h *Handlers) WithReminders(reminders ReminderReader) *Handlers {
+	h.reminders = reminders
+	return h
+}
+
+// Reminders handles GET /v1/admin/reminders: what the system has promised to send, and what it did.
+//
+// Message bodies are included here, unlike deliveries, and that is deliberate: a reminder body is written
+// by the system from public facts (an assessment title and its closing time). It carries no credential,
+// and an operator asked "why did this learner get a confusing email?" needs to read the words that were
+// sent.
+func (h *Handlers) Reminders(w http.ResponseWriter, r *http.Request) error {
+	if _, err := auth.RequireRole(r, auth.RolePlatformAdmin, auth.RoleSupport); err != nil {
+		return err
+	}
+	if h.reminders == nil {
+		return httpx.NewError(httpx.CodeInternal, "Reminders are not configured.")
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	items, err := h.reminders.Reminders(r.Context(), limit)
+	if err != nil {
+		return err
+	}
+	stats, err := h.reminders.ReminderStats(r.Context())
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"reminders": items, "stats": stats})
+	return nil
+}
+
+// SweepReminders handles POST /v1/admin/reminders/sweep.
+//
+// This is an operator lever, not a test hook: when a learner asks "was I warned?", the answer should be
+// actionable now rather than at the next tick. It is platform-admin only and audited, because it sends
+// real mail to real people.
+func (h *Handlers) SweepReminders(w http.ResponseWriter, r *http.Request) error {
+	actor, err := auth.RequireRole(r, auth.RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	if h.reminders == nil {
+		return httpx.NewError(httpx.CodeInternal, "Reminders are not configured.")
+	}
+	planned, planErr := h.reminders.Plan(r.Context())
+	sent, skipped, runErr := h.reminders.RunReminders(r.Context(), 200)
+	if planErr != nil {
+		return planErr
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if _, err := h.svc.db.DB.ExecContext(r.Context(), `INSERT INTO audit_logs
+		(id, actor_user_id, action, resource_type, resource_id, occurred_at)
+		VALUES (?,?,'notifications.sweep','notification_reminder','',?)`,
+		store.NewID(), actor.ID, store.Now()); err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"planned": planned, "sent": sent, "skipped": skipped,
+	})
+	return nil
 }
 
 // Deliveries handles GET /v1/admin/deliveries: recent outbound messages and their health.

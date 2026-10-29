@@ -61,7 +61,7 @@ func NewRouter(d Deps) http.Handler {
 	commerceHandlers := commerce.NewHandlers(d.Shop)
 	rewardsHandlers := rewards.NewHandlers(d.Rewards)
 	insightsHandlers := insights.NewHandlers(d.Insights)
-	staffHandlers := admin.NewHandlers(d.Staff, d.Notifier)
+	staffHandlers := admin.NewHandlers(d.Staff, d.Notifier).WithReminders(d.Notifier)
 	signupHandlers := signup.NewHandlers(d.Signup)
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 
@@ -201,6 +201,8 @@ func NewRouter(d Deps) http.Handler {
 		// Delivery health, so "the emails are not arriving" is answerable from the API instead of
 		// from a mail provider's dashboard.
 		v1.Get("/admin/deliveries", wrap(staffHandlers.Deliveries))
+		v1.Get("/admin/reminders", wrap(staffHandlers.Reminders))
+		v1.Post("/admin/reminders/sweep", wrap(staffHandlers.SweepReminders))
 	})
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {

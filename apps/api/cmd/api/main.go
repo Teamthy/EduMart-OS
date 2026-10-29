@@ -111,6 +111,10 @@ func main() {
 	defer stopWorker()
 	notifier.Start(workerCtx, 30*time.Second)
 
+	// Reminders are planned and sent on their own timer. A reminder is a promise made in advance — the
+	// row is written when the decision is made, so a restart between "decided" and "due" loses nothing.
+	notifier.StartReminders(workerCtx, reminderInterval())
+
 	port := env("PORT", "8080")
 	server := &http.Server{
 		Addr:              "0.0.0.0:" + port,
@@ -230,4 +234,16 @@ func splitList(value string) []string {
 		}
 	}
 	return out
+}
+
+// reminderInterval is how often the reminder planner and sweep run. It is configurable because the
+// right interval differs between a laptop (where a test wants it immediately) and production (where
+// every pass scans the same tables for no new work).
+func reminderInterval() time.Duration {
+	raw := env("EDUMART_REMINDER_INTERVAL", "5m")
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		return 5 * time.Minute
+	}
+	return parsed
 }

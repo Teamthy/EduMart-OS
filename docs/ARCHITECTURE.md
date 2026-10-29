@@ -249,3 +249,22 @@ open result set, SQLite tolerates it, and this code must run on both.
 Nothing here aggregates across tenants. There is no "platform average" in the endpoint, because that
 query has no owner and would be a privacy decision made by accident.
 
+## Scheduled reminders
+
+Delivery and scheduling are separate problems, so they are separate tables. `notification_deliveries`
+records a message microseconds before it is attempted; `scheduled_notifications` records a promise made
+days in advance. A worker plans and sweeps the second into the first.
+
+The interesting part is what happens when the world changes between the two:
+
+- **Deciding twice is a no-op.** One reminder per learner per window, enforced by a unique index on the
+  dedupe key rather than a check in Go. The planner is a timer; re-deciding is its normal state.
+- **Claiming is the concurrency control.** `pending → claimed` with a row-count check, so two workers
+  cannot both send the same reminder. A claimed row that never settles is visible in the staff view as
+  stuck — the failure mode an operator can act on, rather than a duplicate email nobody can explain.
+- **Revalidation happens after the claim.** A deadline warning is re-checked against the session table:
+  if the learner submitted in the meantime the reminder settles as `skipped` with a note. The planner's
+  view of the world is always slightly stale, so the sender trusts the database, not the plan.
+- **Withdrawn reminders are kept.** "We decided to warn them and then did not, because they had submitted"
+  is an answer support needs, so the row is settled, not deleted.
+

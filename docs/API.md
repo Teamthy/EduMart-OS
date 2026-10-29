@@ -62,6 +62,8 @@ Every non-2xx response has the same shape:
 | `POST` | `/organizations/invitations/accept` | `{token}`; must match the signed-in account's email |
 | `DELETE` | `/organizations/{id}/members/{userId}` | Remove a member, or leave. Withdraws the teacher role with the membership |
 | `POST` | `/admin/organizations/{id}/verify` | Platform administrator approves the institution |
+| `GET` | `/admin/reminders?limit=` | Scheduled reminders with `{pending, claimed, sent, skipped, cancelled}`. Bodies are shown: they are generated from public facts, not credentials. Platform administrators and support |
+| `POST` | `/admin/reminders/sweep` | Plan and send due reminders now. Platform administrators only, audited. Planning is idempotent; each reminder is claimed before it is sent and revalidated before it goes out |
 | `GET` | `/admin/deliveries?limit=` | Outbound messages with status, attempts and last error, plus `{sent, pending, failed}`. Bodies are never returned. Platform administrators and support only |
 
 Invitation rules: single use, addressed to one email, valid seven days, single-use claimed by

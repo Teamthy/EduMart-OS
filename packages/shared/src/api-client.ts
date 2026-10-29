@@ -26,6 +26,8 @@ import type {
   Organization,
   OrganizationMember,
   OrganizationReport,
+  Reminder,
+  ReminderStats,
   Invitation,
   StudyPlan,
   Subject,
@@ -221,6 +223,12 @@ export class ApiClient {
 
   organizationClasses = (organizationId: string) =>
     this.get<{ classes: ClassSummary[] }>(`/v1/organizations/${organizationId}/classes`);
+  // ── operations ────────────────────────────────────────────────────────
+  reminders = (limit = 50) =>
+    this.get<{ reminders: Reminder[]; stats: ReminderStats }>(`/v1/admin/reminders?limit=${limit}`);
+  sweepReminders = () =>
+    this.post<{ planned: number; sent: number; skipped: number }>("/v1/admin/reminders/sweep", {});
+
   organizationReport = (organizationId: string) =>
     this.get<{ report: OrganizationReport }>(`/v1/organizations/${organizationId}/report`);
   rotateClassJoinCode = (classId: string) =>

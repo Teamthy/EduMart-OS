@@ -296,6 +296,35 @@ export interface ClassSummary {
   createdAt: string;
 }
 
+/** One message the system promised to send later. */
+export interface Reminder {
+  id: string;
+  userId: string;
+  kind: "study_nudge" | "deadline";
+  templateKey: string;
+  subject: string;
+  /** Safe to display: generated from public facts, never a credential. */
+  body: string;
+  resourceId: string;
+  dueAt: string;
+  dedupeKey: string;
+  status: "pending" | "claimed" | "sent" | "skipped" | "cancelled";
+  createdAt: string;
+  claimedAt: string;
+  settledAt: string;
+  deliveryId: string;
+  /** Why a reminder was skipped, e.g. "already submitted". */
+  note: string;
+}
+
+export interface ReminderStats {
+  pending: number;
+  claimed: number;
+  sent: number;
+  skipped: number;
+  cancelled: number;
+}
+
 /** An institution's own dashboard: its people, its teaching, and what its learners actually did. */
 export interface OrganizationReport {
   organizationId: string;

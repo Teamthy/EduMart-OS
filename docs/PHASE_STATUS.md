@@ -18,7 +18,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
 | 5 | Database and persistence | Partial | Both engines tested; **restore demonstrated for both engines** (destroy → restore → verify, in CI). Still no scheduled backup, off-site copy or PITR |
-| 6 | API platform and contracts | Done | 71 routes, contract checked in CI |
+| 6 | API platform and contracts | Done | 74 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification and delivery are solid, and accounts can now be suspended with their sessions; **no refresh-token rotation**, PBKDF2 rather than Argon2id |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
@@ -36,7 +36,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
-| 24 | Notifications | Partial | Durable queue, retries, SMTP delivery, per-message delivery records for codes, resets, invitations and receipts; **no SMS/push provider, no reminders** |
+| 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
@@ -99,7 +99,7 @@ a snapshot would exist when it is needed.
 
 ### Phase 6 — API platform and shared contracts · Done
 
-71 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+74 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
 `scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
 `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
 `SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
@@ -287,22 +287,47 @@ commission approval or payout workflow, no reversal tooling for refunds.
 | Credential hygiene | An abandoned delivery **deletes** the verification code or reset token it carried; delivered bodies are cleared; `GET /v1/admin/deliveries` never returns a body |
 | Messages that actually go out | Verification codes, password resets, organisation invitations, purchase receipts |
 | Observability | `GET /v1/admin/deliveries` with `{sent, pending, failed}`; `FailedSender` injections are covered by tests |
+| Scheduled reminders | `scheduled_notifications` (migration `0007`): a promise recorded when it is decided, claimed before it is sent, revalidated before it goes out, and retained when it is withdrawn. Two kinds — a daily study nudge and a deadline warning. `GET /v1/admin/reminders`, `POST /v1/admin/reminders/sweep` |
 
-**Not done, and not claimed:** SMS and push channels (no provider wired; `notify.Channel` already has
-the seam), class/assessment reminders (there is no assignment model to remind about yet), digests,
-bounce and complaint feedback loops, and per-tenant sender identities.
+**Reminders are a different promise from a delivery, and the code treats them that way.** A delivery is
+recorded microseconds before it is attempted; a reminder is decided on Monday and due on Thursday. Three
+rules make that safe:
+
+- **The decision is a row, not a timer in memory.** A restart on Wednesday cannot silently cancel a
+  message the learner was promised — the queue lives in the database, like everything else durable here.
+- **One reminder per learner per window, enforced by a unique index** on the dedupe key, not by a check in
+  Go. The planner runs on a timer and re-deciding the same thing is its normal state; the second decision
+  must be a no-op rather than a second email.
+- **Claim before send, revalidate after the claim.** `pending → claimed` is an `UPDATE … WHERE status =
+  'pending'` with a row-count check, so two workers sweeping at the same moment cannot both deliver the
+  same reminder. Then the reason is re-checked: a warning about an assessment the learner has since
+  submitted is settled as `skipped` with the note `already submitted`, and nothing is sent. A reminder
+  written on Monday must not tell a learner to submit on Thursday if they submitted on Tuesday.
+
+Who hears from us is a decision the learner made: only verified, active accounts **with a study plan** get
+nudges, and a deadline warning only goes to a class member who has not submitted. Not every learner gets
+mail, because "engagement" is not a reason to email someone who never asked.
+
+Proven by `TestAReminderIsPlannedOnceAndSentOnce`, `TestADeadlineReminderIsWithdrawnWhenTheLearnerSubmits`,
+`TestTwoSweepsDoNotSendTheSameReminderTwice`, `TestRemindersAreStaffOnly`,
+`TestALearnerWithoutAPlanIsNotNudged`, and the `reminders` section of the smoke run.
+
+**Not done, and not claimed:** SMS and push channels (no provider wired; `notify.Channel` already has the
+seam), digests, bounce and complaint feedback loops, per-tenant sender identities, per-learner quiet hours
+or an unsubscribe preference (the study nudge is the first message anyone might want to turn off, and there
+is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ---
 
 ## Recommended next three steps
 
-1. **Phase 19: link classes to organisations.** `classes.organization_id` exists and no code path sets
-   it, so an institution cannot yet own a class — which blocks org-scoped reporting, assignment
-   ownership and institution billing.
-2. **Phase 7 hardening: Argon2id, refresh-token rotation and account suspension.** The lifecycle works,
-   but a stolen session lives until it expires and there is no way to suspend an abusive account.
-3. **Phase 28's first slice: a threat model, dependency and secret scanning, and a restore drill.**
-   Cheap, and they turn "we believe it is recoverable" into evidence.
+1. **Phase 7 hardening: Argon2id and refresh-token rotation.** Suspension, session revocation and
+   verification are done; what remains is a stolen session that lives until it expires, and a password
+   hash that is PBKDF2 rather than the current recommendation.
+2. **Phase 22: refunds and reconciliation as compensating ledger entries.** The sandbox provider works and
+   webhooks are the only source of payment truth, but nothing can correct a payment after the fact.
+3. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill is
+   done; the other half of "we believe we are safe" is still a belief.
 
 ## Feature completion checklist
 

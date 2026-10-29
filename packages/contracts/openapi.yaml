@@ -1529,6 +1529,68 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /v1/admin/reminders:
+    get:
+      tags: [operations]
+      summary: Scheduled reminders and their health
+      description: |
+        Platform administrators and support. Answers "was this learner told?" without reading anyone's
+        inbox: the reminder body is generated from public facts, and the payload says whether it was
+        sent, still pending, or skipped because the reason had gone away.
+
+        A `skipped` reminder is a record, not a deletion. "We decided to warn them and then did not,
+        because they had submitted" is an answer support needs.
+      operationId: listReminders
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Reminders, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reminders:
+                    type: array
+                    items: { $ref: "#/components/schemas/Reminder" }
+                  stats: { $ref: "#/components/schemas/ReminderStats" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/reminders/sweep:
+    post:
+      tags: [operations]
+      summary: Plan and send due reminders now
+      description: |
+        An operator lever, not a test hook: when a learner asks "was I warned?", the answer should be
+        actionable now rather than at the next scheduler tick. Platform administrators only, and every
+        sweep is written to the audit log, because it sends real mail to real people.
+
+        Planning is idempotent — the dedupe key makes re-deciding a no-op — and each reminder is claimed
+        (`pending → claimed`) before it is sent, so two workers cannot both deliver it. Reminders are also
+        revalidated at send time: a warning about an assessment the learner has since submitted is marked
+        `skipped` rather than sent.
+      operationId: sweepReminders
+      responses:
+        "200":
+          description: What this sweep decided and did
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  planned:
+                    type: integer
+                    description: Newly scheduled reminders. Zero on a second sweep in the same window.
+                  sent: { type: integer }
+                  skipped:
+                    type: integer
+                    description: Reminders whose reason no longer held, such as an assessment already submitted.
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/admin/users:
     get:
       tags: [moderation]
@@ -1885,6 +1947,50 @@ components:
           items: { type: string }
         createdAt: { type: string, format: date-time }
 
+    Reminder:
+      type: object
+      description: |
+        One message the system promised to send later. The row is written when the decision is made, so a
+        restart between "decided" and "due" loses nothing, and a reminder that was withdrawn can still be
+        explained afterwards.
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        kind: { type: string, enum: [study_nudge, deadline] }
+        templateKey: { type: string }
+        subject: { type: string }
+        body:
+          type: string
+          description: |
+            The words that will be sent. Unlike delivery bodies, this is safe to show: it is generated from
+            public facts (an assessment title, a closing time) and carries no credential.
+        resourceId:
+          type: string
+          description: The row this reminder is about — an assessment definition for a deadline warning.
+        dueAt: { type: string, format: date-time }
+        dedupeKey:
+          type: string
+          description: Unique per reminder per learner per window. A unique index, not a check in Go.
+        status: { type: string, enum: [pending, claimed, sent, skipped, cancelled] }
+        createdAt: { type: string, format: date-time }
+        claimedAt: { type: string }
+        settledAt: { type: string }
+        deliveryId:
+          type: string
+          description: Set once the reminder has been handed to the delivery queue.
+        note:
+          type: string
+          description: Why a reminder was skipped — for example "already submitted".
+
+    ReminderStats:
+      type: object
+      properties:
+        pending: { type: integer }
+        claimed: { type: integer }
+        sent: { type: integer }
+        skipped: { type: integer }
+        cancelled: { type: integer }
+
     Delivery:
       type: object
       description: One outbound message. The body is deliberately absent.
@@ -1900,7 +2006,7 @@ components:
         lastError:
           type: string
           description: The provider's last complaint, truncated. Empty once the message is delivered.
-        resourceType: { type: string, enum: ["", verification_code, password_reset_token] }
+        resourceType: { type: string, enum: ["", verification_code, password_reset_token, invitation, order, reminder] }
         resourceId: { type: string }
         createdAt: { type: string, format: date-time }
         nextAttemptAt: { type: string, format: date-time }

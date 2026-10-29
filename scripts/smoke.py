@@ -13,6 +13,7 @@ import sys
 import uuid
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 ROOT = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/")
 BASE = ROOT + "/v1"
@@ -274,6 +275,26 @@ def main():
            "delivery records never expose message bodies")
     expect(call("GET", "/admin/deliveries", None, token)[0] == 403,
            "learners cannot read delivery records")
+
+    print("reminders")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    student_token = call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})[1]["token"]
+    target = (datetime.now(timezone.utc) + timedelta(days=45)).strftime("%Y-%m-%d")
+    status, _ = call("PUT", "/study-plan", {"targetDate": target, "dailyMinutes": 30}, student_token)
+    expect(status == 200, "a learner can set a study target")
+    status, swept = call("POST", "/admin/reminders/sweep", None, admin_token)
+    expect(status == 200 and swept["planned"] >= 1, "an administrator can plan and sweep reminders")
+    status, again = call("POST", "/admin/reminders/sweep", None, admin_token)
+    expect(status == 200 and again["planned"] == 0, "re-planning schedules nothing new")
+    status, queue = call("GET", "/admin/reminders", None, admin_token)
+    expect(status == 200 and any(r["kind"] == "study_nudge" for r in queue["reminders"]),
+           "the queue shows the reminder that was promised")
+    expect(all(r["status"] != "sent" or r["deliveryId"] for r in queue["reminders"]),
+           "a sent reminder is tied to the delivery that carried it")
+    expect(call("GET", "/admin/reminders", None, student_token)[0] == 403,
+           "learners cannot read the reminder queue")
+    expect(call("POST", "/admin/reminders/sweep", None, student_token)[0] == 403,
+           "learners cannot trigger a sweep")
 
     print("approvals")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
