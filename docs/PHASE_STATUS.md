@@ -31,7 +31,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 16 | Student dashboard | Partial | Dashboard, weak topics, streaks; no syllabus-coverage view |
 | 17 | PWA and offline | Partial | Installable and cache-aware; **no pending-write queue, no offline exams** |
 | 18 | Native mobile | Partial | Journeys work; **no crash reporting, no signed release builds** |
-| 19 | Classrooms and assignments | Partial | Classes, join codes, rosters, assignments; no expiry/usage limits on invites |
+| 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
@@ -173,6 +173,34 @@ creates it that way.
 
 Still missing: org-scoped reporting and analytics, membership suspension, ownership transfer, an admin
 surface that lists pending organisations, organisation-level billing, and SSO.
+
+### Phase 19 — Classrooms and assignments · Partial
+
+Classes, rosters, assignments and completion tracking work (`GET /v1/classes`,
+`POST /v1/classes/join`, `GET /v1/classes/{id}/roster`, `GET /v1/classes/{id}/assignments`).
+
+A class code used to be the first six letters of the class name plus two random characters, valid
+forever. That is a naming convention, not a secret: anyone who knows the school can narrow the search to
+about 1,300 guesses, and a code read aloud in a corridor stayed a key to the classroom for good. Two
+things changed:
+
+- **Codes are now six characters from a cryptographic source**, over an alphabet without `I`, `O`, `0` or
+  `1` — a code is read aloud, written on a whiteboard and typed by a fourteen-year-old.
+- **Codes expire after 30 days**, and `POST /v1/classes/{id}/join-code` reissues one. Rotation replaces
+  the code rather than adding a second, so the old one stops working at that moment. An expired code
+  returns `410 JOIN_CODE_EXPIRED` rather than `404`, because the remedy is "ask your teacher for the
+  current one", not "retype this one".
+
+Who may rotate: the teacher who owns the class, a teacher in it, an administrator of the institution that
+owns it, or platform staff. A learner in the class gets `403` — whoever can rotate the code can hand out
+access to their own classroom.
+
+Proven by `TestJoinCodesAreNotGuesses`, `TestRotatingAJoinCodeRevokesTheOldOne`,
+`TestAnExpiredJoinCodeSaysItExpired`, `TestInstitutionAdminCanRotateAClassCode`, and the `class codes`
+section of the smoke run.
+
+Still missing: usage limits or per-student invite links for institution invitations, and a per-class
+"who has not joined yet" view.
 
 ### Phase 20 — Institutions and administration · Partial
 

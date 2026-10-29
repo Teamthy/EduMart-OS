@@ -1177,8 +1177,46 @@ paths:
               required: [code]
               properties:
                 code: { type: string }
+      description: |
+        Codes are six characters, case-insensitive. An expired code returns `410 JOIN_CODE_EXPIRED`
+        rather than `404`: the remedy is "ask your teacher for the current code", not "retype this one".
       responses:
         "200": { description: Joined }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410":
+          description: The code is real but its window has passed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/classes/{id}/join-code:
+    post:
+      tags: [classroom]
+      summary: Reissue a class join code
+      description: |
+        The teacher who runs the class, a teacher in it, an administrator of the institution that owns
+        it, or platform staff. A learner in the class gets `403`: whoever can rotate the code can hand out
+        access to their own classroom.
+
+        Rotation replaces the code rather than adding a second one, so the previous code stops working the
+        moment this returns — that is the point of rotating it. The new code is six characters drawn from
+        a cryptographic source, and its window is 30 days from now.
+      operationId: rotateClassJoinCode
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The class with its new code and expiry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  class: { $ref: "#/components/schemas/Class" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/classes/{id}/roster:

@@ -3,10 +3,12 @@ package classroom
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
@@ -23,10 +25,13 @@ type Class struct {
 	OrganizationID *string `json:"organizationId"`
 	SubjectID      *string `json:"subjectId"`
 	JoinCode       string  `json:"joinCode"`
-	Role           string  `json:"role"`
-	Members        int     `json:"members"`
-	Assignments    int     `json:"assignments"`
-	CreatedAt      string  `json:"createdAt"`
+	// JoinCodeExpiresAt is when the current code stops working. Rotation issues a new code and a new
+	// window, and the old code stops working immediately because it is replaced, not revoked separately.
+	JoinCodeExpiresAt *string `json:"joinCodeExpiresAt"`
+	Role              string  `json:"role"`
+	Members           int     `json:"members"`
+	Assignments       int     `json:"assignments"`
+	CreatedAt         string  `json:"createdAt"`
 }
 
 // Member is a roster row.
@@ -58,10 +63,39 @@ type Service struct{ db *store.Store }
 // New builds the classroom service.
 func New(db *store.Store) *Service { return &Service{db: db} }
 
+// joinCodeLifetime is how long a class code stays valid.
+//
+// Thirty days is long enough that a teacher does not have to think about it mid-term and short enough
+// that a code read aloud once does not remain a key to the classroom forever.
+const joinCodeLifetime = 30 * 24 * time.Hour
+
+// joinCodeAlphabet omits I, O, 0 and 1: a code is read aloud, written on a whiteboard and typed by a
+// fourteen-year-old, and those four characters are where that goes wrong.
+const joinCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// newJoinCode returns a six-character code drawn from a cryptographic source.
+//
+// The previous generator produced the first six letters of the class name plus two random characters,
+// which is a naming convention, not a secret: anyone who knows the school can enumerate the rest.
+// Thirty bits of entropy is not a password, but it is out of reach for guessing at the rate this
+// endpoint is allowed to be called.
+func newJoinCode() (string, error) {
+	buffer := make([]byte, 6)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	out := make([]byte, len(buffer))
+	for i, b := range buffer {
+		out[i] = joinCodeAlphabet[int(b)%len(joinCodeAlphabet)]
+	}
+	return string(out), nil
+}
+
 // Classes lists the classes a user belongs to, with their role in each.
 func (s *Service) Classes(ctx context.Context, userID string) ([]Class, error) {
 	rows, err := s.db.DB.QueryContext(ctx, `
-		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, cm.role, c.created_at,
+		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, c.join_code_expires_at,
+		       cm.role, c.created_at,
 		       (SELECT COUNT(*) FROM class_memberships m WHERE m.class_id = c.id AND m.status = 'active'),
 		       (SELECT COUNT(*) FROM assessment_definitions d WHERE d.class_id = c.id AND d.status = 'published')
 		  FROM class_memberships cm
@@ -76,9 +110,9 @@ func (s *Service) Classes(ctx context.Context, userID string) ([]Class, error) {
 	out := []Class{}
 	for rows.Next() {
 		var c Class
-		var subjectID, organizationID sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &organizationID, &subjectID, &c.JoinCode, &c.Role, &c.CreatedAt,
-			&c.Members, &c.Assignments); err != nil {
+		var subjectID, organizationID, expiresAt sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &organizationID, &subjectID, &c.JoinCode, &expiresAt, &c.Role,
+			&c.CreatedAt, &c.Members, &c.Assignments); err != nil {
 			return nil, err
 		}
 		if subjectID.Valid {
@@ -86,6 +120,9 @@ func (s *Service) Classes(ctx context.Context, userID string) ([]Class, error) {
 		}
 		if organizationID.Valid {
 			c.OrganizationID = &organizationID.String
+		}
+		if expiresAt.Valid {
+			c.JoinCodeExpiresAt = &expiresAt.String
 		}
 		out = append(out, c)
 	}
@@ -100,13 +137,22 @@ func (s *Service) JoinClass(ctx context.Context, userID, code string) (*Class, e
 	}
 
 	var classID, name string
-	err := s.db.DB.QueryRowContext(ctx, `SELECT id, name FROM classes WHERE join_code = ? AND status = 'active'`,
-		normalized).Scan(&classID, &name)
+	var expiresAt sql.NullString
+	err := s.db.DB.QueryRowContext(ctx,
+		`SELECT id, name, join_code_expires_at FROM classes WHERE join_code = ? AND status = 'active'`,
+		normalized).Scan(&classID, &name, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httpx.NewError(httpx.CodeNotFound, "That class code is not valid. Check it with your teacher.")
 	}
 	if err != nil {
 		return nil, err
+	}
+	// An expired code is a different problem from a wrong one, and the learner needs to know which: one
+	// means "typo", the other means "ask your teacher for the new code". Telling them the code is invalid
+	// would send them to retype a six-character string that can never work again.
+	if codeExpired(expiresAt) {
+		return nil, httpx.NewError(httpx.CodeJoinCodeExpired,
+			"That class code has expired. Ask your teacher for the current one.")
 	}
 
 	var existing string
@@ -125,7 +171,11 @@ func (s *Service) JoinClass(ctx context.Context, userID, code string) (*Class, e
 		return nil, err
 	}
 
-	return &Class{ID: classID, Name: name, Role: "student", JoinCode: normalized}, nil
+	class := &Class{ID: classID, Name: name, Role: "student", JoinCode: normalized}
+	if expiresAt.Valid {
+		class.JoinCodeExpiresAt = &expiresAt.String
+	}
+	return class, nil
 }
 
 // requireMember checks active membership and returns the member's role.
@@ -233,12 +283,16 @@ func (s *Service) CreateClass(ctx context.Context, userID, name, subjectID, orga
 	}
 
 	classID := store.NewID()
-	code := joinCode(name)
 	now := store.Now()
+	expiresAt := store.TS(time.Now().UTC().Add(joinCodeLifetime))
+	code, err := s.issueJoinCode(ctx, "")
+	if err != nil {
+		return nil, err
+	}
 
-	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO classes (id, organization_id, owner_user_id, name, subject_id, join_code, status, created_at)
-			VALUES (?,?,?,?,?,?,'active',?)`, classID, orgValue, userID, strings.TrimSpace(name), nullIfEmpty(subjectID), code, now); err != nil {
+	err = s.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO classes (id, organization_id, owner_user_id, name, subject_id, join_code, join_code_expires_at, status, created_at)
+			VALUES (?,?,?,?,?,?,?,'active',?)`, classID, orgValue, userID, strings.TrimSpace(name), nullIfEmpty(subjectID), code, expiresAt, now); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO class_memberships (id, class_id, user_id, role, status, joined_at)
@@ -248,7 +302,7 @@ func (s *Service) CreateClass(ctx context.Context, userID, name, subjectID, orga
 	if err != nil {
 		return nil, err
 	}
-	class := &Class{ID: classID, Name: name, JoinCode: code, Role: "teacher", Members: 1}
+	class := &Class{ID: classID, Name: name, JoinCode: code, JoinCodeExpiresAt: &expiresAt, Role: "teacher", Members: 1}
 	if orgValue != nil {
 		orgID := orgValue.(string)
 		class.OrganizationID = &orgID
@@ -287,7 +341,8 @@ func (s *Service) OrganizationClasses(ctx context.Context, userID, organizationI
 		return nil, err
 	}
 	rows, err := s.db.DB.QueryContext(ctx, `
-		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, c.created_at,
+		SELECT c.id, c.name, c.organization_id, c.subject_id, c.join_code, c.join_code_expires_at,
+		       c.created_at,
 		       (SELECT COUNT(*) FROM class_memberships m WHERE m.class_id = c.id AND m.status = 'active'),
 		       (SELECT COUNT(*) FROM assessment_definitions d WHERE d.class_id = c.id AND d.status = 'published')
 		  FROM classes c
@@ -301,8 +356,8 @@ func (s *Service) OrganizationClasses(ctx context.Context, userID, organizationI
 	out := []Class{}
 	for rows.Next() {
 		var c Class
-		var subjectID, orgID sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &orgID, &subjectID, &c.JoinCode, &c.CreatedAt,
+		var subjectID, orgID, expiresAt sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &orgID, &subjectID, &c.JoinCode, &expiresAt, &c.CreatedAt,
 			&c.Members, &c.Assignments); err != nil {
 			return nil, err
 		}
@@ -312,28 +367,131 @@ func (s *Service) OrganizationClasses(ctx context.Context, userID, organizationI
 		if orgID.Valid {
 			c.OrganizationID = &orgID.String
 		}
+		if expiresAt.Valid {
+			c.JoinCodeExpiresAt = &expiresAt.String
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
-func joinCode(name string) string {
-	base := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(name), " ", ""))
-	if len(base) > 6 {
-		base = base[:6]
-	}
-	if base == "" {
-		base = "CLASS"
-	}
-	suffix := ""
-	for _, r := range store.NewID()[:4] {
-		if r >= '0' && r <= '9' {
-			suffix += string(r)
-		} else {
-			suffix += string('A' + (r-'a')%26)
+// issueJoinCode generates a code that no other class currently uses.
+//
+// The retry exists because "unique" is enforced by the database, and a collision is a lost UPDATE rather
+// than a compromised secret. Five attempts on thirty bits of entropy is already generous; if all five
+// collide, something is wrong enough to surface as an error rather than to loop forever.
+func (s *Service) issueJoinCode(ctx context.Context, exceptClassID string) (string, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		candidate, err := newJoinCode()
+		if err != nil {
+			return "", err
+		}
+		var existing string
+		err = s.db.DB.QueryRowContext(ctx,
+			`SELECT id FROM classes WHERE join_code = ? AND id <> ?`, candidate, exceptClassID).Scan(&existing)
+		if errors.Is(err, sql.ErrNoRows) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", err
 		}
 	}
-	return base + suffix[:2]
+	return "", httpx.NewError(httpx.CodeInternal, "Could not allocate a class code. Please try again.")
+}
+
+// codeExpired reports whether a stored expiry has passed. A null expiry is treated as valid: the column
+// was added after classes existed, and refusing every pre-existing code would lock learners out of their
+// own classrooms to satisfy a schema change.
+func codeExpired(expiresAt sql.NullString) bool {
+	if !expiresAt.Valid || strings.TrimSpace(expiresAt.String) == "" {
+		return false
+	}
+	when, err := store.ParseTS(expiresAt.String)
+	if err != nil {
+		return false
+	}
+	return time.Now().UTC().After(when)
+}
+
+// RotateJoinCode issues a new code for a class and resets its window. The old code stops working at the
+// same moment, because there is only one code per class — a revoked-and-reissued code, not a second
+// live key.
+func (s *Service) RotateJoinCode(ctx context.Context, userID, classID string) (*Class, error) {
+	var name, ownerID string
+	var orgID, subjectID, expiresAt sql.NullString
+	err := s.db.DB.QueryRowContext(ctx, `
+		SELECT c.name, c.owner_user_id, c.organization_id, c.subject_id, c.join_code_expires_at
+		  FROM classes c WHERE c.id = ? AND c.status = 'active'`, classID).
+		Scan(&name, &ownerID, &orgID, &subjectID, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, httpx.NewError(httpx.CodeNotFound, "That class was not found.")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireClassTeacher(ctx, userID, classID, ownerID, orgID); err != nil {
+		return nil, err
+	}
+
+	code, err := s.issueJoinCode(ctx, classID)
+	if err != nil {
+		return nil, err
+	}
+	// A clock skew of seconds does not matter here, but a rotation that silently failed does: the update
+	// is guarded by the class id and the row count is checked.
+	result, err := s.db.DB.ExecContext(ctx,
+		`UPDATE classes SET join_code = ?, join_code_expires_at = ? WHERE id = ? AND status = 'active'`,
+		code, store.TS(time.Now().UTC().Add(joinCodeLifetime)), classID)
+	if err != nil {
+		return nil, err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return nil, httpx.NewError(httpx.CodeNotFound, "That class was not found.")
+	}
+
+	out := &Class{ID: classID, Name: name, JoinCode: code, Role: "teacher"}
+	fresh := store.TS(time.Now().UTC().Add(joinCodeLifetime))
+	out.JoinCodeExpiresAt = &fresh
+	if orgID.Valid {
+		out.OrganizationID = &orgID.String
+	}
+	if subjectID.Valid {
+		out.SubjectID = &subjectID.String
+	}
+	return out, nil
+}
+
+// requireClassTeacher decides who may reissue a class code: the teacher who owns the class, a teacher in
+// it, an administrator of the institution that owns it, or platform staff. A student in the class gets a
+// flat no — a learner who could rotate the code could hand out access to their own classroom.
+func (s *Service) requireClassTeacher(ctx context.Context, userID, classID, ownerID string, orgID sql.NullString) error {
+	if userID == ownerID {
+		return nil
+	}
+	var role string
+	err := s.db.DB.QueryRowContext(ctx,
+		`SELECT role FROM class_memberships WHERE class_id = ? AND user_id = ? AND status = 'active'`,
+		classID, userID).Scan(&role)
+	if err == nil && (role == "teacher" || role == "owner" || role == "admin") {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if orgID.Valid {
+		var orgRole, status string
+		err := s.db.DB.QueryRowContext(ctx, `
+			SELECT m.role, o.status FROM organization_memberships m
+			  JOIN organizations o ON o.id = m.organization_id
+			 WHERE m.organization_id = ? AND m.user_id = ?`, orgID.String, userID).Scan(&orgRole, &status)
+		if err == nil && (orgRole == "owner" || orgRole == "admin") && status != "suspended" {
+			return nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return httpx.NewError(httpx.CodeForbidden, "Only the teacher who runs this class can change its code.")
 }
 
 func nullIfEmpty(v string) any {
@@ -421,6 +579,20 @@ func (h *Handlers) Join(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	class, err := h.svc.JoinClass(r.Context(), user.ID, in.JoinCode)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"class": class})
+	return nil
+}
+
+// RotateJoinCode handles POST /v1/classes/{id}/join-code.
+func (h *Handlers) RotateJoinCode(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	class, err := h.svc.RotateJoinCode(r.Context(), user.ID, chi.URLParam(r, "id"))
 	if err != nil {
 		return err
 	}

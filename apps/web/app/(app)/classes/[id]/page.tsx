@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { CalendarClock, Clock } from "lucide-react";
 
-import { formatDate, type Assignment, type ClassMember } from "@edumart/shared";
+import { formatDate, type Assignment, type ClassMember, type ClassSummary } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ServerApiError, serverFetch } from "@/lib/server-api";
 import { requireUser } from "@/lib/session";
+import { ClassCode } from "./class-code";
 import { StartAssignment } from "./start-assignment";
 
 export const metadata: Metadata = { title: "Class" };
@@ -23,12 +24,17 @@ export default async function ClassPage({ params }: { params: Promise<{ id: stri
 
   let assignments: Assignment[] = [];
   let members: ClassMember[] | null = null;
+  let classroom: ClassSummary | null = null;
 
   try {
     ({ assignments } = await serverFetch<{ assignments: Assignment[] }>(`/v1/classes/${id}/assignments`));
     // The roster is teacher-only server-side; a 403 here is expected for learners.
     try {
       ({ members } = await serverFetch<{ members: ClassMember[] }>(`/v1/classes/${id}/roster`));
+      // The code lives on the class, which this page does not otherwise need. Fetching the list and
+      // picking one out is cheaper than adding an endpoint that returns a single class.
+      const { classes } = await serverFetch<{ classes: ClassSummary[] }>("/v1/classes");
+      classroom = classes.find((item) => item.id === id) ?? null;
     } catch (error) {
       if (!(error instanceof ServerApiError) || !error.isForbidden) throw error;
     }
@@ -46,6 +52,8 @@ export default async function ClassPage({ params }: { params: Promise<{ id: stri
         </Link>{" "}
         / <span aria-current="page">Assignments</span>
       </nav>
+
+      {members && classroom ? <ClassCode classroom={classroom} /> : null}
 
       <header>
         <h1 className="text-2xl">Assignments</h1>
