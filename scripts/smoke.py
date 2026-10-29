@@ -392,11 +392,18 @@ def main():
                         {"amountMinor": total_minor // 2, "reason": "smoke: partial refund",
                          "idempotencyKey": "smoke-refund-" + uuid.uuid4().hex[:8]}, admin_token)
     expect(status == 200 and part["refund"]["fullRefund"] is False, "finance can refund part of an order")
+    # The sandbox provider settles immediately, so the refund is money that moved rather than a promise.
+    # A real provider would answer `pending` here and settle on its confirmation webhook.
+    expect(part["refund"]["status"] == "succeeded",
+           "a settled refund reports itself settled, not merely requested")
+    expect(part["refund"].get("settledAt"), "a settled refund records when the money moved")
     status, after_part = call("GET", f"/orders/{order_id}", None, token)
     expect(after_part["order"]["totalMinor"] == total_minor,
            "the charge is not rewritten by a refund")
     expect(after_part["order"]["status"] == "partially_refunded",
            "a partial refund moves the order to partially_refunded")
+    expect(after_part["order"]["pendingRefundMinor"] == 0,
+           "nothing is left in flight once the provider has settled")
     expect(call("GET", "/library", None, token)[1]["products"],
            "a partial refund keeps what the learner paid for")
 

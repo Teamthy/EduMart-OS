@@ -146,6 +146,35 @@ groups:
             gauges, and schedule it — the run is manual today.
           runbook: "docs/OBSERVABILITY.md#reconciliation-missing"
 
+      - alert: EdumartRefundFailures
+        expr: increase(edumart_refund_outcomes_total{outcome="failed"}[1h]) > 2
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The provider is refusing refunds"
+          description: >-
+            More than two refunds were refused by the provider in the last hour. The usual cause is a
+            funding or balance problem on the merchant account, and the consequence is that refunds are
+            recorded as failed and customers are told to wait. Each failure carries the provider's reason.
+          runbook: "docs/OBSERVABILITY.md#refund-failures"
+
+      - alert: EdumartRefundsNeedReview
+        # Any occurrence at all. This state means the system does not know whether it owes someone money,
+        # and it deliberately refuses to guess — so a person has to look at the provider's dashboard.
+        expr: increase(edumart_refund_outcomes_total{outcome="needs_review"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "A refund outcome is unknown and needs a human"
+          description: >-
+            A refund request ended ambiguously: a timeout, a 5xx, or a provider answer that cannot be
+            matched to the refund. No money effects were applied and nothing was retried, on purpose —
+            retrying could refund twice. Check the provider's dashboard for the transaction, then resolve
+            it through POST /v1/admin/refunds/{id}/resolve with what you found.
+          runbook: "docs/OBSERVABILITY.md#refunds-need-review"
+
       - alert: EdumartReconciliationStale
         expr: >-
           time() - edumart_reconciliation_last_run_timestamp_seconds > 26 * 3600

@@ -12,17 +12,18 @@ import (
 type Platform struct {
 	registry *Registry
 
-	errors        *Handler
-	webhooks      *Handler
-	refunds       *Handler
-	refundedMinor *Handler
-	reconcileKind *Handler
-	reconcileRun  *Handler
-	reconcilePaid *Handler
-	backupAge     *Handler
-	backupRows    *Handler
-	backupOK      *Handler
-	loginFailures *Handler
+	errors         *Handler
+	webhooks       *Handler
+	refundOutcomes *Handler
+	refunds        *Handler
+	refundedMinor  *Handler
+	reconcileKind  *Handler
+	reconcileRun   *Handler
+	reconcilePaid  *Handler
+	backupAge      *Handler
+	backupRows     *Handler
+	backupOK       *Handler
+	loginFailures  *Handler
 }
 
 // NewPlatform registers every product metric. Registering all of them up front — even the ones that stay
@@ -36,6 +37,9 @@ func NewPlatform(registry *Registry) *Platform {
 			"code"),
 		webhooks: registry.Counter("edumart_webhook_events_total",
 			"Payment webhook events by outcome. `rejected` means the signature or the payload was wrong.",
+			"outcome"),
+		refundOutcomes: registry.Counter("edumart_refund_outcomes_total",
+			"Refund requests by outcome. `needs_review` means the provider's answer was ambiguous and a person must check it.",
 			"outcome"),
 		refunds: registry.Counter("edumart_refunds_total",
 			"Refunds recorded, by currency.", "currency"),
@@ -74,6 +78,21 @@ func (p *Platform) Webhook(outcome string) {
 		// than inventing a series nobody alerts on.
 		p.webhooks.With("rejected").Inc()
 	}
+}
+
+// RefundOutcome counts what happened to a refund request.
+//
+// The four states answer different questions: succeeded is money out, failed is a provider refusal (a
+// support problem), pending is normal, and needs_review is a person's job — the provider did not answer
+// clearly and nobody is allowed to guess. Only the last two are worth waking someone for, and this counter
+// is what makes that possible.
+func (p *Platform) RefundOutcome(outcome string) {
+	switch outcome {
+	case "succeeded", "failed", "pending", "needs_review":
+	default:
+		outcome = "unknown"
+	}
+	p.refundOutcomes.With(outcome).Inc()
 }
 
 // Refund records money going back and how much of it.

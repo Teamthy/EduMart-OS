@@ -72,9 +72,25 @@ func main() {
 		auth.WithCodeSecret(codeSecret),
 		auth.WithLogger(logger),
 	)
-	shop := commerce.New(db, env("EDUMART_PAYMENT_PROVIDER", "sandbox"), env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret")).
+	paymentProvider := env("EDUMART_PAYMENT_PROVIDER", "sandbox")
+	shop := commerce.New(db, paymentProvider, env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret")).
 		WithNotifier(notifier).
 		WithLogger(logger)
+	// Refunds move money through the same provider that took it. With Paystack configured but no secret key,
+	// the adapter refuses every refund with a definite error: a refund that cannot be attempted is a
+	// support ticket, and pretending otherwise by falling back to the sandbox would print money.
+	switch paymentProvider {
+	case "paystack":
+		key := env("EDUMART_PAYSTACK_SECRET_KEY", "")
+		if key == "" {
+			logger.Warn("EDUMART_PAYMENT_PROVIDER=paystack but EDUMART_PAYSTACK_SECRET_KEY is unset: " +
+				"refunds will be recorded as failed with no money moved")
+		}
+		shop.WithRefundProvider(commerce.NewPaystackRefunds(key, env("EDUMART_PAYSTACK_BASE_URL", ""))).
+			WithPaystackWebhook(key)
+	default:
+		logger.Info("refunds settle through the sandbox provider: no money leaves the account")
+	}
 
 	// Links in invitations point at the web app, which is a different origin from the API.
 	webURL := env("EDUMART_WEB_URL", "http://localhost:3000")

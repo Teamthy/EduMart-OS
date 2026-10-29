@@ -35,7 +35,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
-| 22 | Commerce and payments | Partial | Refunds and reconciliation are real and append-only; sandbox provider only, **no disputes, no provider refund API** |
+| 22 | Commerce and payments | Partial | Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
@@ -339,7 +339,7 @@ Refunds are therefore **append-only compensating entries**, never edits of the c
 | Retries are safe | `idempotency_key` unique; a replay returns the original refund | Providers and operators retry timed-out requests |
 | Money and product move together | A full refund revokes the entitlements that order granted | A refund must not be a way to keep what you were paid for |
 | Commission is reversed, not deleted | Negative `commission_ledger_entries` row, `source_type='refund'`, proportional to the refunded share | Phase 23 keeps commission in its own ledger; deleting history would make payouts unexplainable |
-| Every refund is auditable | `payment.refunded` in `audit_logs`, with amount, full flag and order reference — no customer PII | Money moves must be attributable to a person and a reason |
+| Every refund is auditable | `payment.refund_requested`, then `payment.refunded` / `payment.refund_failed` / `payment.refund_needs_review` in `audit_logs`, with amount, refund id and provider reference — no customer PII | Money moves must be attributable to a person and a reason, and an attempt that failed is still a fact |
 | A reason is mandatory | Request validation, `400` | An unexplained refund is a loss nobody can account for |
 | Finance moves money, support reads history | Refund and reconciliation require finance or platform admin; the refund list also allows support | Answering "where is my refund?" must not need a permission that can move money |
 
@@ -352,6 +352,7 @@ nothing is worse than no report:
 | `paid_without_entitlement` | Money was taken and nothing was granted |
 | `entitlement_without_payment` | Something was granted for an order that is not paid |
 | `refund_exceeds_total` | More was returned than was charged |
+| `refund_unsettled` | A refund has been in flight for over a day, so someone is waiting for money nobody is watching |
 | `succeeded_attempt_unpaid` | The provider says the charge succeeded; the order is not paid |
 | `paid_without_attempt` | The order is paid but no payment attempt recorded the money |
 
@@ -363,10 +364,42 @@ Proven by `TestRefundIsRecordedNotRewritten`, `TestFullRefundEndsAccess`,
 `TestReconciliationRejectsANonsenseWindow`, and the `refunds and reconciliation` section of the smoke run,
 on **both** SQLite and PostgreSQL.
 
-Gaps, stated plainly: refunds are recorded in the sandbox and **no money actually moves** — there is no
-Paystack refund API call, so a real deployment would need that adapter before finance could rely on this
-alone. No credit notes or PDFs, no disputes or chargebacks, no scheduled reconciliation job (the report is
-pulled, not pushed), and no commission approval or payout workflow.
+**Refunds move money, and the lifecycle is the honest part.** A recorded refund used to mean "money went
+back" because the only provider was the sandbox, which answers instantly. A real provider does not: it
+accepts, processes, and confirms minutes or days later — or fails. So a refund now has a state, and the
+money effects hang off *settlement*, not the request:
+
+| State | What it means | What changed |
+| --- | --- | --- |
+| `pending` | The provider accepted it; the money has not moved | The amount is reserved against the order total, so it cannot be promised twice. Order status, entitlements and commission are untouched |
+| `succeeded` | The provider confirmed it | Order recomputed from settled refunds, entitlements revoked on a full refund, commission reversed proportionally, receipt queued |
+| `failed` | The provider refused it | Nothing moved; the reservation is released and the amount can be refunded again |
+| `needs_review` | The answer was ambiguous — a timeout, a 5xx, an unmatchable id | **Nothing is retried.** A blind retry against an API that may already have paid out is how a customer is refunded twice |
+
+That last row is the design's centre of gravity, and it is why the adapter distinguishes a *refusal* from a
+*silence*: `ProviderError.Definite` is true only when the provider answered and said no. The ambiguous case
+is closed by a person — `POST /v1/admin/refunds/{id}/resolve` with what they found on the provider's
+dashboard — and the decision is audited against them. Refunds left unresolved for a day appear in the
+reconciliation report as `refund_unsettled`, and any `needs_review` pages (see `docs/OBSERVABILITY.md`).
+
+The provider seam is `RefundProvider`: the sandbox settles in-process, `PaystackRefunds` posts to
+`/refund` with a bounded HTTP client, and a fake in the tests can answer slowly, refuse, or fail
+ambiguously. Paystack's own callback envelope is normalised (`PaystackWebhook`) and verified with its
+HMAC-SHA512 scheme, so the provider's payload stops at the adapter and the money logic has one entry point.
+
+Proven by `TestARefundInFlightDoesNotMoveMoney`, `TestAProviderConfirmationSettlesTheRefund`,
+`TestAnAmbiguousProviderAnswerIsNeverRetried`, `TestADefiniteRefusalLeavesTheMoneyAvailable`,
+`TestAPendingRefundCannotBeSpentTwice`, `TestResolvingANeedsReviewRefundRecordsWhoDecided`,
+`TestAPaystackShapedWebhookSettlesARefund`, `TestReconciliationSeesMoneyInFlight`, and the adapter's own
+tests (`TestPaystackDistinguishesARefusalFromASilence`, `TestPaystackSignatureIsCheckedOverTheRawBody`,
+`TestPaystackEventsAreNormalised`).
+
+Gaps, stated plainly: no credit notes or PDFs, no disputes or chargebacks, no automatic retry of a failed
+refund (deliberate — the operator retries, because the provider's balance is a human problem), no scheduled
+reconciliation job (the report is pulled, not pushed), and no commission approval or payout workflow. The
+Paystack adapter has never been exercised against the live API from this repository: its contract with the
+provider is covered by a fake server and its own documented shapes, which is not the same as a real refund
+having gone through it.
 
 ### Phase 28 — Security and resilience · Partial, and now measured
 

@@ -45,6 +45,9 @@ type harness struct {
 	// mail captures what a user would have received. Verification codes are out-of-band secrets,
 	// so a test that cannot read them cannot test the flow at all.
 	mail *notify.Recorder
+	// shop is the commerce service behind the router, so a test can swap the refund provider for a fake
+	// that answers slowly, refuses, or fails ambiguously.
+	shop *commerce.Service
 	// courier is the durable delivery service, so a test can drive the retry sweep and inspect what
 	// happened to a message after the first attempt failed.
 	courier *notify.Service
@@ -95,6 +98,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	mail := notify.NewRecorder()
 	clock := &testClock{at: time.Now().UTC()}
 	courier := notify.NewService(db, mail, logger).WithClock(clock.Now)
+	shop := commerce.New(db, "sandbox", webhookSecret).WithNotifier(courier).WithLogger(logger)
 	config := api.Config{
 		AllowedOrigins:  []string{"http://localhost:3000"},
 		AllowSandboxPay: true,
@@ -108,7 +112,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Items:    content.New(db),
 		Exams:    assessment.New(db),
 		Classes:  classroom.New(db),
-		Shop:     commerce.New(db, "sandbox", webhookSecret).WithNotifier(courier).WithLogger(logger),
+		Shop:     shop,
 		Rewards:  rewards.New(db),
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
@@ -120,7 +124,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier, clock: clock}
+	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier, clock: clock, shop: shop}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {

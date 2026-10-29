@@ -61,8 +61,11 @@ type Order struct {
 	// RefundedMinor is derived from the refund rows on every read. It is reported next to the total
 	// rather than subtracted from it: an order that took ₦5,000 and returned ₦2,000 is both numbers,
 	// and a single "₦3,000" would hide that two movements happened.
-	RefundedMinor int      `json:"refundedMinor"`
-	Refunds       []Refund `json:"refunds"`
+	RefundedMinor int `json:"refundedMinor"`
+	// PendingRefundMinor is money promised back that has not moved yet. Reported separately rather than
+	// added to RefundedMinor, because "we owe you" and "we paid you" are different facts.
+	PendingRefundMinor int      `json:"pendingRefundMinor"`
+	Refunds            []Refund `json:"refunds"`
 }
 
 // OrderItem snapshots the title and unit price so history never changes when a product does.
@@ -85,6 +88,12 @@ type Service struct {
 	// platform carries the product metrics this service is the only witness to: webhook outcomes,
 	// refunds and reconciliation results. Optional, so the service stays usable without one.
 	platform *metrics.Platform
+	// refunds is the provider that actually returns money. The default settles in-process (sandbox); the
+	// Paystack adapter asks the real API and waits for a confirmation webhook.
+	refunds RefundProvider
+	// paystackWebhook normalises Paystack's signed payloads. Nil means only our own signed envelope is
+	// accepted, which is right for the sandbox and wrong for a live integration.
+	paystackWebhook *PaystackWebhook
 	// qualifyReferral books a referral commission when an order is paid for the first time. It is a
 	// function rather than a dependency on the rewards package: commerce owns the payment fact, the
 	// rewards ledger owns what a referral is worth, and neither should import the other.
@@ -130,11 +139,45 @@ func (s *Service) WithNotifier(c notify.Courier) *Service {
 }
 
 // New builds the commerce service.
+//
+// The refund provider defaults to the sandbox, which settles synchronously: there is no external money to
+// wait for in development, and going through the same lifecycle keeps the pending path exercised.
 func New(db *store.Store, provider, webhookSecret string) *Service {
 	if provider == "" {
 		provider = "sandbox"
 	}
-	return &Service{db: db, provider: provider, webhookSecret: webhookSecret}
+	return &Service{db: db, provider: provider, webhookSecret: webhookSecret, refunds: sandboxRefunds{}}
+}
+
+// WithRefundProvider replaces the refund provider. Used by main for Paystack and by tests for a fake that
+// can be told to answer slowly, refuse, or fail ambiguously.
+func (s *Service) WithRefundProvider(provider RefundProvider) *Service {
+	if provider != nil {
+		s.refunds = provider
+	}
+	return s
+}
+
+// WithPaystackWebhook accepts Paystack-shaped callbacks, verified with their HMAC-SHA512 scheme.
+func (s *Service) WithPaystackWebhook(secret string) *Service {
+	if secret == "" {
+		s.paystackWebhook = nil
+		return s
+	}
+	s.paystackWebhook = &PaystackWebhook{SecretKey: secret}
+	return s
+}
+
+// refundProviderName is what gets recorded on the refund row: the provider that was asked, not the one the
+// process happens to be configured with when the row is read back.
+func (s *Service) refundProviderName() string {
+	if s.refunds == nil {
+		return s.provider
+	}
+	if name := s.refunds.Name(); name != "" {
+		return name
+	}
+	return s.provider
 }
 
 // Products lists catalogue items, annotated with ownership for the signed-in learner.
@@ -269,8 +312,16 @@ func (s *Service) Order(ctx context.Context, userID, orderID string) (*Order, er
 	}
 	order.Refunds = refunds
 	order.RefundedMinor = 0
+	order.PendingRefundMinor = 0
 	for _, refund := range refunds {
-		order.RefundedMinor += refund.AmountMinor
+		// Only settled refunds are money that came back. A pending one is a promise, and adding it to the
+		// total would tell a learner (and a report) that they have been paid when they have not.
+		switch refund.Status {
+		case RefundStatusSucceeded:
+			order.RefundedMinor += refund.AmountMinor
+		case RefundStatusPending, RefundStatusNeedsReview:
+			order.PendingRefundMinor += refund.AmountMinor
+		}
 	}
 	return &order, nil
 }
@@ -347,6 +398,13 @@ type WebhookEvent struct {
 	Currency    string `json:"currency"`
 	Status      string `json:"status"`
 	OccurredAt  string `json:"occurredAt"`
+	// ProviderRefundReference identifies a refund event's subject: the provider's own id for the refund,
+	// which is what the refund row stored when it was requested.
+	ProviderRefundReference string `json:"providerRefundReference,omitempty"`
+	// ProviderStatus is the provider's untranslated word for the state.
+	ProviderStatus string `json:"providerStatus,omitempty"`
+	// RefundID is set by the sandbox so a local test can address a refund directly.
+	RefundID string `json:"refundId,omitempty"`
 }
 
 // VerifySignature checks the HMAC-SHA256 hex digest of the raw body.
@@ -379,6 +437,18 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 
 	sum := sha256.Sum256(rawBody)
 	payloadHash := hex.EncodeToString(sum[:])
+	return s.applyEvent(ctx, event, payloadHash)
+}
+
+// applyEvent records and applies a verified provider event. Everything downstream of the signature check
+// lives here, so a provider's own envelope (Paystack's, say) only has to reach this function with a
+// verified body — it does not need a second copy of the money logic.
+func (s *Service) applyEvent(ctx context.Context, event WebhookEvent, payloadHash string) (map[string]any, error) {
+	// Refund events take a different path: they settle a refund that already exists rather than moving an
+	// order into paid. Both are recorded in provider_events, so a provider's retry is still a duplicate.
+	if strings.HasPrefix(strings.ToLower(event.Type), "refund.") {
+		return s.handleRefundWebhook(ctx, event, payloadHash)
+	}
 
 	// Persist the raw event first: an unverifiable-but-signed duplicate is then trivially ignored.
 	var alreadyProcessed bool
@@ -775,11 +845,21 @@ func (h *Handlers) Webhook(w http.ResponseWriter, r *http.Request) error {
 			return httpx.NewError(httpx.CodeValidation, "Payload too large.")
 		}
 	}
-	signature := r.Header.Get("x-edumart-signature")
-	if signature == "" {
-		signature = r.Header.Get("X-Edumart-Signature")
+	// Two signing schemes reach this endpoint: ours (x-edumart-signature, used by the sandbox and by
+	// automated callers) and the provider's own. The provider named in the path decides which header is
+	// read, and neither is guessed at — accepting either header from anything would make the weaker scheme
+	// the real one.
+	provider := chi.URLParam(r, "provider")
+	var signature string
+	if strings.EqualFold(provider, "paystack") {
+		signature = r.Header.Get("x-paystack-signature")
+	} else {
+		signature = r.Header.Get("x-edumart-signature")
+		if signature == "" {
+			signature = r.Header.Get("X-Edumart-Signature")
+		}
 	}
-	result, err := h.svc.HandleWebhook(r.Context(), raw, signature)
+	result, err := h.svc.HandleProviderWebhook(r.Context(), provider, raw, signature)
 	if err != nil {
 		return err
 	}

@@ -408,18 +408,31 @@ export interface OrderItem {
   quantity: number;
 }
 
-/** One recorded return of money against an order. Refunds are appended, never applied as edits. */
+/**
+ * A refund is a request until a provider confirms it. Only `succeeded` is money that came back:
+ * `pending` is reserved, `failed` moved nothing, and `needs_review` means the provider never answered
+ * clearly and a human has to check.
+ */
+export type RefundStatus = "pending" | "succeeded" | "failed" | "needs_review";
+
+/** One return of money against an order. Refunds are appended, never applied as edits. */
 export interface Refund {
   id: string;
   orderId: string;
   amountMinor: number;
   currency: string;
-  /** True when this refund returned everything that was left on the order. */
+  /** True when this refund returns everything that was left on the order. */
   fullRefund: boolean;
   reason: string;
   actorUserId: string | null;
   provider: string;
-  providerRefundId: string | null;
+  /** The provider's id for the refund, used to match its confirmation webhook. */
+  providerReference?: string;
+  status: RefundStatus;
+  /** The provider's own word for the state, kept as evidence. */
+  providerStatus?: string;
+  failureReason?: string;
+  settledAt?: string | null;
   idempotencyKey: string;
   createdAt: string;
 }
@@ -436,8 +449,10 @@ export interface Order {
   createdAt: string;
   paidAt: string | null;
   items: OrderItem[];
-  /** Derived from the refund rows on every read; the total is never rewritten. */
+  /** Money that actually came back, derived from settled refunds on every read. */
   refundedMinor: number;
+  /** Promised but not yet moved. Reported separately: "we owe you" is not "we paid you". */
+  pendingRefundMinor: number;
   refunds: Refund[];
 }
 
@@ -446,6 +461,7 @@ export type DiscrepancyKind =
   | "paid_without_entitlement"
   | "entitlement_without_payment"
   | "refund_exceeds_total"
+  | "refund_unsettled"
   | "succeeded_attempt_unpaid"
   | "paid_without_attempt";
 
@@ -461,7 +477,11 @@ export interface Reconciliation {
   /** How many distinct checks ran. A report that checked nothing is not a clean report. */
   checked: number;
   paidOrders: number;
+  /** Money that actually went back. Refunds in flight are excluded. */
   refundedMinor: number;
+  /** Refunds promised but not settled. Never part of `refundedMinor`. */
+  pendingRefunds: number;
+  pendingRefundsMinor: number;
   webhookFailures: number;
   discrepancies: Discrepancy[];
 }

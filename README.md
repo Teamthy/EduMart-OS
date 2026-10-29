@@ -242,7 +242,10 @@ Copy `.env.example` to `.env` for local overrides; both services read environmen
 | `EDUMART_DRIVER` | `sqlite3` | `sqlite3` or `postgres` |
 | `EDUMART_DSN` | `data/edumart.db` | Database path or connection string |
 | `EDUMART_SEED` | `true` | Load taxonomy, products and demo accounts |
-| `EDUMART_WEBHOOK_SECRET` | `dev_sandbox_webhook_secret` | HMAC secret for payment webhooks |
+| `EDUMART_WEBHOOK_SECRET` | `dev_sandbox_webhook_secret` | HMAC secret for payment webhooks (the sandbox scheme; the API's own envelope) |
+| `EDUMART_PAYMENT_PROVIDER` | `sandbox` | Which provider moves money. `paystack` sends refunds to the provider's API and verifies its callbacks with `EDUMART_PAYSTACK_SECRET_KEY` |
+| `EDUMART_PAYSTACK_SECRET_KEY` | unset | Payments/refunds credential **and** the key Paystack signs its webhooks with. Unset with `paystack` selected means refunds are recorded as failed, never as money moved |
+| `EDUMART_PAYSTACK_BASE_URL` | `https://api.paystack.co` | Overridden in tests, which point it at a fake server |
 | `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
 | `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
 | `EDUMART_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Set `true` **only** behind a load balancer or proxy — otherwise every rate limit is keyed on a value the caller chooses |
