@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-web typecheck assets smoke build build-api fmt vet clean
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-web typecheck contract assets smoke build build-api fmt vet clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -33,6 +33,12 @@ test-web: ## Vitest
 
 typecheck: ## Typecheck shared + web (+ mobile when installed)
 	npm run typecheck
+
+contract: ## Check the OpenAPI contract against the Go router
+	python3 scripts/check-contract.py
+
+infra: ## Start local PostgreSQL + Redis (optional; the API defaults to SQLite)
+	docker compose -f infra/docker/compose.yml up -d
 
 smoke: ## Walk the learner journey against a running API (BASE=http://localhost:8080)
 	python3 scripts/smoke.py $(or $(BASE),http://localhost:8080)

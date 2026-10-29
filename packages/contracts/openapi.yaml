@@ -1,0 +1,1209 @@
+openapi: 3.1.0
+info:
+  title: Edumart API
+  version: 1.0.0
+  description: |
+    The contract both clients build against. `apps/web` and `apps/mobile` consume these endpoints;
+    neither re-implements deadlines, scoring, authorisation, payment confirmation or rewards.
+
+    Conventions that are not optional:
+
+    - Every error uses one envelope: `{ "error": { code, message, request_id, details } }`.
+    - Money is an integer number of minor units plus an ISO-4217 currency. Never a float.
+    - Timestamps are ISO-8601 UTC with a `Z` suffix. Deadlines come from the server; a client clock
+      is display-only.
+    - Answer writes carry `expectedVersion` and `clientSequence`; a replayed write returns the same
+      version, a stale one returns `409 CONFLICT` with `details.current_version`.
+    - Answer keys and explanations are absent from every response until `result_released` is true.
+    - Payment truth comes only from `POST /webhooks/payments/{provider}` with a valid
+      `X-Edumart-Signature`.
+
+    Authentication is an httpOnly session cookie (web) or `Authorization: Bearer <token>`
+    (native). Both resolve to the same server-side session.
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8080
+    description: Local development (the web app proxies /v1 from its own origin)
+  - url: https://api.edumart.ng
+    description: Production
+
+tags:
+  - name: identity
+  - name: signup
+  - name: content
+  - name: assessment
+  - name: classroom
+  - name: commerce
+  - name: rewards
+  - name: staff
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness and driver in use
+      operationId: healthz
+      security: []
+      responses:
+        "200":
+          description: Process is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, time, driver]
+                properties:
+                  status: { type: string, const: ok }
+                  time: { type: string, format: date-time }
+                  driver: { type: string, enum: [sqlite3] }
+
+  /v1/auth/register:
+    post:
+      tags: [identity]
+      summary: Create an account, completing the signup wizard
+      description: |
+        The only endpoint that creates an account. Earlier wizard answers live in a signup draft, so
+        no partially registered account exists while the learner is on page three of five.
+        Rate limited to 30 requests per minute per address.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created and a session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionIssued"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/auth/login:
+    post:
+      tags: [identity]
+      summary: Authenticate
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, writeOnly: true }
+      responses:
+        "200":
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionIssued"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/auth/logout:
+    post:
+      tags: [identity]
+      summary: Revoke the current session
+      operationId: logout
+      responses:
+        "200": { description: Session revoked }
+
+  /v1/auth/password/forgot:
+    post:
+      tags: [identity]
+      summary: Request a reset token
+      description: Always answers 200 so the endpoint cannot be used to enumerate accounts.
+      operationId: forgotPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { description: Accepted }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/auth/password/reset:
+    post:
+      tags: [identity]
+      summary: Set a new password from a reset token
+      description: Invalidates every existing session for the account.
+      operationId: resetPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8, writeOnly: true }
+      responses:
+        "200": { description: Password changed }
+        "400": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/signup-drafts:
+    post:
+      tags: [signup]
+      summary: Start a signup draft
+      description: Returns an opaque token; the web app stores it in an httpOnly cookie.
+      operationId: createSignupDraft
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                referralCode: { type: string }
+      responses:
+        "201":
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignupDraftResponse"
+
+  /v1/signup-drafts/current:
+    get:
+      tags: [signup]
+      summary: Read the draft for this visitor
+      description: |
+        Server-persisted wizard progress. This is what makes the flow resumable across a refresh,
+        a different device, or the other client.
+      operationId: getSignupDraft
+      security: []
+      responses:
+        "200":
+          description: Current draft, or nulls when none exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignupDraftResponse"
+    patch:
+      tags: [signup]
+      summary: Write answers for the current step
+      operationId: updateSignupDraft
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currentStep:
+                  type: string
+                  enum: [pathway, subjects, schedule, account, confirm]
+                examPathwayKey: { type: string }
+                examPathwayId: { type: string }
+                subjectIds:
+                  type: array
+                  items: { type: string }
+                targetDate: { type: string, format: date }
+                dailyMinutes: { type: integer, minimum: 5, maximum: 600 }
+                displayName: { type: string }
+                email: { type: string, format: email }
+                referralCode: { type: string }
+                timezone: { type: string }
+      responses:
+        "200":
+          description: Draft updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignupDraftResponse"
+        "400": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/me:
+    get:
+      tags: [identity]
+      summary: The signed-in user and their roles
+      operationId: getMe
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    patch:
+      tags: [identity]
+      summary: Update profile settings
+      operationId: updateMe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string }
+                targetDate: { type: string, format: date }
+                dailyMinutes: { type: integer }
+                timezone: { type: string }
+      responses:
+        "200": { description: Updated }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/exam-pathways:
+    get:
+      tags: [content]
+      summary: Exam pathways available to a new learner
+      operationId: listExamPathways
+      security: []
+      responses:
+        "200":
+          description: Pathways
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pathways:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        key: { type: string }
+                        name: { type: string }
+                        body: { type: string }
+                        blurb: { type: string }
+                        subjects: { type: integer }
+
+  /v1/subjects:
+    get:
+      tags: [content]
+      summary: Subjects
+      operationId: listSubjects
+      security: []
+      responses:
+        "200":
+          description: Subjects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subjects:
+                    type: array
+                    items: { $ref: "#/components/schemas/Subject" }
+
+  /v1/subjects/{subjectId}/topics:
+    get:
+      tags: [content]
+      summary: Topics for a subject
+      operationId: listTopics
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SubjectId"
+      responses:
+        "200": { description: Topics }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/referrals/validate/{code}:
+    get:
+      tags: [rewards]
+      summary: Check a referral code before it is submitted
+      operationId: validateReferralCode
+      security: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  referrerName: { type: string }
+
+  /v1/dashboard:
+    get:
+      tags: [content]
+      summary: Learner home read model
+      operationId: getDashboard
+      responses:
+        "200": { description: Dashboard }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/learning-summary:
+    get:
+      tags: [content]
+      summary: Derived progress by topic
+      description: Rebuilt from submitted responses; never self-reported and never the source of a score.
+      operationId: getLearningSummary
+      responses:
+        "200": { description: Summary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/study-plan:
+    get:
+      tags: [content]
+      summary: Current study plan
+      operationId: getStudyPlan
+      responses:
+        "200": { description: Plan }
+    put:
+      tags: [content]
+      summary: Save the study plan
+      operationId: saveStudyPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dailyMinutes: { type: integer }
+                days:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200": { description: Saved }
+
+  /v1/practice-sessions:
+    post:
+      tags: [assessment]
+      summary: Start an untimed practice attempt
+      description: |
+        The session snapshot is frozen here: questions, options and the scoring policy version are
+        copied into the attempt, so a later content edit cannot change a past score.
+      operationId: startPractice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subjectId]
+              properties:
+                subjectId: { type: string }
+                topicIds:
+                  type: array
+                  items: { type: string }
+                count: { type: integer, minimum: 1, maximum: 50, default: 10 }
+                difficulty: { type: string, enum: [easy, medium, hard] }
+      responses:
+        "201":
+          description: Attempt created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: "#/components/schemas/AssessmentSession" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/assessment-definitions/{id}/sessions:
+    post:
+      tags: [assessment]
+      summary: Start a graded assessment
+      description: |
+        Class membership, publication state, availability window and attempt limit are all checked
+        server-side. Graded attempts are immutable once submitted.
+      operationId: startAssessment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Attempt created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: "#/components/schemas/AssessmentSession" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Attempt limit reached or assessment closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/assessment-sessions:
+    get:
+      tags: [assessment]
+      summary: Attempt history
+      operationId: listAttempts
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200": { description: History }
+
+  /v1/assessment-sessions/{id}:
+    get:
+      tags: [assessment]
+      summary: One attempt, with the review only when results are released
+      operationId: getAttempt
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Attempt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: "#/components/schemas/AssessmentSession" }
+        "403":
+          description: Someone else's attempt
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/assessment-sessions/{id}/responses/{qvId}:
+    put:
+      tags: [assessment]
+      summary: Save an answer
+      description: |
+        Idempotent and version-checked. The server decides whether the attempt is still open; the
+        client countdown is display-only. A lost response is retried with the same
+        `clientSequence`, which returns the stored version rather than writing twice.
+      operationId: saveResponse
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/QuestionVersionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selectedOptionId:
+                  type: [string, "null"]
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                clientSequence:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Saved (or replayed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SaveResult" }
+        "409":
+          description: |
+            `CONFLICT` with `details.current_version` when the answer changed elsewhere;
+            `SESSION_EXPIRED` or `SESSION_CLOSED` when the attempt can no longer accept writes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/assessment-sessions/{id}/corrections/{qvId}:
+    put:
+      tags: [assessment]
+      summary: Correct a practice answer after submission
+      description: |
+        Practice only. A graded assessment is evidence: the released key cannot be used to rewrite
+        its score, so this returns 409 for graded attempts. The response carries the new answer
+        version and nothing else — no correctness, no score — so it cannot act as an answer oracle.
+      operationId: correctResponse
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/QuestionVersionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selectedOptionId: { type: string }
+                expectedVersion: { type: integer }
+                clientSequence: { type: integer }
+      responses:
+        "200":
+          description: Rescored from stored responses
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SaveResult" }
+        "409":
+          description: Closed, graded, or stale
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/assessment-sessions/{id}/submit:
+    post:
+      tags: [assessment]
+      summary: Submit and score
+      description: Idempotent — submitting twice cannot double-award learning points.
+      operationId: submitAttempt
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Final attempt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: "#/components/schemas/AssessmentSession" }
+
+  /v1/assessment-sessions/{id}/cancel:
+    post:
+      tags: [assessment]
+      summary: Abandon an attempt
+      operationId: cancelAttempt
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200": { description: Cancelled }
+        "409":
+          description: Already closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/classes:
+    get:
+      tags: [classroom]
+      summary: Classes this user belongs to
+      operationId: listClasses
+      responses:
+        "200": { description: Classes }
+    post:
+      tags: [classroom]
+      summary: Create a class
+      description: Teacher and above only.
+      operationId: createClass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                subjectId: { type: string }
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/classes/join:
+    post:
+      tags: [classroom]
+      summary: Join a class with a code
+      operationId: joinClass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200": { description: Joined }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/classes/{id}/roster:
+    get:
+      tags: [classroom]
+      summary: Class roster
+      description: Teacher of that class, or a platform admin. Never "any staff member".
+      operationId: classRoster
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Roster }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/classes/{id}/assignments:
+    get:
+      tags: [classroom]
+      summary: Published assessments for a class
+      operationId: classAssignments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Assignments }
+
+  /v1/products:
+    get:
+      tags: [commerce]
+      summary: Store products
+      operationId: listProducts
+      responses:
+        "200":
+          description: Products with integer minor-unit prices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  products:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+
+  /v1/orders:
+    get:
+      tags: [commerce]
+      summary: Own orders
+      operationId: listOrders
+      responses:
+        "200": { description: Orders }
+    post:
+      tags: [commerce]
+      summary: Create an order and a payment intent
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId]
+              properties:
+                productId: { type: string }
+      responses:
+        "201": { description: Order created (status pending) }
+
+  /v1/orders/{id}:
+    get:
+      tags: [commerce]
+      summary: One order
+      description: Status only becomes paid after a verified provider webhook.
+      operationId: getOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Order }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/orders/{id}/simulate-payment:
+    post:
+      tags: [commerce]
+      summary: Send a signed sandbox webhook (development only)
+      description: |
+        Present only when `EDUMART_ALLOW_SANDBOX_PAYMENTS=true`. It posts a real HMAC-signed webhook
+        to the same handler production uses, so the paid path is exercised end to end — it does not
+        flip the order status directly.
+      operationId: simulatePayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Webhook accepted }
+        "404": { description: Disabled in this environment }
+
+  /v1/webhooks/payments/{provider}:
+    post:
+      tags: [commerce]
+      summary: Payment provider callback
+      description: |
+        Authenticated by HMAC-SHA256 over the raw body in `X-Edumart-Signature`, never by session.
+        Provider event ids are unique, so a replayed callback returns `{ "duplicate": true }` and
+        grants nothing twice. Amount and currency are verified against the order.
+      operationId: paymentWebhook
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [sandbox, paystack] }
+        - name: X-Edumart-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, orderId, amountMinor, currency]
+              properties:
+                eventId: { type: string }
+                orderId: { type: string }
+                amountMinor: { type: integer }
+                currency: { type: string, default: NGN }
+      responses:
+        "200":
+          description: Processed or already processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received: { type: boolean }
+                  duplicate: { type: boolean }
+        "401":
+          description: Missing or invalid signature
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/library:
+    get:
+      tags: [commerce]
+      summary: Entitlements granted by paid orders
+      operationId: getLibrary
+      responses:
+        "200": { description: Library }
+
+  /v1/rewards:
+    get:
+      tags: [rewards]
+      summary: Points balance and ledger
+      description: Learn points are a separate append-only ledger from commission.
+      operationId: getRewards
+      responses:
+        "200":
+          description: Rewards
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rewards:
+                    type: object
+                    properties:
+                      pointsBalance: { type: integer }
+                      entries:
+                        type: array
+                        items:
+                          type: object
+
+  /v1/rewards/redeem:
+    post:
+      tags: [rewards]
+      summary: Redeem points
+      operationId: redeemPoints
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [points]
+              properties:
+                points: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Redeemed }
+        "409":
+          description: Insufficient balance
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/referrals/me:
+    get:
+      tags: [rewards]
+      summary: Own referral code and qualification
+      operationId: getMyReferral
+      responses:
+        "200": { description: Referral }
+
+  /v1/support-cases:
+    post:
+      tags: [staff]
+      summary: Open a support case
+      operationId: openSupportCase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, message]
+              properties:
+                subject: { type: string }
+                message: { type: string }
+                questionVersionId: { type: string }
+      responses:
+        "201": { description: Case opened }
+
+  /v1/admin/review-queue:
+    get:
+      tags: [staff]
+      summary: Content awaiting review
+      operationId: reviewQueue
+      responses:
+        "200": { description: Queue }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/question-versions/{id}/review:
+    post:
+      tags: [staff]
+      summary: Approve or reject a question version
+      operationId: reviewQuestionVersion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                note: { type: string }
+      responses:
+        "200": { description: Recorded }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/metrics:
+    get:
+      tags: [staff]
+      summary: Operations metrics
+      operationId: adminMetrics
+      responses:
+        "200": { description: Metrics }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/cases:
+    get:
+      tags: [staff]
+      summary: Support cases
+      operationId: adminCases
+      responses:
+        "200": { description: Cases }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/cases/{id}/resolve:
+    post:
+      tags: [staff]
+      summary: Resolve a support case
+      operationId: resolveCase
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Resolved }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: edumart_session
+    bearerSession:
+      type: http
+      scheme: bearer
+
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    QuestionVersionId:
+      name: qvId
+      in: path
+      required: true
+      schema: { type: string }
+    SubjectId:
+      name: subjectId
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    ValidationError:
+      description: One or more fields are invalid
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthenticated:
+      description: No valid session
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: Authenticated but not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RateLimited:
+      description: Too many requests; `Retry-After` is set
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id, details]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_FAILED
+                - UNAUTHENTICATED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - SESSION_EXPIRED
+                - SESSION_CLOSED
+                - ASSESSMENT_CLOSED
+                - RATE_LIMITED
+                - INTERNAL
+            message: { type: string }
+            request_id: { type: string }
+            details:
+              oneOf:
+                - type: array
+                  items:
+                    type: object
+                    properties:
+                      field: { type: string }
+                      message: { type: string }
+                - type: object
+                  additionalProperties: true
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        status: { type: string }
+        examPathwayId: { type: [string, "null"] }
+        targetDate: { type: [string, "null"] }
+        timezone: { type: string }
+        dailyMinutes: { type: integer }
+        roles:
+          type: array
+          items: { type: string }
+        onboardingStep: { type: integer }
+
+    SessionIssued:
+      type: object
+      required: [token, expires_at, user]
+      properties:
+        token:
+          type: string
+          description: Opaque session token. The web app never reads it (httpOnly cookie).
+        expires_at: { type: string, format: date-time }
+        next: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+
+    RegisterRequest:
+      type: object
+      required: [displayName, email, password]
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, writeOnly: true }
+        examPathwayId: { type: [string, "null"] }
+        targetDate: { type: [string, "null"], format: date }
+        subjectIds:
+          type: array
+          items: { type: string }
+        dailyMinutes: { type: integer }
+        referralCode: { type: string }
+        timezone: { type: string, default: Africa/Lagos }
+        client: { type: string, enum: [web, mobile] }
+        onboardingStep: { type: integer }
+
+    SignupDraftResponse:
+      type: object
+      properties:
+        draft:
+          type: [object, "null"]
+          properties:
+            examPathwayId: { type: string }
+            examPathwayKey: { type: string }
+            subjectIds:
+              type: array
+              items: { type: string }
+            targetDate: { type: string }
+            dailyMinutes: { type: integer }
+            displayName: { type: string }
+            email: { type: string }
+            timezone: { type: string }
+        step:
+          type: [string, "null"]
+          enum: [pathway, subjects, schedule, account, confirm, null]
+        stepIndex: { type: integer }
+        referralCode: { type: string }
+        token:
+          type: string
+          description: Returned only on creation.
+
+    Subject:
+      type: object
+      properties:
+        id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        topics: { type: integer }
+
+    Option:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        text: { type: string }
+
+    Question:
+      type: object
+      description: |
+        Answer key fields are absent until `result_released`. They are not sent as null, so a client
+        cannot distinguish "hidden" from "empty" and cache a wrong assumption.
+      properties:
+        qvId: { type: string }
+        stem: { type: string }
+        options:
+          type: array
+          items: { $ref: "#/components/schemas/Option" }
+        position: { type: integer }
+        topicName: { type: string }
+        subjectName: { type: string }
+        difficulty: { type: string }
+        selectedOptionId: { type: [string, "null"] }
+        answerVersion: { type: integer }
+
+    ReviewItem:
+      type: object
+      properties:
+        qvId: { type: string }
+        answerOptionId: { type: string }
+        explanation: { type: string }
+        topicName: { type: string }
+        topicId: { type: string }
+        difficulty: { type: string }
+
+    Score:
+      type: object
+      properties:
+        raw: { type: integer }
+        max: { type: integer }
+        percent: { type: integer }
+        policyVersion: { type: integer }
+
+    AssessmentSession:
+      type: object
+      required: [session_id, mode, status, deadline_at, server_time, remaining_seconds]
+      properties:
+        session_id: { type: string }
+        mode: { type: string, enum: [practice, mock, assignment] }
+        status: { type: string, enum: [in_progress, submitted, expired, cancelled] }
+        attempt_no: { type: integer }
+        started_at: { type: string, format: date-time }
+        deadline_at: { type: string, format: date-time }
+        submitted_at: { type: [string, "null"], format: date-time }
+        server_time:
+          type: string
+          format: date-time
+          description: Render the countdown from this, not from the device clock.
+        question_count: { type: integer }
+        remaining_seconds: { type: integer }
+        result_released: { type: boolean }
+        questions:
+          type: array
+          items: { $ref: "#/components/schemas/Question" }
+        score:
+          oneOf:
+            - $ref: "#/components/schemas/Score"
+            - type: "null"
+        review:
+          type: array
+          items: { $ref: "#/components/schemas/ReviewItem" }
+
+    SaveResult:
+      type: object
+      required: [saved, server_saved_at, version, session_status]
+      properties:
+        saved: { type: boolean }
+        server_saved_at: { type: string, format: date-time }
+        version: { type: integer }
+        session_status: { type: string }
+        remaining_seconds: { type: integer }
+
+    Product:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        priceMinor:
+          type: integer
+          description: Minor units (kobo). ₦1,200 is 120000.
+        currency: { type: string, default: NGN }
+        kind: { type: string }
+
+security:
+  - sessionCookie: []
+  - bearerSession: []

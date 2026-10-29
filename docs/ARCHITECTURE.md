@@ -120,3 +120,11 @@ server-confirmed `version`, and a save status (`pending | saved | failed`).
   in-process ticker because it is cheap and must run even when nobody is polling.
 - **The wizard draft is an anonymous authenticated resource.** It is a bearer token in an httpOnly
   cookie, expires in 30 days, and is deleted when the account is created.
+
+## Contract and local infrastructure
+
+`packages/contracts/openapi.yaml` is the single description of the HTTP surface, enforced by
+`scripts/check-contract.py` against the router in both directions. `infra/docker/compose.yml`
+provides PostgreSQL and Redis for the production-shaped path; the default local and CI path is
+SQLite with in-process rate limiting. `docs/SECURITY_AND_DURABILITY.md` records the consistency
+decisions behind both choices.
