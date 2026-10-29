@@ -98,6 +98,9 @@ func main() {
 			AllowedOrigins:    splitList(env("EDUMART_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")),
 			AllowSandboxPay:   env("EDUMART_ALLOW_SANDBOX_PAYMENTS", "true") == "true",
 			SandboxWebhookKey: env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret"),
+			// Opt-in: believing X-Forwarded-For without a proxy in front means any caller can pick
+			// their own rate-limit bucket, and guessing a password becomes a matter of a loop.
+			TrustProxy: env("EDUMART_TRUST_PROXY", "false") == "true",
 		},
 	})
 

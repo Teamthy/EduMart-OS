@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke drill build build-api fmt vet clean
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke drill build build-api fmt vet clean secrets audit security
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -36,6 +36,15 @@ test-web: ## Vitest
 
 typecheck: ## Typecheck shared + web (+ mobile when installed)
 	npm run typecheck
+
+secrets: ## Scan the tracked tree for committed secrets (with a self-test first)
+	python3 scripts/scan-secrets.py --self-test && python3 scripts/scan-secrets.py
+
+audit: ## Fail on a reachable high-severity advisory in production JavaScript dependencies
+	npm audit --omit=dev --audit-level=high
+
+security: secrets audit ## Everything CI's Security job runs that works locally (govulncheck needs network)
+	@echo "govulncheck: run 'cd apps/api && govulncheck ./...' where the Go vulnerability database is reachable"
 
 contract: ## Check the OpenAPI contract against the Go router
 	python3 scripts/check-contract.py

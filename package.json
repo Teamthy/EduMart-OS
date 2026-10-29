@@ -24,9 +24,17 @@
     "install:mobile": "npm --prefix apps/mobile install --legacy-peer-deps",
     "smoke": "python3 scripts/smoke.py",
     "assets": "python3 scripts/render-assets.py",
-    "contract": "python3 scripts/check-contract.py"
+    "contract": "python3 scripts/check-contract.py",
+    "scan:secrets": "python3 scripts/scan-secrets.py",
+    "audit": "npm audit --omit=dev --audit-level=high"
   },
   "engines": {
     "node": ">=20.11"
+  },
+  "overrides": {
+    "postcss": "8.5.32",
+    "next": {
+      "postcss": "8.5.32"
+    }
   }
 }

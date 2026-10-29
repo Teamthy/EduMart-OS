@@ -68,6 +68,13 @@ func (c *testClock) Advance(d time.Duration) {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithConfig(t, nil)
+}
+
+// newHarnessWithConfig builds the real router with one setting changed, so a security or routing
+// decision can be tested as the deployment would exercise it rather than as a stub would.
+func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
+	t.Helper()
 	db := openTestStore(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -85,6 +92,13 @@ func newHarness(t *testing.T) *harness {
 	mail := notify.NewRecorder()
 	clock := &testClock{at: time.Now().UTC()}
 	courier := notify.NewService(db, mail, logger).WithClock(clock.Now)
+	config := api.Config{
+		AllowedOrigins:  []string{"http://localhost:3000"},
+		AllowSandboxPay: true,
+	}
+	if tweak != nil {
+		tweak(&config)
+	}
 	router := api.NewRouter(api.Deps{
 		Store:    db,
 		Auth:     auth.New(db, auth.WithNotifier(courier), auth.WithLogger(logger)),
@@ -99,10 +113,7 @@ func newHarness(t *testing.T) *harness {
 		Orgs:     orgs.New(db).WithNotifier(courier, "http://localhost:3000"),
 		Notifier: courier,
 		Logger:   logger,
-		Config: api.Config{
-			AllowedOrigins:  []string{"http://localhost:3000"},
-			AllowSandboxPay: true,
-		},
+		Config:   config,
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -110,6 +121,28 @@ func newHarness(t *testing.T) *harness {
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {
+	h.t.Helper()
+	status, _, payload := h.doFull(method, path, token, body, nil)
+	return status, payload
+}
+
+// doRaw returns the status and the response headers, for assertions about what the API says *about*
+// itself rather than about the payload.
+func (h *harness) doRaw(method, path, token string, body any) (int, http.Header) {
+	h.t.Helper()
+	status, headers, _ := h.doFull(method, path, token, body, nil)
+	return status, headers
+}
+
+// doRawWithHeaders sends caller-chosen request headers, which is how an attacker's request differs from
+// an honest one.
+func (h *harness) doRawWithHeaders(method, path, token string, body any, headers map[string]string) (int, http.Header) {
+	h.t.Helper()
+	status, responseHeaders, _ := h.doFull(method, path, token, body, headers)
+	return status, responseHeaders
+}
+
+func (h *harness) doFull(method, path, token string, body any, extra map[string]string) (int, http.Header, map[string]any) {
 	h.t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -127,6 +160,9 @@ func (h *harness) do(method, path, token string, body any) (int, map[string]any)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	for name, value := range extra {
+		req.Header.Set(name, value)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("do request: %v", err)
@@ -137,7 +173,7 @@ func (h *harness) do(method, path, token string, body any) (int, map[string]any)
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &payload)
 	}
-	return res.StatusCode, payload
+	return res.StatusCode, res.Header, payload
 }
 
 func (h *harness) login(email, password string) string {

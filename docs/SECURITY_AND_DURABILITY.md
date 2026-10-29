@@ -102,16 +102,21 @@ and `TestStudentCannotAdministerInstitutionClasses`, plus the institution sectio
 
 Implemented:
 
-- Password hashing with PBKDF2 (per-password salt, constant-time comparison) — `internal/auth`.
+- Password hashing with Argon2id (m=19456 KiB, t=2, p=1, per-password salt, constant-time comparison) —
+  `internal/auth/password.go`. Legacy PBKDF2 digests still verify and are upgraded on the next sign-in.
 - Opaque session tokens, server-side revocation on logout and on password reset.
 - httpOnly, SameSite=Lax cookies for the web app; bearer tokens in the OS keystore on mobile. Both
   resolve to the same server-side session, so revoking in one place signs out the other.
 - Authorisation in handlers, not the UI: role checks plus class-scoped teacher access
   (`assessment.owned`, `classroom.Roster`), with a test that a teacher cannot read another class.
-- Rate limits on auth and assessment routes, per client address.
+- Rate limits on auth, assessment, institution, signup-draft, referral-lookup and webhook routes, per
+  client address — and **forwarding headers are only believed when `EDUMART_TRUST_PROXY=true`**, because
+  a rate limit keyed on a caller-chosen header is not a rate limit.
 - CORS restricted to configured origins with credentials allowed only for them.
 - Webhook authentication by HMAC-SHA256 over the raw body, with the secret per environment.
-- Security headers on the web app (no framing outside development, no sniffing, no referrer leak).
+- Security headers on the web app (no framing outside development, no sniffing, no referrer leak) and on
+  every API response (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Cache-Control: no-store`) — asserted by `TestEveryResponseCarriesTheHardeningHeaders`.
 - One error envelope with a request id; no stack traces or SQL errors reach the client.
 - Institution membership: org-scoped authority from membership, invitations that are single-use,
   email-locked, hash-stored and revocable, `404` (not `403`) for non-members to prevent organisation
@@ -126,11 +131,18 @@ Not there yet — see `docs/PRODUCTION_READINESS.md` for the full list:
 - MFA, device/session listing, idle timeout, and login anomaly detection.
 - Verification is not a mandatory onboarding step: an unverified account can still practise and take
   mocks. Money is gated; learning is not.
-- No real delivery provider yet — codes go to the structured log in development, which is why the log
-  sender redacts in production and refuses to pretend it delivered anything.
-- Secret management, key rotation, SAST/dependency scanning in CI.
+- Secret management and key rotation for the API's own secrets (the SMTP and webhook keys are environment
+  variables; nothing rotates them automatically).
+- Dependency and secret scanning now run in CI (see `docs/THREAT_MODEL.md`); there is still no SAST pass
+  over first-party code, and no dependency-update automation.
 - Audit trail: admin review, case resolution and organisation membership changes are recorded in
   `audit_logs`, but there is no general audit stream and no retention policy for it.
+
+## Threat model
+
+`docs/THREAT_MODEL.md` is the assessment this section belongs to: assets, adversaries, the controls that
+exist with the test or file behind each one, and eleven residual risks with owners. Read it before
+changing an authorization rule, a money path or the rate limiter.
 
 ## Sessions and password hashing
 

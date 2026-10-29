@@ -7,7 +7,7 @@ Three deliverables, one product:
 
 | Surface | Stack | Path |
 | --- | --- | --- |
-| **API** | Go 1.24+, chi router, SQLite (dev/CI) **or PostgreSQL (production)** — same query layer | `apps/api` |
+| **API** | Go 1.27+, chi router, SQLite (dev/CI) **or PostgreSQL (production)** — same query layer | `apps/api` |
 | **Web / PWA** | Next.js 15 App Router, Tailwind CSS v4, shadcn/ui primitives | `apps/web` |
 | **Mobile app** | React Native + Expo (Router), shipping alongside the PWA | `apps/mobile` |
 | **Shared contract** | TypeScript wire types, validation, design tokens | `packages/shared` |
@@ -20,7 +20,7 @@ one commit without drifting.
 
 ## Quick start
 
-Requirements: **Go 1.24+**, **Node 20.11+**. No database server is needed — SQLite is embedded.
+Requirements: **Go 1.27+**, **Node 20.11+**. No database server is needed — SQLite is embedded.
 
 ```bash
 npm install                 # web + shared workspaces
@@ -226,7 +226,7 @@ apps/
   mobile/                   Expo app (Router) — same steps, same contract
 packages/shared/            wire types, API client, signup definition, design tokens
 legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
-docs/                       architecture, API, data model, signup flow, mobile, readiness
+docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model
 ```
 
 ---
@@ -244,6 +244,7 @@ Copy `.env.example` to `.env` for local overrides; both services read environmen
 | `EDUMART_WEBHOOK_SECRET` | `dev_sandbox_webhook_secret` | HMAC secret for payment webhooks |
 | `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
 | `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
+| `EDUMART_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Set `true` **only** behind a load balancer or proxy — otherwise every rate limit is keyed on a value the caller chooses |
 | `EDUMART_WEB_URL` | `http://localhost:3000` | Origin used in links sent by email (invitations) |
 | `EDUMART_NOTIFY` | `log` | `log` writes messages to the structured log; `smtp` delivers them |
 | `EDUMART_SMTP_HOST` / `_PORT` | — / `587` | Relay host and port (required when `EDUMART_NOTIFY=smtp`) |
@@ -282,4 +283,8 @@ real event through the same code path, so the demo can never diverge from produc
   attempts that passed their deadline even when nobody is polling.
 - The mobile app is built with EAS (`apps/mobile/eas.json`); see `docs/MOBILE.md`.
 
-See `docs/PRODUCTION_READINESS.md` for the honest list of what is and is not ready.
+- Behind a load balancer, set `EDUMART_TRUST_PROXY=true` so rate limits key on the real client address.
+  Left `false` in front of a proxy, every request looks like it came from the proxy and shares one budget.
+
+See `docs/PRODUCTION_READINESS.md` for the honest list of what is and is not ready, and
+`docs/THREAT_MODEL.md` for the assets, adversaries, controls and residual risks with owners.

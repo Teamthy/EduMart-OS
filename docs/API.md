@@ -223,6 +223,21 @@ most recent messages with `status` (`pending`, `sent`, `failed`), `attempts`, `l
 credential they relate to, plus `stats {sent, pending, failed}`. Bodies are never returned — an operator
 needs to know a message failed, not to read the code inside it.
 
+## Response headers
+
+Every response — success, refusal or 404 — carries:
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | A JSON error body that a browser renders as HTML is a reflected-XSS primitive |
+| `X-Frame-Options` | `DENY` | An API response must never be framed |
+| `Referrer-Policy` | `no-referrer` | Ids in a path must not leak to third parties via `Referer` |
+| `Cache-Control` | `no-store` | Every response here can carry one learner's orders, answers or scores |
+| `X-Request-Id` | a per-request id | Quoted in the error envelope, and in the log line for the same request |
+
+Behind a load balancer, set `EDUMART_TRUST_PROXY=true` so rate limits key on the real client address.
+Left `false`, `X-Forwarded-For` is ignored — a caller cannot choose its own rate-limit bucket.
+
 ## Outside /v1
 
 | Endpoint | Contract |
