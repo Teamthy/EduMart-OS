@@ -184,19 +184,40 @@ jobs:
         env:
           PGBIN: /usr/lib/postgresql/17/bin
           EDUMART_PG_DSN: postgres://edumart:edumart@localhost:5432/edumart_backup?sslmode=disable
+        # The report goes into annotations as well as the log: the log of a CI job is not always
+        # reachable from where the failure is being read, and a drill that fails invisibly teaches people
+        # to skip it.
         run: |
-          psql "$EDUMART_PG_DSN" -c 'SELECT 1' >/dev/null 2>&1 || \
-            psql 'postgres://edumart:edumart@localhost:5432/edumart_restore?sslmode=disable' \
-              -c 'CREATE DATABASE edumart_backup'
-          python3 scripts/backup-drill.py both --dsn "$EDUMART_PG_DSN"
+          set +e
+          {
+            psql "$EDUMART_PG_DSN" -c 'SELECT 1' >/dev/null 2>&1 || \
+              psql 'postgres://edumart:edumart@localhost:5432/edumart_restore?sslmode=disable' \
+                -c 'CREATE DATABASE edumart_backup'
+            python3 scripts/backup-drill.py both --dsn "$EDUMART_PG_DSN"
+          } > /tmp/backup-drill.log 2>&1
+          CODE=$?
+          cat /tmp/backup-drill.log
+          if [ "$CODE" -ne 0 ]; then
+            head -40 /tmp/backup-drill.log | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$CODE"
       - name: Prove point-in-time recovery
         # Needs server binaries, not just the client, because the drill builds its own cluster with WAL
         # archiving. Installed here rather than assumed: a skipped drill is not a demonstrated capability.
         env:
           PGBIN: /usr/lib/postgresql/17/bin
         run: |
-          sudo apt-get install -y postgresql-17
-          python3 scripts/pitr-drill.py
+          set +e
+          {
+            sudo apt-get install -y postgresql-17
+            python3 scripts/pitr-drill.py
+          } > /tmp/pitr-drill.log 2>&1
+          CODE=$?
+          cat /tmp/pitr-drill.log
+          if [ "$CODE" -ne 0 ]; then
+            head -40 /tmp/pitr-drill.log | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$CODE"
 
   e2e-smoke:
     name: End-to-end smoke
