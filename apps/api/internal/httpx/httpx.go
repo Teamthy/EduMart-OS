@@ -31,6 +31,10 @@ const (
 	CodeRateLimited      ErrorCode = "RATE_LIMITED"
 	CodePaymentPending   ErrorCode = "PAYMENT_PENDING"
 	CodeEmailUnverified  ErrorCode = "EMAIL_NOT_VERIFIED"
+
+	// CodeJoinCodeExpired is a class code that was right once and is not any more. It is distinct from
+	// NOT_FOUND because the remedy is different: ask the teacher for the new code, do not retype this one.
+	CodeJoinCodeExpired ErrorCode = "JOIN_CODE_EXPIRED"
 	// CodeAccountSuspended is distinct from CodeForbidden on purpose: the person needs to know that
 	// signing in again will not help, and that support is the next step.
 	CodeAccountSuspended ErrorCode = "ACCOUNT_SUSPENDED"
@@ -49,6 +53,7 @@ var statusFor = map[ErrorCode]int{
 	CodeRateLimited:      http.StatusTooManyRequests,
 	CodePaymentPending:   http.StatusConflict,
 	CodeEmailUnverified:  http.StatusForbidden,
+	CodeJoinCodeExpired:  http.StatusGone,
 	CodeAccountSuspended: http.StatusForbidden,
 	CodeInternal:         http.StatusInternalServerError,
 }

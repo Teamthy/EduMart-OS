@@ -158,6 +158,7 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/classes", wrap(classroomHandlers.List))
 		v1.Post("/classes", wrap(classroomHandlers.Create))
 		v1.Post("/classes/join", wrap(classroomHandlers.Join))
+		v1.Post("/classes/{id}/join-code", wrap(classroomHandlers.RotateJoinCode))
 		v1.Get("/classes/{id}/roster", wrap(classroomHandlers.Roster))
 		v1.Get("/classes/{id}/assignments", wrap(classroomHandlers.Assignments))
 		v1.Get("/organizations/{id}/report", wrap(orgHandlers.Report))

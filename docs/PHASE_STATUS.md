@@ -17,8 +17,8 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
-| 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
-| 6 | API platform and contracts | Done | 64 routes, contract checked in CI |
+| 5 | Database and persistence | Partial | Both engines tested; **restore demonstrated for both engines** (destroy → restore → verify, in CI). Still no scheduled backup, off-site copy or PITR |
+| 6 | API platform and contracts | Done | 71 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification and delivery are solid, and accounts can now be suspended with their sessions; **no refresh-token rotation**, PBKDF2 rather than Argon2id |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
@@ -31,7 +31,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 16 | Student dashboard | Partial | Dashboard, weak topics, streaks; no syllabus-coverage view |
 | 17 | PWA and offline | Partial | Installable and cache-aware; **no pending-write queue, no offline exams** |
 | 18 | Native mobile | Partial | Journeys work; **no crash reporting, no signed release builds** |
-| 19 | Classrooms and assignments | Partial | Classes, join codes, rosters, assignments; no expiry/usage limits on invites |
+| 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
@@ -69,16 +69,37 @@ clean install on every push.
 | Rollback | Documented in `docs/PRODUCTION_READINESS.md`; never exercised, because there is nothing to roll back |
 | Secret/dependency scanning | **Not started** |
 
-### Phase 5 — Database and persistence foundation · Partial
+### Phase 5 — Database and persistence foundation · Partial (the restore gate is now met)
 
 Both dialects are exercised by the whole suite. Constraints exist where they protect a real invariant
 (unique email, FK cascades, ledger append-only triggers where applicable). Timestamps are UTC RFC3339
-text. The gap is operational, not structural: no backup, no PITR, no restore rehearsal — so the exit
-gate ("a restore has been demonstrated") is not met.
+text.
+
+**A restore has now been demonstrated, by destroying the database rather than by copying it.**
+`scripts/restore-drill.py` (run by the `drill` Make target and by the *Restore drill* CI job) does this
+for both engines:
+
+1. start the API against an empty database, so migrations, seeding and `/readyz` are part of the evidence;
+2. record a fingerprint — the row count of all 43 tables (198 rows with the demo seed) and a real login;
+3. stop the server and snapshot consistently (`VACUUM INTO` for SQLite, `pg_dump --format=custom` for
+   PostgreSQL — a plain `cp` of a database in use is not a backup);
+4. **destroy** it (delete the file / `dropdb`), and assert it is gone;
+5. restore, start the API again, and compare fingerprints table by table, then log in with an account
+   that predates the snapshot.
+
+The drill found a real bug the first time it ran: the learner dashboard used SQLite's `julianday()` and
+returned `500` on PostgreSQL. Every test passed because no fixture had a completed attempt inside the
+dashboard's seven-day window. Study minutes are now subtracted in Go, and
+`TestDashboardAnswersOnEveryEngine` / `TestDashboardStudyMinutesComeFromServerTimestamps` cover it.
+
+What the drill does **not** prove, and what still blocks this phase's exit gate in production: scheduled
+backups, point-in-time recovery, off-site copies, restore into a *different* environment, and a measured
+recovery objective. The drill proves the data is recoverable from a snapshot; it does not yet prove that
+a snapshot would exist when it is needed.
 
 ### Phase 6 — API platform and shared contracts · Done
 
-64 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+71 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
 `scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
 `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
 `SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
@@ -153,6 +174,34 @@ creates it that way.
 Still missing: org-scoped reporting and analytics, membership suspension, ownership transfer, an admin
 surface that lists pending organisations, organisation-level billing, and SSO.
 
+### Phase 19 — Classrooms and assignments · Partial
+
+Classes, rosters, assignments and completion tracking work (`GET /v1/classes`,
+`POST /v1/classes/join`, `GET /v1/classes/{id}/roster`, `GET /v1/classes/{id}/assignments`).
+
+A class code used to be the first six letters of the class name plus two random characters, valid
+forever. That is a naming convention, not a secret: anyone who knows the school can narrow the search to
+about 1,300 guesses, and a code read aloud in a corridor stayed a key to the classroom for good. Two
+things changed:
+
+- **Codes are now six characters from a cryptographic source**, over an alphabet without `I`, `O`, `0` or
+  `1` — a code is read aloud, written on a whiteboard and typed by a fourteen-year-old.
+- **Codes expire after 30 days**, and `POST /v1/classes/{id}/join-code` reissues one. Rotation replaces
+  the code rather than adding a second, so the old one stops working at that moment. An expired code
+  returns `410 JOIN_CODE_EXPIRED` rather than `404`, because the remedy is "ask your teacher for the
+  current one", not "retype this one".
+
+Who may rotate: the teacher who owns the class, a teacher in it, an administrator of the institution that
+owns it, or platform staff. A learner in the class gets `403` — whoever can rotate the code can hand out
+access to their own classroom.
+
+Proven by `TestJoinCodesAreNotGuesses`, `TestRotatingAJoinCodeRevokesTheOldOne`,
+`TestAnExpiredJoinCodeSaysItExpired`, `TestInstitutionAdminCanRotateAClassCode`, and the `class codes`
+section of the smoke run.
+
+Still missing: usage limits or per-student invite links for institution invitations, and a per-class
+"who has not joined yet" view.
+
 ### Phase 20 — Institutions and administration · Partial
 
 | Item | Evidence |
@@ -202,6 +251,11 @@ practice-only corrections that leak no correctness; deterministic re-scoring fro
 Gaps: no assessment templates or sections (a mock is assembled from subject/topic rules), no negative
 marking, no load test of concurrent starts or autosaves, and no syllabus-coverage view on the
 dashboard.
+
+One correctness fix worth recording: the dashboard's "studied this week" number was computed with
+SQLite's `julianday()`, which PostgreSQL does not have. It returned `500` on the engine the product
+ships on, and nothing caught it because every fixture left that window empty. The arithmetic now happens
+in Go, where the two engines cannot disagree.
 
 ### Phase 17 — PWA and offline · Partial
 

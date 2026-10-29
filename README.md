@@ -188,6 +188,7 @@ npm test                    # Go tests + web tests
 npm run typecheck           # shared + web
 npm run typecheck:mobile    # Expo app (after npm run install:mobile)
 npm run smoke               # learner journey against a running API
+make drill                  # destroy a database and prove the snapshot brings it back
 npm run contract            # OpenAPI spec vs Go router, both directions
 npm run assets              # regenerate the app icons + splash
 ```

@@ -158,8 +158,9 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/classes` | Classes the caller belongs to, with their role |
-| `POST` | `/classes` | Teacher/org admin; generates the join code |
-| `POST` | `/classes/join` | Case-insensitive code |
+| `POST` | `/classes` | Teacher/org admin; issues a six-character join code valid for 30 days |
+| `POST` | `/classes/join` | Case-insensitive code. An expired code returns `410 JOIN_CODE_EXPIRED`, a wrong one `404` |
+| `POST` | `/classes/{id}/join-code` | Reissue the code: the teacher who runs the class, a teacher in it, or an institution administrator. Replaces the old code immediately |
 | `GET` | `/classes/{id}/roster` | Teacher-only, includes attempts and averages |
 | `GET` | `/classes/{id}/assignments` | Published assessments with submission counts |
 

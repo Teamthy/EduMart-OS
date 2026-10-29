@@ -245,6 +245,26 @@ def main():
     expect(call("GET", f"/organizations/{institution['id']}/report", None, student_token)[0] == 404,
            "a removed member cannot read the dashboard")
 
+    print("class codes")
+    status, created = call("POST", "/classes", {"name": "Smoke Codes " + uuid.uuid4().hex[:6]}, teacher_token)
+    expect(status == 201 and len(created["class"]["joinCode"]) == 6,
+           "a class gets a six-character code that is not derived from its name")
+    expect(created["class"].get("joinCodeExpiresAt"), "a class code carries an expiry window")
+    code_class = created["class"]["id"]
+    first_code = created["class"]["joinCode"]
+
+    student_token = call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})[1]["token"]
+    status, _ = call("POST", "/classes/join", {"joinCode": first_code.lower()}, student_token)
+    expect(status == 200, "a learner can join with the code, case-insensitively")
+    expect(call("POST", f"/classes/{code_class}/join-code", None, student_token)[0] == 403,
+           "a learner cannot reissue the code for their own class")
+
+    status, rotated = call("POST", f"/classes/{code_class}/join-code", None, teacher_token)
+    expect(status == 200 and rotated["class"]["joinCode"] != first_code,
+           "the teacher can reissue a code")
+    expect(call("POST", "/classes/join", {"joinCode": first_code}, teacher_token)[0] == 404,
+           "rotating a code revokes the previous one")
+
     print("deliveries")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
     status, records = call("GET", "/admin/deliveries", None, admin_token)

@@ -285,6 +285,11 @@ export interface ClassSummary {
   organizationId: string | null;
   subjectId: string | null;
   joinCode: string;
+  /**
+   * When the current code stops working. Null only for rows that predate the column; codes are issued
+   * with a 30-day window and rotation replaces the old code outright.
+   */
+  joinCodeExpiresAt: string | null;
   role: string;
   members: number;
   assignments: number;

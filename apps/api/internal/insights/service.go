@@ -131,18 +131,41 @@ func (s *Service) Dashboard(ctx context.Context, user *auth.User) (*Dashboard, e
 	out.StreakDays = s.streak(ctx, user.ID)
 
 	// Study minutes are measured from server timestamps, not client-reported durations.
+	//
+	// The subtraction happens in Go rather than in SQL. `julianday()` is SQLite-only, so the SQL version
+	// of this line returned 500 on PostgreSQL — the engine the product actually ships on — and no test
+	// caught it because every fixture had an empty week here. Reading two columns and subtracting them
+	// is portable, and it cannot silently disagree between the two engines.
 	weekAgo := time.Now().UTC().AddDate(0, 0, -7)
-	var studiedSeconds int
-	if err := s.db.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(
-			CAST((julianday(COALESCE(submitted_at, deadline_at)) - julianday(started_at)) * 86400 AS INTEGER)), 0)
+	rows, err := s.db.DB.QueryContext(ctx, `SELECT started_at, COALESCE(submitted_at, deadline_at)
 		FROM assessment_sessions WHERE user_id = ? AND started_at > ? AND status IN ('submitted','expired')`,
-		user.ID, store.TS(weekAgo)).Scan(&studiedSeconds); err != nil {
+		user.ID, store.TS(weekAgo))
+	if err != nil {
 		return nil, err
 	}
+	var studiedSeconds int
+	for rows.Next() {
+		var startedAt, endedAt string
+		if err := rows.Scan(&startedAt, &endedAt); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		start, startErr := store.ParseTS(startedAt)
+		end, endErr := store.ParseTS(endedAt)
+		// A row whose timestamps cannot be parsed contributes nothing rather than a nonsense duration.
+		if startErr == nil && endErr == nil && end.After(start) {
+			studiedSeconds += int(end.Sub(start).Seconds())
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
 	out.StudyMinutes = studiedSeconds / 60
 
 	var activeID, activeDeadline sql.NullString
-	err := s.db.DB.QueryRowContext(ctx, `SELECT id, deadline_at FROM assessment_sessions
+	err = s.db.DB.QueryRowContext(ctx, `SELECT id, deadline_at FROM assessment_sessions
 		WHERE user_id = ? AND status = 'in_progress' AND deadline_at > ?
 		ORDER BY started_at DESC LIMIT 1`, user.ID, store.Now()).Scan(&activeID, &activeDeadline)
 	if err == nil {

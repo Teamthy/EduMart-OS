@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke build build-api fmt vet clean
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke drill build build-api fmt vet clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -45,6 +45,9 @@ infra: ## Start local PostgreSQL + Redis (optional; the API defaults to SQLite)
 
 smoke: ## Walk the learner journey against a running API (BASE=http://localhost:8080)
 	python3 scripts/smoke.py $(or $(BASE),http://localhost:8080)
+
+drill: ## Destroy a database and prove the backup brings it back (ENGINE=sqlite|postgres|both)
+	python3 scripts/restore-drill.py $(or $(ENGINE),sqlite) $(if $(DSN),--dsn $(DSN))
 
 assets: ## Regenerate the app icons and splash
 	python3 scripts/render-assets.py
