@@ -57,6 +57,11 @@ type Order struct {
 	CreatedAt     string      `json:"createdAt"`
 	PaidAt        *string     `json:"paidAt"`
 	Items         []OrderItem `json:"items"`
+	// RefundedMinor is derived from the refund rows on every read. It is reported next to the total
+	// rather than subtracted from it: an order that took ₦5,000 and returned ₦2,000 is both numbers,
+	// and a single "₦3,000" would hide that two movements happened.
+	RefundedMinor int      `json:"refundedMinor"`
+	Refunds       []Refund `json:"refunds"`
 }
 
 // OrderItem snapshots the title and unit price so history never changes when a product does.
@@ -76,6 +81,17 @@ type Service struct {
 	// courier is optional; see WithNotifier.
 	courier notify.Courier
 	logger  *slog.Logger
+	// qualifyReferral books a referral commission when an order is paid for the first time. It is a
+	// function rather than a dependency on the rewards package: commerce owns the payment fact, the
+	// rewards ledger owns what a referral is worth, and neither should import the other.
+	qualifyReferral func(ctx context.Context, userID, orderID string, totalMinor int) error
+}
+
+// WithReferralQualifier attaches the commission hook. Without it, payments still settle; a referral
+// simply never pays out, which is a business silence rather than a correctness bug.
+func (s *Service) WithReferralQualifier(fn func(ctx context.Context, userID, orderID string, totalMinor int) error) *Service {
+	s.qualifyReferral = fn
+	return s
 }
 
 // WithLogger supplies a logger for the paths that are deliberately best-effort. A receipt that cannot
@@ -222,7 +238,21 @@ func (s *Service) Order(ctx context.Context, userID, orderID string) (*Order, er
 		item.ProductSlug = slug.String
 		order.Items = append(order.Items, item)
 	}
-	return &order, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	refunds, err := s.RefundsFor(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	order.Refunds = refunds
+	order.RefundedMinor = 0
+	for _, refund := range refunds {
+		order.RefundedMinor += refund.AmountMinor
+	}
+	return &order, nil
 }
 
 // Orders lists a learner's orders newest first.
@@ -450,8 +480,29 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 	}
 	if orderPaid {
 		s.sendReceipt(ctx, event.Reference)
+		// Referral commission is booked after the payment commits, not inside its transaction: the
+		// money is already recorded, and a referral problem must not be able to fail a webhook that a
+		// provider would then retry into a duplicate.
+		s.qualifyCommission(ctx, event.Reference)
 	}
 	return map[string]any{"received": true, "duplicate": false}, nil
+}
+
+// qualifyCommission books a referral commission for a newly paid order, if a qualified referral exists.
+func (s *Service) qualifyCommission(ctx context.Context, reference string) {
+	if s.qualifyReferral == nil {
+		return
+	}
+	var orderID, userID string
+	var total int
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT id, user_id, total_minor FROM orders WHERE reference = ?`,
+		reference).Scan(&orderID, &userID, &total); err != nil {
+		s.logError("commission lookup failed", "reference", reference, "error", err.Error())
+		return
+	}
+	if err := s.qualifyReferral(ctx, userID, orderID, total); err != nil {
+		s.logError("referral qualification failed", "orderId", orderID, "error", err.Error())
+	}
 }
 
 // sendReceipt emails the buyer their receipt. Best-effort by design: the order is paid and entitlements

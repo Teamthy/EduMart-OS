@@ -7,7 +7,7 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 delivery path).
+Last updated with the refund and reconciliation work (Phase 22, plus the session model from Phase 7).
 
 ## The whole board
 
@@ -18,7 +18,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
 | 5 | Database and persistence | Partial | Both engines tested; **restore demonstrated for both engines** (destroy → restore → verify, in CI). Still no scheduled backup, off-site copy or PITR |
-| 6 | API platform and contracts | Done | 75 routes, contract checked in CI |
+| 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
@@ -34,8 +34,8 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
-| 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
-| 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
+| 22 | Commerce and payments | Partial | Refunds and reconciliation are real and append-only; sandbox provider only, **no disputes, no provider refund API** |
+| 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
@@ -99,7 +99,7 @@ a snapshot would exist when it is needed.
 
 ### Phase 6 — API platform and shared contracts · Done
 
-75 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+78 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
 `scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
 `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
 `SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
@@ -299,8 +299,52 @@ Entitlements granted in the same transaction as the verified event. Purchase now
 verified email. Points and commission ledgers are separate and append-only, with balances derived from
 entries.
 
-Gaps: sandbox provider only (no live Paystack adapter), no refunds, disputes or reconciliation job, no
-commission approval or payout workflow, no reversal tooling for refunds.
+### Phase 22 — Refunds and reconciliation · the correction path
+
+The problem this phase solves is not "let money go back". It is that **a ledger that can only grow is not
+a ledger**: once an order is paid, the previous design had no way to say that some of that money came
+back, so the books could only ever describe the platform's best day.
+
+Refunds are therefore **append-only compensating entries**, never edits of the charge:
+
+| Rule | Where it lives | Why |
+| --- | --- | --- |
+| The charge is never rewritten | `orders.total_minor` is untouched; the refund rows are the correction | A record that overwrites the original is not a record |
+| The order status is derived | `paid` → `partially_refunded` → `refunded`, recomputed inside the refund transaction | One fact, one place: the status cannot disagree with the rows |
+| Over-refund is impossible | `409 CONFLICT` with `{totalMinor, refundedMinor, remainingMinor, attemptedMinor}` and the amounts in words (`₦5,000.00`) | The refusal has to say what is left, or an operator retries blindly |
+| Omitted amount means the remainder | `amountMinor <= 0` ⇒ refund what is left | What an operator almost always means |
+| An order that took nothing cannot be refunded | `409` before any row is written | A zero-refund row describes no money movement |
+| Retries are safe | `idempotency_key` unique; a replay returns the original refund | Providers and operators retry timed-out requests |
+| Money and product move together | A full refund revokes the entitlements that order granted | A refund must not be a way to keep what you were paid for |
+| Commission is reversed, not deleted | Negative `commission_ledger_entries` row, `source_type='refund'`, proportional to the refunded share | Phase 23 keeps commission in its own ledger; deleting history would make payouts unexplainable |
+| Every refund is auditable | `payment.refunded` in `audit_logs`, with amount, full flag and order reference — no customer PII | Money moves must be attributable to a person and a reason |
+| A reason is mandatory | Request validation, `400` | An unexplained refund is a loss nobody can account for |
+| Finance moves money, support reads history | Refund and reconciliation require finance or platform admin; the refund list also allows support | Answering "where is my refund?" must not need a permission that can move money |
+
+`GET /v1/admin/finance/reconciliation` is deliberately **not a revenue report**. It asks where two records
+of the same money disagree, and it reports how many checks ran, because a report that silently checked
+nothing is worse than no report:
+
+| Check | Contradiction it names |
+| --- | --- |
+| `paid_without_entitlement` | Money was taken and nothing was granted |
+| `entitlement_without_payment` | Something was granted for an order that is not paid |
+| `refund_exceeds_total` | More was returned than was charged |
+| `succeeded_attempt_unpaid` | The provider says the charge succeeded; the order is not paid |
+| `paid_without_attempt` | The order is paid but no payment attempt recorded the money |
+
+Proven by `TestRefundIsRecordedNotRewritten`, `TestFullRefundEndsAccess`,
+`TestRefundCannotExceedTheOrderTotal`, `TestRefundIsIdempotent`, `TestFreeOrderCannotBeRefunded`,
+`TestRefundRequiresFinanceOrAdmin`, `TestRefundingAnUnpaidOrderIsRefused`,
+`TestRefundReversesTheReferralCommission`,
+`TestReconciliationReportsContradictionsAndIsQuietWhenThereAreNone`,
+`TestReconciliationRejectsANonsenseWindow`, and the `refunds and reconciliation` section of the smoke run,
+on **both** SQLite and PostgreSQL.
+
+Gaps, stated plainly: refunds are recorded in the sandbox and **no money actually moves** — there is no
+Paystack refund API call, so a real deployment would need that adapter before finance could rely on this
+alone. No credit notes or PDFs, no disputes or chargebacks, no scheduled reconciliation job (the report is
+pulled, not pushed), and no commission approval or payout workflow.
 
 ### Phase 24 — Notifications · Partial (delivery is now real)
 
@@ -349,13 +393,14 @@ is no way to yet), and no scheduling of reminders outside the two kinds above.
 
 ## Recommended next three steps
 
-1. **Phase 22: refunds and reconciliation as compensating ledger entries.** The sandbox provider works and
-   webhooks are the only source of payment truth, but nothing can correct a payment after the fact — and
-   a ledger that can only ever grow is not a ledger an accountant will accept.
-2. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill and
-   the session model are done; "we believe our dependencies are clean" is still a belief.
-3. **Phase 9/20: an operations console and accessibility pass.** The approval queue, moderation and
-   reminders are API-complete but only partly surfaced, and nothing has been checked with a screen
+1. **Phase 28's next slice: a threat model plus dependency and secret scanning.** The restore drill, the
+   session model and the money-correction path are done; "we believe our dependencies are clean" is still
+   a belief.
+2. **A real refund adapter (Paystack).** Refunds are now recorded correctly but move no money. Wiring the
+   provider call, and marking a refund `pending` until the provider confirms it, is the next honest step —
+   and it is the difference between a ledger that describes money and one that describes intentions.
+3. **Phase 9/20: an operations console and accessibility pass.** The approval queue, moderation, refunds
+   and reminders are API-complete but only partly surfaced, and nothing has been checked with a screen
    reader.
 
 ## Feature completion checklist

@@ -347,6 +347,67 @@ def main():
     expect(call("POST", f"/admin/organizations/{applied_id}/reject", {"reason": "again"}, admin_token)[0] == 409,
            "an application cannot be refused twice")
 
+    print("refunds and reconciliation")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    # A free product has nothing to return, so the refund path needs one that costs money.
+    priced = [p for p in products["products"] if p["priceMinor"] > 0]
+    expect(priced, "the store lists at least one paid product")
+    product_id = priced[0]["id"]
+    status, created = call("POST", "/orders", {"productId": product_id}, token)
+    expect(status == 201, "an order can be created")
+    order_id = created["order"]["id"]
+    total_minor = created["order"]["totalMinor"]
+    expect(call("POST", f"/orders/{order_id}/simulate-payment", None, token)[0] == 200,
+           "the sandbox provider settles the order")
+
+    status, audit = call("GET", f"/orders/{order_id}", None, token)
+    expect(status == 200 and audit["order"]["status"] == "paid", "the order reports itself paid")
+    expect(audit["order"]["refundedMinor"] == 0, "a fresh order has nothing refunded")
+
+    status, part = call("POST", f"/admin/orders/{order_id}/refund",
+                        {"amountMinor": total_minor // 2, "reason": "smoke: partial refund",
+                         "idempotencyKey": "smoke-refund-" + uuid.uuid4().hex[:8]}, admin_token)
+    expect(status == 200 and part["refund"]["fullRefund"] is False, "finance can refund part of an order")
+    status, after_part = call("GET", f"/orders/{order_id}", None, token)
+    expect(after_part["order"]["totalMinor"] == total_minor,
+           "the charge is not rewritten by a refund")
+    expect(after_part["order"]["status"] == "partially_refunded",
+           "a partial refund moves the order to partially_refunded")
+    expect(call("GET", "/library", None, token)[1]["products"],
+           "a partial refund keeps what the learner paid for")
+
+    status, too_much = call("POST", f"/admin/orders/{order_id}/refund",
+                            {"amountMinor": total_minor, "reason": "smoke: over-refund"}, admin_token)
+    expect(status == 409 and too_much["error"]["details"]["remainingMinor"] > 0,
+           "a refund beyond the remainder is refused with what is left")
+    expect(call("POST", f"/admin/orders/{order_id}/refund", {"reason": "smoke: learner"}, token)[0] == 403,
+           "a learner cannot refund their own order")
+
+    key = "smoke-refund-retry-" + uuid.uuid4().hex[:8]
+    status, first = call("POST", f"/admin/orders/{order_id}/refund",
+                         {"reason": "smoke: retry safety", "idempotencyKey": key}, admin_token)
+    expect(status == 200 and first["refund"]["fullRefund"] is True, "omitting an amount refunds the remainder")
+    status, second = call("POST", f"/admin/orders/{order_id}/refund",
+                          {"reason": "smoke: retry safety", "idempotencyKey": key}, admin_token)
+    expect(second["refund"]["id"] == first["refund"]["id"], "a retried refund returns the original record")
+    status, refunds = call("GET", f"/admin/orders/{order_id}/refunds", None, admin_token)
+    expect(status == 200 and len(refunds["refunds"]) == 2,
+           "the refund history holds both entries, not one rewritten one")
+    expect(call("GET", "/library", None, token)[1]["products"] == [],
+           "a full refund ends access to what was bought")
+
+    status, report = call("GET", "/admin/finance/reconciliation", None, admin_token)
+    expect(status == 200 and report["reconciliation"]["checked"] >= 5,
+           "the reconciliation report states how many checks ran")
+    expect(isinstance(report["reconciliation"]["discrepancies"], list),
+           "the report lists disagreements as a list, empty rather than missing")
+    expect(all(d["kind"] != "refund_exceeds_total" for d in report["reconciliation"]["discrepancies"]),
+           "the service refused every over-refund, so none appears in the books")
+    expect(call("GET", "/admin/finance/reconciliation", None, token)[0] == 403,
+           "learners cannot read the reconciliation report")
+    expect(call("GET", "/admin/finance/reconciliation?from=2026-05-01&to=2026-04-01", None, admin_token)[0] == 400,
+           "a backwards reporting window is refused rather than reported as clean")
+
     print("moderation")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
     status, found = call("GET", "/admin/users?q=student@edumart.ng", None, admin_token)

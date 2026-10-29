@@ -408,9 +408,26 @@ export interface OrderItem {
   quantity: number;
 }
 
+/** One recorded return of money against an order. Refunds are appended, never applied as edits. */
+export interface Refund {
+  id: string;
+  orderId: string;
+  amountMinor: number;
+  currency: string;
+  /** True when this refund returned everything that was left on the order. */
+  fullRefund: boolean;
+  reason: string;
+  actorUserId: string | null;
+  provider: string;
+  providerRefundId: string | null;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
 export interface Order {
   id: string;
-  status: "pending_payment" | "paid" | "refunded" | "cancelled";
+  /** `paid` and `partially_refunded` both mean the platform still holds money for this order. */
+  status: "pending_payment" | "paid" | "partially_refunded" | "refunded" | "cancelled";
   currency: string;
   subtotalMinor: number;
   discountMinor: number;
@@ -419,6 +436,34 @@ export interface Order {
   createdAt: string;
   paidAt: string | null;
   items: OrderItem[];
+  /** Derived from the refund rows on every read; the total is never rewritten. */
+  refundedMinor: number;
+  refunds: Refund[];
+}
+
+/** Where two records of the same money disagree. */
+export type DiscrepancyKind =
+  | "paid_without_entitlement"
+  | "entitlement_without_payment"
+  | "refund_exceeds_total"
+  | "succeeded_attempt_unpaid"
+  | "paid_without_attempt";
+
+export interface Discrepancy {
+  kind: DiscrepancyKind;
+  orderId: string;
+  detail: string;
+}
+
+export interface Reconciliation {
+  from: string;
+  to: string;
+  /** How many distinct checks ran. A report that checked nothing is not a clean report. */
+  checked: number;
+  paidOrders: number;
+  refundedMinor: number;
+  webhookFailures: number;
+  discrepancies: Discrepancy[];
 }
 
 // ── rewards ───────────────────────────────────────────────────────────────
