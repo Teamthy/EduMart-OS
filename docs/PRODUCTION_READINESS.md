@@ -22,7 +22,9 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 
 | Area | Gap |
 | --- | --- |
-| Database | SQLite is the tested path; migrations are versioned and checksummed. The PostgreSQL schema is ported (`migrations/postgres/`) but the pgx driver is not linked and no migration has been run against a live server, so `EDUMART_DRIVER=postgres` stops at startup by design |
+| Database | Both engines are tested: the suite and the HTTP smoke journey run on SQLite and on PostgreSQL 17 in CI. What is still untested is a *production-like* PostgreSQL: managed instance, TLS, connection limits, real data volume, and a restore |
+| Migrations | Versioned runner with checksums, proven on both engines. No rehearsal of a forward-fix on a database carrying production data |
+| Driver | `lib/pq` rather than `pgx`, because pgx's module graph is unfetchable in the build environment (`gopkg.in`). Swapping is a one-file change |
 | Sessions | Opaque tokens with revocation; no rotation, no device list, no idle timeout |
 | Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused) |
 | Payments | Only the sandbox provider is wired; no live adapter, refunds or reconciliation |
@@ -34,7 +36,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 
 | Area | Why it matters |
 | --- | --- |
-| Migration strategy | **Versioned runner now exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). What is still missing is a forward-fix/rollback rehearsal against a production-shaped database, and any PostgreSQL execution at all |
+| Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). What is still missing is a forward-fix/rollback rehearsal against a production-shaped database, and any PostgreSQL execution at all |
 | Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
 | Backups | No snapshot policy, no tested restore |
 | Notification delivery | No email or push provider; password-reset tokens are logged server-side in development |

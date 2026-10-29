@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-web typecheck contract assets smoke build build-api fmt vet clean
+.PHONY: help install install-mobile dev dev-api dev-web dev-mobile test test-api test-postgres test-web typecheck contract assets smoke build build-api fmt vet clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -25,8 +25,11 @@ dev-mobile: ## Run the Expo dev server
 
 test: test-api test-web ## Run all tests
 
-test-api: ## Go tests with the race detector
+test-api: ## Go tests with the race detector (SQLite)
 	cd apps/api && go test ./... -race -count=1
+
+test-postgres: ## Go tests against PostgreSQL (needs infra up and EDUMART_TEST_POSTGRES_DSN)
+	cd apps/api && EDUMART_TEST_POSTGRES_DSN="$${EDUMART_TEST_POSTGRES_DSN:-postgres://edumart:local_only_change_me@localhost:5432/edumart_test?sslmode=disable}" go test ./... -race -count=1
 
 test-web: ## Vitest
 	npm run test --workspace @edumart/web

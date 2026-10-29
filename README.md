@@ -7,7 +7,7 @@ Three deliverables, one product:
 
 | Surface | Stack | Path |
 | --- | --- | --- |
-| **API** | Go 1.24+, chi router, SQLite (dev/CI) or PostgreSQL (prod) | `apps/api` |
+| **API** | Go 1.24+, chi router, SQLite (dev/CI) **or PostgreSQL (production)** — same query layer | `apps/api` |
 | **Web / PWA** | Next.js 15 App Router, Tailwind CSS v4, shadcn/ui primitives | `apps/web` |
 | **Mobile app** | React Native + Expo (Router), shipping alongside the PWA | `apps/mobile` |
 | **Shared contract** | TypeScript wire types, validation, design tokens | `packages/shared` |
@@ -95,11 +95,37 @@ before the ledger existed is adopted on next boot.
 docker compose -f infra/docker/compose.yml up -d     # or: make infra
 ```
 
-Neither is required to run the product: the API's default and CI-tested driver is SQLite, and rate
-limiting is in-process. The file exists for the production-shaped path, and
-`infra/docker/README.md` states exactly what does and does not talk to those services yet —
-`EDUMART_DRIVER=postgres` fails at startup with an explicit "register the pgx driver" message
-rather than pretending to work.
+PostgreSQL is fully supported and tested; Redis is not used yet.
+
+```bash
+docker compose -f infra/docker/compose.yml up -d
+EDUMART_DRIVER=postgres \
+EDUMART_DSN='postgres://edumart:local_only_change_me@localhost:5432/edumart?sslmode=disable' \
+npm run dev:api
+```
+
+The whole suite runs on both engines — locally with `EDUMART_TEST_POSTGRES_DSN=… go test ./...`,
+and in CI, where a PostgreSQL service container runs the same 33 tests and the same HTTP smoke
+journey a second time. `infra/docker/README.md` records what is and is not wired to Redis.
+
+## One query layer, two engines
+
+The database code is written once, in portable SQL with `?` placeholders. SQLite speaks that
+natively; PostgreSQL wants `$1, $2`, so the translation happens at the driver boundary in
+`apps/api/internal/store/pg.go` — a `database/sql` connector that rewrites every statement on its way
+through, skipping string literals, quoted identifiers, dollar-quoted bodies and comments. Nothing
+reaches PostgreSQL without passing through it, so no query can be forgotten.
+
+That wrapper is also what makes the *tests* meaningful: the same 33 tests, the same migrations and
+the same seed data run against a real PostgreSQL 17 in CI. Writing this uncovered a genuine
+cross-engine bug — the webhook handler wrote rows while a result set was still open on the same
+connection, which SQLite tolerates and PostgreSQL rejects. It is fixed, and the pattern is documented
+in the code.
+
+Driver: `lib/pq`, not `pgx`. pgx is the more modern client, but its module graph pulls
+`gopkg.in/yaml.v3` (through a test dependency of `pgservicefile`) and gopkg.in is unreachable from
+the environment this was built in. `lib/pq` has no external dependencies and supports SCRAM-SHA-256;
+swapping to pgx later is a change to one file.
 
 ## What is actually enforced
 

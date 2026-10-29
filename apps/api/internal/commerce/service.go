@@ -377,26 +377,38 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature s
 		if err := tx.QueryRowContext(ctx, `SELECT user_id FROM orders WHERE id = ?`, orderID).Scan(&userID); err != nil {
 			return err
 		}
+		// Read the order lines into memory and close the cursor before writing entitlements.
+		// A transaction holds one connection: issuing another statement while a result set is still
+		// open is a protocol violation on PostgreSQL (SQLite happened to tolerate it), so the rows
+		// must be drained first. The line count is bounded by the order, so this costs nothing.
 		items, err := tx.QueryContext(ctx, `SELECT product_id, unit_amount_minor, quantity FROM order_items WHERE order_id = ?`, orderID)
 		if err != nil {
 			return err
 		}
-		defer items.Close()
+		type orderLine struct{ productID string }
+		var lines []orderLine
 		for items.Next() {
 			var productID string
 			var amount, quantity int
 			if err := items.Scan(&productID, &amount, &quantity); err != nil {
+				items.Close()
 				return err
 			}
+			lines = append(lines, orderLine{productID: productID})
+		}
+		if err := items.Err(); err != nil {
+			items.Close()
+			return err
+		}
+		items.Close()
+
+		for _, line := range lines {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO entitlements
 				(id, user_id, product_id, order_id, status, starts_at) VALUES (?,?,?,?,'active',?)
 				ON CONFLICT (user_id, product_id) DO UPDATE SET status = 'active', revoked_at = NULL`,
-				store.NewID(), userID, productID, orderID, now); err != nil {
+				store.NewID(), userID, line.productID, orderID, now); err != nil {
 				return err
 			}
-		}
-		if err := items.Err(); err != nil {
-			return err
 		}
 
 		if _, err := tx.ExecContext(ctx, `UPDATE provider_events SET processing_status = 'processed',

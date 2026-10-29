@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"os"
 	"testing"
 
 	"github.com/teamthy/edumart/apps/api/internal/admin"
@@ -39,17 +39,20 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	db, err := store.Open("sqlite3", filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	db := openTestStore(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	if err := seed.Run(context.Background(), db, seed.Options{IncludeDemoUsers: true, IncludeSamples: true}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Silent by default; EDUMART_TEST_LOG=1 shows what the server saw, which is how a 500 gets
+	// diagnosed without attaching a debugger.
+	logWriter := io.Writer(io.Discard)
+	if os.Getenv("EDUMART_TEST_LOG") != "" {
+		logWriter = os.Stderr
+	}
+	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	router := api.NewRouter(api.Deps{
 		Store:    db,
 		Auth:     auth.New(db),
