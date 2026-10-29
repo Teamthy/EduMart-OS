@@ -45,6 +45,9 @@ const (
 	StatusActive = "active"
 	// StatusSuspended blocks administrative actions without destroying data.
 	StatusSuspended = "suspended"
+	// StatusRejected is the end of an application. The organisation keeps its data and its owner, but it
+	// is not an institution anybody can be expected to trust.
+	StatusRejected = "rejected"
 )
 
 // invitationTTL is how long an invitation link stays usable.
@@ -72,6 +75,9 @@ type Organization struct {
 	Classes    int    `json:"classes"`
 	CreatedAt  string `json:"createdAt"`
 	VerifiedAt string `json:"verifiedAt,omitempty"`
+	// OwnerEmail is only populated on the staff approval queue: approving an institution means being able
+	// to contact the person who registered it.
+	OwnerEmail string `json:"ownerEmail,omitempty"`
 }
 
 // Member is one person's membership of an organisation.
@@ -739,6 +745,121 @@ func (s *Service) Verify(ctx context.Context, actor *auth.User, orgID string) (*
 		return nil, httpx.NewError(httpx.CodeConflict, "That organisation is already verified.")
 	}
 	if err := s.auditOne(ctx, actor.ID, "organization.verified", orgID, map[string]any{"status": StatusActive}); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, actor, orgID)
+}
+
+// ApprovalQueue is the staff view of institutions waiting on a decision.
+//
+// It lists organisations rather than applications because there is no separate application object: an
+// institution exists from the moment it is created, it just is not verified. Status "" means "everything
+// that is not active", which is what a reviewer actually wants to see.
+func (s *Service) ApprovalQueue(ctx context.Context, actor *auth.User, status string, limit int) ([]Organization, error) {
+	if !actor.HasRole(auth.RolePlatformAdmin) {
+		return nil, httpx.NewError(httpx.CodeForbidden, "Only platform administrators can review institutions.")
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "", StatusPendingVerification, StatusActive, StatusSuspended, StatusRejected:
+	default:
+		return nil, httpx.Validation([]httpx.FieldError{{
+			Field: "status", Message: "Filter by pending_verification, active, suspended or rejected.",
+		}})
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+
+	query := `
+		SELECT o.id, o.name, o.slug, o.kind, o.status, COALESCE(o.verified_at, ''), o.created_at,
+		       (SELECT COUNT(*) FROM organization_memberships m
+		         WHERE m.organization_id = o.id AND m.status = 'active'),
+		       (SELECT COUNT(*) FROM classes c
+		         WHERE c.organization_id = o.id AND c.status = 'active'),
+		       COALESCE((SELECT u.email_normalized FROM organization_memberships m
+		                  JOIN users u ON u.id = m.user_id
+		                 WHERE m.organization_id = o.id AND m.role = 'owner'
+		                 ORDER BY m.joined_at LIMIT 1), '')
+		  FROM organizations o`
+	args := []any{}
+	if status == "" {
+		// Oldest first: an approval queue that shows the newest applications is a queue nobody works
+		// from the front.
+		query += ` WHERE o.status <> ?`
+		args = append(args, StatusActive)
+	} else {
+		query += ` WHERE o.status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY o.created_at ASC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Organization{}
+	for rows.Next() {
+		var organization Organization
+		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Kind,
+			&organization.Status, &organization.VerifiedAt, &organization.CreatedAt,
+			&organization.Members, &organization.Classes, &organization.OwnerEmail); err != nil {
+			return nil, err
+		}
+		organization.Verified = organization.Status == StatusActive
+		out = append(out, organization)
+	}
+	return out, rows.Err()
+}
+
+// Reject ends an application. The record stays — an institution that was refused is exactly the record a
+// future reviewer needs — and the owner is told why.
+func (s *Service) Reject(ctx context.Context, actor *auth.User, orgID, reason string) (*Organization, error) {
+	if !actor.HasRole(auth.RolePlatformAdmin) {
+		return nil, httpx.NewError(httpx.CodeForbidden, "Only platform administrators can reject an institution.")
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) < 3 {
+		return nil, httpx.Validation([]httpx.FieldError{{
+			Field: "reason", Message: "Say why the institution is being rejected.",
+		}})
+	}
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+
+	now := store.TS(time.Now().UTC())
+	var err error
+	var res sql.Result
+	err = s.db.Tx(ctx, func(tx *sql.Tx) error {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE organizations SET status = ?, updated_at = ?
+			 WHERE id = ? AND status = ?`, StatusRejected, now, orgID, StatusPendingVerification)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return httpx.NewError(httpx.CodeConflict, "That institution is not waiting for approval.")
+		}
+		return writeAudit(ctx, tx, actor.ID, "organization.rejected", "organization", orgID,
+			map[string]any{"reason": reason}, now)
+	})
+	if err != nil {
+		var apiErr *httpx.Error
+		if errors.As(err, &apiErr) && apiErr.Code == httpx.CodeConflict {
+			var exists string
+			if lookupErr := s.db.DB.QueryRowContext(ctx, `SELECT status FROM organizations WHERE id = ?`, orgID).
+				Scan(&exists); lookupErr != nil {
+				return nil, httpx.NewError(httpx.CodeNotFound, "That organisation does not exist.")
+			}
+		}
 		return nil, err
 	}
 	return s.Get(ctx, actor, orgID)

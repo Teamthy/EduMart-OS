@@ -3,6 +3,7 @@ package api_test
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,6 +237,115 @@ func TestInvitationRevocationAndExpiry(t *testing.T) {
 	late := h.registerAndVerify("expired@example.com")
 	if status, _ := h.accept(late, expired); status == http.StatusOK {
 		t.Fatal("an expired invitation must not be usable")
+	}
+}
+
+// TestApprovalQueueIsTheStaffView: without a queue, approval is a feature nobody can operate — a staff
+// member would have to guess organisation ids.
+func TestApprovalQueueIsTheStaffView(t *testing.T) {
+	h := newHarness(t)
+	admin := h.adminToken()
+
+	owner := h.registerAndVerify("queue-owner@example.com")
+	pendingID := h.createOrg(owner, "Awaiting Review Academy")
+
+	status, body := h.do("GET", "/v1/admin/organizations?status=pending_verification", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("queue: %d %v", status, body)
+	}
+	queued := body["organizations"].([]any)
+	if len(queued) == 0 {
+		t.Fatal("the pending institution is missing from the queue")
+	}
+	var entry map[string]any
+	for _, raw := range queued {
+		candidate := raw.(map[string]any)
+		if candidate["id"] == pendingID {
+			entry = candidate
+		}
+		// The queue is only useful if a reviewer can contact the applicant.
+		if candidate["status"] != "pending_verification" {
+			t.Fatalf("the pending filter returned %v", candidate["status"])
+		}
+	}
+	if entry == nil {
+		t.Fatal("the pending institution is missing from the queue")
+	}
+	if entry["ownerEmail"] != "queue-owner@example.com" {
+		t.Fatalf("the queue must name the applicant's contact address, got %v", entry["ownerEmail"])
+	}
+
+	// The default view is "everything not yet active", oldest first.
+	status, body = h.do("GET", "/v1/admin/organizations", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("default queue: %d", status)
+	}
+	for _, raw := range body["organizations"].([]any) {
+		if raw.(map[string]any)["status"] == "active" {
+			t.Fatal("an approved institution must not clutter the review queue")
+		}
+	}
+
+	if status, _ := h.do("GET", "/v1/admin/organizations?status=nonsense", admin, nil); status != http.StatusBadRequest {
+		t.Fatalf("an unknown status filter must be refused, got %d", status)
+	}
+	if status, _ := h.do("GET", "/v1/admin/organizations", owner, nil); status != http.StatusForbidden {
+		t.Fatalf("an institution's owner must not see the platform queue, got %d", status)
+	}
+}
+
+// TestRejectingAnInstitutionKeepsTheRecord: staff need a way to say no, and the answer has to survive.
+func TestRejectingAnInstitutionKeepsTheRecord(t *testing.T) {
+	h := newHarness(t)
+	admin := h.adminToken()
+	owner := h.registerAndVerify("rejected-owner@example.com")
+	orgID := h.createOrg(owner, "Diploma Mill Academy")
+
+	status, body := h.do("POST", "/v1/admin/organizations/"+orgID+"/reject", admin,
+		map[string]any{"reason": "No verifiable registration documents"})
+	if status != http.StatusOK {
+		t.Fatalf("reject: %d %v", status, body)
+	}
+	if body["organization"].(map[string]any)["status"] != "rejected" {
+		t.Fatalf("expected a rejected institution, got %v", body["organization"])
+	}
+
+	// Rejection is recorded, with the reason, in the same transaction as the change.
+	var metadata string
+	if err := h.store.DB.QueryRow(`SELECT metadata_json FROM audit_logs WHERE action = 'organization.rejected' AND resource_id = ?`, orgID).
+		Scan(&metadata); err != nil {
+		t.Fatalf("no audit row for the rejection: %v", err)
+	}
+	if !strings.Contains(metadata, "verifiable registration documents") {
+		t.Fatalf("the audit row must carry the reason, got %s", metadata)
+	}
+
+	// A rejected institution is not silently approvable by accident, and a second rejection is a conflict.
+	if status, _ := h.do("POST", "/v1/admin/organizations/"+orgID+"/reject", admin, map[string]any{"reason": "again"}); status != http.StatusConflict {
+		t.Fatalf("re-rejecting must be a conflict, got %d", status)
+	}
+	status, _ = h.do("POST", "/v1/admin/organizations/"+orgID+"/verify", admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("an appeal can still be approved, got %d", status)
+	}
+
+	// And the owner sees the outcome rather than a permanent "pending".
+	status, body = h.do("GET", "/v1/organizations/"+orgID, owner, nil)
+	if status != http.StatusOK {
+		t.Fatalf("owner view: %d %v", status, body)
+	}
+	if got := body["organization"].(map[string]any)["status"]; got != "active" {
+		t.Fatalf("expected the approved status after appeal, got %v", got)
+	}
+
+	// The rejection itself is only available to platform staff.
+	other := h.registerAndVerify("another-owner@example.com")
+	otherOrg := h.createOrg(other, "Pending Academy")
+	if status, _ := h.do("POST", "/v1/admin/organizations/"+otherOrg+"/reject", other, map[string]any{"reason": "self"}); status != http.StatusForbidden {
+		t.Fatalf("an owner must not reject institutions, got %d", status)
+	}
+	if status, _ := h.do("POST", "/v1/admin/organizations/"+otherOrg+"/reject", admin, map[string]any{"reason": ""}); status != http.StatusBadRequest {
+		t.Fatalf("a rejection without a reason must be refused, got %d", status)
 	}
 }
 

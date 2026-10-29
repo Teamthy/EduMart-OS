@@ -160,6 +160,7 @@ func NewRouter(d Deps) http.Handler {
 		v1.Post("/classes/join", wrap(classroomHandlers.Join))
 		v1.Get("/classes/{id}/roster", wrap(classroomHandlers.Roster))
 		v1.Get("/classes/{id}/assignments", wrap(classroomHandlers.Assignments))
+		v1.Get("/organizations/{id}/report", wrap(orgHandlers.Report))
 		// Institution classes belong to the organisation's own administrators, not to whoever holds a
 		// platform-wide teacher role.
 		v1.Get("/organizations/{id}/classes", wrap(classroomHandlers.OrganizationClasses))
@@ -188,7 +189,9 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/admin/metrics", wrap(staffHandlers.Metrics))
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))
+		v1.Get("/admin/organizations", wrap(orgHandlers.ApprovalQueue))
 		v1.Post("/admin/organizations/{id}/verify", wrap(orgHandlers.Verify))
+		v1.Post("/admin/organizations/{id}/reject", wrap(orgHandlers.Reject))
 		// Account status is a moderation decision, so it lives with identity rather than with the
 		// generic staff console: suspending also ends every session the account holds.
 		v1.Get("/admin/users", wrap(authHandlers.Users))

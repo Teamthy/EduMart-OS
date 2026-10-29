@@ -32,7 +32,7 @@ Last updated with the outbound-delivery work (Phase 24, plus the Phase 7 deliver
 | 17 | PWA and offline | Partial | Installable and cache-aware; **no pending-write queue, no offline exams** |
 | 18 | Native mobile | Partial | Journeys work; **no crash reporting, no signed release builds** |
 | 19 | Classrooms and assignments | Partial | Classes, join codes, rosters, assignments; no expiry/usage limits on invites |
-| 20 | Institutions and administration | Partial | Creation, approval, membership and invitations work; **no institution dashboards, data export or retention rules** |
+| 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
@@ -155,9 +155,26 @@ surface that lists pending organisations, organisation-level billing, and SSO.
 
 ### Phase 20 — Institutions and administration · Partial
 
-The institution *model* now exists (previous phase). What Phase 20 still needs: an approval queue for
-platform staff, institution dashboards, organisation-level data export and retention rules, and
-suspension with a recovery path. `status = 'suspended'` is defined but nothing sets it.
+| Item | Evidence |
+| --- | --- |
+| Approval queue | `GET /v1/admin/organizations?status=` — pending institutions oldest-first, with the applicant's contact address. Platform administrators only |
+| Refusal with a record | `POST /v1/admin/organizations/{id}/reject` `{reason}` → `rejected`, the reason in `audit_logs`, and the record kept. A rejected institution can still be approved later: refusing an application is a decision, not a permanent ban |
+| Approval | `POST /v1/admin/organizations/{id}/verify` — the only path from `pending_verification` to `active` |
+| Institution classes | `GET /v1/organizations/{id}/classes` with member and assignment counts (Phase 19) |
+| Institution dashboard | `GET /v1/organizations/{id}/report` — members by role, classes, published assignments, submissions, active learners and a 30-day average, plus a per-class breakdown. Every query is scoped by organisation id in SQL; teachers get `403`, non-members `404`. Shown on `/institutions` in the web app |
+
+Proven by `TestApprovalQueueIsTheStaffView`, `TestRejectingAnInstitutionKeepsTheRecord`,
+`TestInstitutionReportCountsWhatHappened`, `TestInstitutionReportIsForAdministrators`, and the
+institution, approval and reporting sections of the smoke run.
+
+Two decisions in the report are worth stating because they are the difference between a dashboard and a
+misleading one. The window is a fixed 30 days rather than "this term", because the product has no calendar
+concept yet and a window that silently means "everything ever" makes every trend look flat. And an average
+with no submissions is `null`, not `0`: zero is a claim about performance, null is the absence of data.
+
+Still missing: organisation-level data export and retention rules,
+a platform-wide view of suspended institutions (`status = 'suspended'` is defined but nothing sets it),
+and a web console — the API exists, the screen does not.
 
 ### Phase 9 — Design system and shells · Partial
 

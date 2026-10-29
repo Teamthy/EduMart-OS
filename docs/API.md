@@ -55,6 +55,7 @@ Every non-2xx response has the same shape:
 | `GET` | `/organizations/{id}` | Members only; non-members get `404`, not `403` |
 | `GET` | `/organizations/{id}/members` | Owner/admin only (roster holds other people's contact details) |
 | `GET` | `/organizations/{id}/classes` | Owner/admin only: classes belonging to the institution |
+| `GET` | `/organizations/{id}/report` | Institution dashboard: member counts by role, classes, published assignments, and the last 30 days of submissions, active learners and average score (per class too). Averages are `null` when nothing was submitted |
 | `POST` | `/organizations/{id}/invitations` | `{email, role}` → `201 {invitation, token}`; the token is returned to the inviter **once** and the join link is also emailed to the invitee |
 | `GET` | `/organizations/{id}/invitations` | Open and recent invitations, never their tokens |
 | `DELETE` | `/organizations/{id}/invitations/{invitationId}` | Withdraw; the link stops working immediately |
@@ -190,6 +191,8 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | `GET` | `/admin/users?q=&status=` | platform_admin — find an account by email or name; identity and status only, never credentials |
 | `POST` | `/admin/users/{id}/suspend` | platform_admin — `{reason}`; suspends the account **and** revokes every session it holds |
 | `POST` | `/admin/users/{id}/reinstate` | platform_admin — lifts the suspension; the person signs in again |
+| `GET` | `/admin/organizations?status=` | platform_admin — institutions awaiting a decision, oldest first, with the applicant's contact address |
+| `POST` | `/admin/organizations/{id}/reject` | platform_admin — `{reason}`; refuses the application and keeps the record |
 | `GET` | `/admin/deliveries?limit=` | support, platform_admin |
 
 `/admin/deliveries` answers "the emails are not arriving" without a provider dashboard: it returns the

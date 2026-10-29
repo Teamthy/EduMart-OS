@@ -10,6 +10,7 @@ import {
   type Invitation,
   type Organization,
   type OrganizationMember,
+  type OrganizationReport,
 } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
@@ -37,11 +38,13 @@ export function InstitutionCard({
   organization,
   members,
   classes,
+  report,
   canAdminister,
 }: {
   organization: Organization;
   members: OrganizationMember[];
   classes: ClassSummary[];
+  report: OrganizationReport | null;
   canAdminister: boolean;
 }) {
   const router = useRouter();
@@ -107,6 +110,61 @@ export function InstitutionCard({
           <Alert tone="error" title="That didn't work">
             {error.message}
           </Alert>
+        ) : null}
+
+        {canAdminister && report ? (
+          <section aria-labelledby={`report-${organization.id}`} className="space-y-2">
+            <h2 id={`report-${organization.id}`} className="text-sm font-semibold">
+              Last {report.windowDays} days
+            </h2>
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <ReportStat label="Members" value={String(report.members.total)} />
+              <ReportStat
+                label="Active learners"
+                value={String(report.results.activeLearners)}
+                hint="Members who submitted at least one assessment"
+              />
+              <ReportStat label="Submissions" value={String(report.results.submissions)} />
+              <ReportStat
+                label="Average score"
+                value={
+                  report.results.averageScorePercent === null ? "—" : `${report.results.averageScorePercent}%`
+                }
+                hint={report.results.averageScorePercent === null ? "Nothing submitted yet" : undefined}
+              />
+            </dl>
+            {report.classes.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th scope="col" className="py-1 pr-3 font-medium">Class</th>
+                      <th scope="col" className="py-1 pr-3 font-medium">Members</th>
+                      <th scope="col" className="py-1 pr-3 font-medium">Assignments</th>
+                      <th scope="col" className="py-1 pr-3 font-medium">Submissions</th>
+                      <th scope="col" className="py-1 pr-3 font-medium">Average</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {report.classes.map((row) => (
+                      <tr key={row.id}>
+                        <td className="py-1 pr-3 font-medium">{row.name}</td>
+                        <td className="py-1 pr-3">{row.members}</td>
+                        <td className="py-1 pr-3">{row.assignments}</td>
+                        <td className="py-1 pr-3">{row.submissions}</td>
+                        <td className="py-1 pr-3">
+                          {row.averageScorePercent === null ? "—" : `${row.averageScorePercent}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              A dash means nothing has been submitted, which is not the same as a score of zero.
+            </p>
+          </section>
         ) : null}
 
         {canAdminister ? (
@@ -220,5 +278,16 @@ export function InstitutionCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/** One number on the institution dashboard, with the caveat that makes it honest. */
+function ReportStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="rounded-lg border border-border px-3 py-2">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-lg font-semibold">{value}</dd>
+      {hint ? <dd className="text-xs text-muted-foreground">{hint}</dd> : null}
+    </div>
   );
 }

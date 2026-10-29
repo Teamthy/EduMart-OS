@@ -162,7 +162,11 @@ role chosen at signup.
   administrator creates the class for the institution; a teacher's personal class stays personal, which
   is what stops institution reporting from silently claiming somebody's private group.
 - **Approval is someone else's decision.** A new organisation starts `pending_verification` and only a
-  platform administrator can activate it.
+  platform administrator can activate it. The queue (`GET /v1/admin/organizations`) lists what is
+  waiting, oldest first, and names the applicant so approving is possible without guessing ids.
+- **Refusal keeps the record.** `reject` moves an application to `rejected` with the reason in the audit
+  trail, and does not delete anything. A rejected institution can still be approved later: refusing an
+  application is a decision, not a permanent ban.
 
 ## Database engines
 
@@ -229,3 +233,19 @@ signup, and never from an identifier a client sends.
 Approval is deliberately outside the institution's control: a new organisation is
 `pending_verification` until a platform administrator approves it. An institution vouching for itself
 is not verification.
+
+## Institution reporting
+
+`orgs.Report` answers the question an institution actually asks — "are our learners doing the work?" —
+with four queries, each scoped by organisation id in the SQL rather than filtered afterwards. That is
+deliberate: a report is precisely where one tenant's numbers would leak into another's, and a filter in
+application code is one refactor away from being forgotten.
+
+The report reads `organization_memberships` for the roster, `classes` and `assessment_definitions` for
+teaching load, and `assessment_sessions` for activity. Per-class rows are read into a slice and the cursor
+is closed **before** anything else runs: PostgreSQL refuses a second statement on a connection with an
+open result set, SQLite tolerates it, and this code must run on both.
+
+Nothing here aggregates across tenants. There is no "platform average" in the endpoint, because that
+query has no owner and would be a privacy decision made by accident.
+
