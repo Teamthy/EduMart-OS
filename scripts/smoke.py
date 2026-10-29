@@ -232,6 +232,19 @@ def main():
     status, _ = call("GET", f"/organizations/{institution['id']}", None, student_token)
     expect(status == 404, "removing the membership removes the access it carried")
 
+    print("reporting")
+    status, dashboard = call("GET", f"/organizations/{institution['id']}/report", None, teacher_token)
+    expect(status == 200 and dashboard["report"]["windowDays"] == 30,
+           "an owner can read their institution's dashboard")
+    report = dashboard["report"]
+    expect(report["members"]["total"] == 1 and report["teaching"]["classes"] == 0,
+           "the dashboard counts the remaining member and the institution's classes")
+    expect(report["results"]["averageScorePercent"] is None and report["results"]["submissions"] == 0,
+           "an institution with no submissions reports no average rather than zero")
+    expect(report["classes"] == [], "the class list is an empty array, not null")
+    expect(call("GET", f"/organizations/{institution['id']}/report", None, student_token)[0] == 404,
+           "a removed member cannot read the dashboard")
+
     print("deliveries")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
     status, records = call("GET", "/admin/deliveries", None, admin_token)
@@ -241,6 +254,26 @@ def main():
            "delivery records never expose message bodies")
     expect(call("GET", "/admin/deliveries", None, token)[0] == 403,
            "learners cannot read delivery records")
+
+    print("approvals")
+    admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]
+    status, queue = call("GET", "/admin/organizations?status=pending_verification", None, admin_token)
+    expect(status == 200 and isinstance(queue["organizations"], list),
+           "an administrator can list institutions awaiting approval")
+    status, applied = call("POST", "/organizations", {"name": "Applied Academy " + uuid.uuid4().hex[:6], "kind": "school"}, teacher_token)
+    expect(status == 201, "an application is created pending")
+    applied_id = applied["organization"]["id"]
+    status, queue = call("GET", "/admin/organizations?status=pending_verification", None, admin_token)
+    expect(any(o["id"] == applied_id and o.get("ownerEmail") for o in queue["organizations"]),
+           "the queue shows the applicant and their contact address")
+    expect(call("GET", "/admin/organizations", None, teacher_token)[0] == 403,
+           "only platform staff can read the approval queue")
+    status, rejected = call("POST", f"/admin/organizations/{applied_id}/reject",
+                            {"reason": "smoke: no registration documents"}, admin_token)
+    expect(status == 200 and rejected["organization"]["status"] == "rejected",
+           "an administrator can refuse an application")
+    expect(call("POST", f"/admin/organizations/{applied_id}/reject", {"reason": "again"}, admin_token)[0] == 409,
+           "an application cannot be refused twice")
 
     print("moderation")
     admin_token = call("POST", "/auth/login", {"email": "admin@edumart.ng", "password": "Admin123!"})[1]["token"]

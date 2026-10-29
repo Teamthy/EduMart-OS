@@ -25,6 +25,7 @@ import type {
   SessionResponse,
   Organization,
   OrganizationMember,
+  OrganizationReport,
   Invitation,
   StudyPlan,
   Subject,
@@ -220,6 +221,8 @@ export class ApiClient {
 
   organizationClasses = (organizationId: string) =>
     this.get<{ classes: ClassSummary[] }>(`/v1/organizations/${organizationId}/classes`);
+  organizationReport = (organizationId: string) =>
+    this.get<{ report: OrganizationReport }>(`/v1/organizations/${organizationId}/report`);
   joinClass = (joinCode: string) => this.post<{ class: ClassSummary }>("/v1/classes/join", { joinCode });
   roster = (classId: string) => this.get<{ members: ClassMember[] }>(`/v1/classes/${classId}/roster`);
   assignments = (classId: string) => this.get<{ assignments: Assignment[] }>(`/v1/classes/${classId}/assignments`);

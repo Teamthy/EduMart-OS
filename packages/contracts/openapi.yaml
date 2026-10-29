@@ -858,6 +858,85 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/organizations/{id}/report:
+    get:
+      tags: [organizations]
+      summary: Institution dashboard
+      description: |
+        Owner or administrator only; a teacher gets `403`, a non-member `404`.
+
+        Everything is counted inside a 30-day window and scoped to this organisation inside the SQL
+        itself, so no number in this response can describe another institution's learners.
+
+        `results.averageScorePercent` and each class's `averageScorePercent` are `null` when nothing has
+        been submitted. That is deliberate: `0` would be a claim about performance, `null` is the absence
+        of data.
+      operationId: getOrganizationReport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The institution's members, teaching load and recent results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report:
+                    type: object
+                    required: [organizationId, generatedAt, windowDays, members, teaching, results, classes]
+                    properties:
+                      organizationId: { type: string }
+                      generatedAt: { type: string, format: date-time }
+                      windowDays: { type: integer }
+                      members:
+                        type: object
+                        required: [total, owners, admins, teachers, students]
+                        properties:
+                          total: { type: integer }
+                          owners: { type: integer }
+                          admins: { type: integer }
+                          teachers: { type: integer }
+                          students: { type: integer }
+                      teaching:
+                        type: object
+                        required: [classes, assignments]
+                        properties:
+                          classes: { type: integer }
+                          assignments:
+                            type: integer
+                            description: Published assessments attached to the institution's classes; drafts are not counted.
+                      results:
+                        type: object
+                        required: [activeLearners, submissions, averageScorePercent]
+                        properties:
+                          activeLearners:
+                            type: integer
+                            description: Members who submitted at least one assessment in the window.
+                          submissions: { type: integer }
+                          averageScorePercent:
+                            type: integer
+                            nullable: true
+                      classes:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, name, members, assignments, submissions, averageScorePercent]
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            members: { type: integer }
+                            assignments: { type: integer }
+                            submissions: { type: integer }
+                            averageScorePercent:
+                              type: integer
+                              nullable: true
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/organizations/{id}/members:
     get:
       tags: [institutions]
@@ -1334,6 +1413,83 @@ paths:
                 questionVersionId: { type: string }
       responses:
         "201": { description: Case opened }
+
+  /v1/admin/organizations:
+    get:
+      tags: [moderation]
+      summary: Institutions waiting on a decision
+      description: |
+        Platform administrators only. Without this, approval is a feature nobody can operate: a member of
+        staff would have to guess organisation ids.
+
+        There is no separate application object, because an institution exists from the moment it is
+        created — it simply is not verified. `status` omitted means "everything that is not active", which
+        is what a reviewer actually works through; results are oldest first so the queue is worked from
+        the front. `ownerEmail` is included because approving means being able to contact the applicant.
+      operationId: listOrganizationApprovals
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending_verification, active, suspended, rejected]
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        "200":
+          description: Matching organisations, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/admin/organizations/{id}/reject:
+    post:
+      tags: [moderation]
+      summary: Refuse an institution's application
+      description: |
+        Platform administrators only, and only while the institution is still `pending_verification`. A
+        rejection keeps the record — an institution that was refused is exactly what a future reviewer
+        needs — and records the reason in the audit trail.
+
+        A rejected institution can still be approved later: refusing an application is a decision, not a
+        permanent ban, and appeals should not require a new organisation.
+      operationId: rejectOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: The rejected institution
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /v1/admin/users:
     get:

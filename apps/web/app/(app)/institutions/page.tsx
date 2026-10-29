@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import type { ClassSummary, Organization, OrganizationMember } from "@edumart/shared";
+import type { ClassSummary, Organization, OrganizationMember, OrganizationReport } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +16,7 @@ interface Roster {
   organization: Organization;
   members: OrganizationMember[];
   classes: ClassSummary[];
+  report: OrganizationReport | null;
 }
 
 export default async function InstitutionsPage() {
@@ -36,15 +37,20 @@ export default async function InstitutionsPage() {
   const administerable = organizations.filter((org) => org.role === "owner" || org.role === "admin");
   const rosters = await Promise.all(
     administerable.map(async (organization) => {
-      const [members, classes] = await Promise.all([
+      const [members, classes, report] = await Promise.all([
         serverFetch<{ members: OrganizationMember[] }>(`/v1/organizations/${organization.id}/members`)
           .then((body) => body.members)
           .catch(() => []),
         serverFetch<{ classes: ClassSummary[] }>(`/v1/organizations/${organization.id}/classes`)
           .then((body) => body.classes)
           .catch(() => []),
+        // A dashboard that fails to load must not hide the roster behind an error page: the numbers are
+        // the least mature part of this screen, so they degrade to absent.
+        serverFetch<{ report: OrganizationReport }>(`/v1/organizations/${organization.id}/report`)
+          .then((body) => body.report)
+          .catch(() => null),
       ]);
-      return { organization, members, classes } satisfies Roster;
+      return { organization, members, classes, report } satisfies Roster;
     }),
   );
 
@@ -94,6 +100,7 @@ export default async function InstitutionsPage() {
           organization={organization}
           members={rosters.find((roster) => roster.organization.id === organization.id)?.members ?? []}
           classes={rosters.find((roster) => roster.organization.id === organization.id)?.classes ?? []}
+          report={rosters.find((roster) => roster.organization.id === organization.id)?.report ?? null}
           canAdminister={organization.role === "owner" || organization.role === "admin"}
         />
       ))}

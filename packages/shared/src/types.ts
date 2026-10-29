@@ -291,6 +291,29 @@ export interface ClassSummary {
   createdAt: string;
 }
 
+/** An institution's own dashboard: its people, its teaching, and what its learners actually did. */
+export interface OrganizationReport {
+  organizationId: string;
+  generatedAt: string;
+  windowDays: number;
+  members: { total: number; owners: number; admins: number; teachers: number; students: number };
+  teaching: { classes: number; assignments: number };
+  results: {
+    activeLearners: number;
+    submissions: number;
+    /** Null rather than 0 when nothing has been submitted: zero would be a claim, null is the truth. */
+    averageScorePercent: number | null;
+  };
+  classes: Array<{
+    id: string;
+    name: string;
+    members: number;
+    assignments: number;
+    submissions: number;
+    averageScorePercent: number | null;
+  }>;
+}
+
 export interface ClassMember {
   userId: string;
   displayName: string;

@@ -2,6 +2,7 @@ package orgs
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -165,6 +166,60 @@ func (h *Handlers) RemoveMember(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"removed": true})
+	return nil
+}
+
+// Report handles GET /v1/organizations/{id}/report — the institution dashboard.
+func (h *Handlers) Report(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	report, err := h.svc.Report(r.Context(), user, chi.URLParam(r, "id"))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"report": report})
+	return nil
+}
+
+// ApprovalQueue handles GET /v1/admin/organizations?status=&limit= — the staff review queue.
+func (h *Handlers) ApprovalQueue(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireRole(r, auth.RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	limit := 25
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil {
+			limit = parsed
+		}
+	}
+	organizations, err := h.svc.ApprovalQueue(r.Context(), user, r.URL.Query().Get("status"), limit)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"organizations": organizations})
+	return nil
+}
+
+// Reject handles POST /v1/admin/organizations/{id}/reject.
+func (h *Handlers) Reject(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireRole(r, auth.RolePlatformAdmin)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	organization, err := h.svc.Reject(r.Context(), user, chi.URLParam(r, "id"), in.Reason)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"organization": organization})
 	return nil
 }
 
