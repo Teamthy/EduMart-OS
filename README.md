@@ -66,6 +66,27 @@ npm run contract
 An undocumented handler and a documented-but-missing endpoint both fail the build, so the contract
 cannot drift from the code while the web and mobile clients are built against it.
 
+## Health, readiness and schema
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /healthz` | Liveness only — no dependencies, so a database blip cannot restart a healthy process |
+| `GET /readyz` | Readiness — probes the database (ping **and** a real read) and checks every migration is applied. 503 with a per-check breakdown when not |
+| `GET /v1/me/sessions` | The caller's live devices, exactly one marked `current` |
+| `DELETE /v1/me/sessions/{id}` | Revoke one device, scoped by user id in the query itself |
+
+```json
+{ "status": "ok", "driver": "sqlite3",
+  "checks": [ { "name": "database", "status": "ok", "latency": "36µs" },
+              { "name": "migrations", "status": "ok", "detail": "1 applied" } ] }
+```
+
+Schema changes go through a real migration runner (`apps/api/internal/store/migrate.go`): a
+`schema_migrations` ledger with sha256 checksums, one transaction per migration, applied exactly
+once. Editing a migration that has already run makes the process refuse to start and tells you to
+add a new one — the failure mode that silently diverges environments otherwise. A database created
+before the ledger existed is adopted on next boot.
+
 ## Local infrastructure
 
 `infra/docker/compose.yml` starts PostgreSQL 17 and Redis 7:
@@ -94,7 +115,9 @@ These are the invariants the product depends on; each has a test.
 | Points and commission are separate append-only ledgers | `points_ledger_entries`, `commission_ledger_entries` | `TestPracticeFlow…` (duplicate submit award), `rewards` service |
 | Payment truth comes only from a verified webhook | `commerce.HandleWebhook` | `TestWebhookIsTheOnlySourceOfPaymentTruth` |
 | Money is integer minor units | schema + `ServerApi` + `formatMoney` | `formatMoney` tests |
-| Authorisation is server-side and tenant-scoped | `auth.RequireRole`, `assessment.owned`, `classroom.Roster` | `TestTenantAndRoleAuthorisation` |
+| Authorisation is server-side and tenant-scoped | `auth.RequireRole`, `assessment.owned`, `classroom.Roster` | `TestTenantAndRoleAuthorisation`, `TestSessionListAndRevocation` |
+| Migrations apply once, and an edited migration stops the boot | `store.Migrate` + `schema_migrations` | `TestMigrationsApplyOnceAndReportReady`, `TestEditingAnAppliedMigrationIsRefused`, `TestAdoptsADatabaseThatPredatesTheLedger` |
+| Readiness reflects real dependencies, liveness does not | `api.readyzHandler` | `TestReadinessChecksRealDependencies` |
 | Signup progress is server-persisted across five pages | `signup_drafts` + `POST/PATCH /v1/signup-drafts` | `TestSignupWizardResumesFromServerState`, `mergeDraft` tests |
 | Graded attempts freeze on submit; only practice accepts corrections | `assessment.EditResponse` | `TestGradedAssessmentSessionsAreFrozenOnSubmit`, `TestCorrectionsRescoreWithoutRevealingAnswers` |
 
@@ -109,7 +132,7 @@ npm run contract            # OpenAPI spec vs Go router, both directions
 npm run assets              # regenerate the app icons + splash
 ```
 
-Current status: **Go 33 tests**, **web 25 tests**, `go vet` clean, `tsc --noEmit` clean on web,
+Current status: **Go 39 tests** (33 top-level + subtests), **web 25 tests**, `go vet` clean, `tsc --noEmit` clean on web,
 shared and mobile, `next build` clean.
 
 ---

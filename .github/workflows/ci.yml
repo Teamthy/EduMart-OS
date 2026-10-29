@@ -99,7 +99,8 @@ jobs:
         run: |
           go build -o /tmp/edumart-api ./cmd/api
           EDUMART_DSN=/tmp/ci.db PORT=8080 /tmp/edumart-api & echo $! > /tmp/api.pid
-          for i in $(seq 1 30); do curl -sf http://localhost:8080/healthz && break; sleep 1; done
+          # Wait on readiness, not liveness: it proves the database and migrations are actually up.
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/readyz && break; sleep 1; done
       - name: Verify the learner journey over HTTP
         run: python3 scripts/smoke.py http://localhost:8080
       - name: Stop API

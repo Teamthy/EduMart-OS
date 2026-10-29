@@ -298,35 +298,10 @@ func (s *Service) Revoke(ctx context.Context, token string) error {
 }
 
 // Authenticate resolves a request to a user: bearer token first (mobile), then session cookie.
+// It is the session-id-free form of AuthenticateSession, kept for callers that only need identity.
 func (s *Service) Authenticate(ctx context.Context, r *http.Request) (*User, error) {
-	token := bearerToken(r)
-	if token == "" {
-		if cookie, err := r.Cookie(SessionCookie); err == nil {
-			token = cookie.Value
-		}
-	}
-	if token == "" {
-		return nil, nil
-	}
-
-	var userID, expiresAt string
-	var revoked sql.NullString
-	err := s.db.DB.QueryRowContext(ctx, `SELECT user_id, expires_at, revoked_at FROM sessions WHERE id = ?`,
-		hashToken(token)).Scan(&userID, &expiresAt, &revoked)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if revoked.Valid && revoked.String != "" {
-		return nil, nil
-	}
-	expiry, err := store.ParseTS(expiresAt)
-	if err != nil || time.Now().UTC().After(expiry) {
-		return nil, nil
-	}
-	return s.UserByID(ctx, userID)
+	user, _, err := s.AuthenticateSession(ctx, r)
+	return user, err
 }
 
 func bearerToken(r *http.Request) string {

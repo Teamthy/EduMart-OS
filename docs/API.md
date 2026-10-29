@@ -85,6 +85,8 @@ Draft steps: `pathway → subjects → schedule → account → confirm`.
 | `POST` | `/assessment-sessions/{id}/submit` | Idempotent finalisation |
 | `POST` | `/assessment-sessions/{id}/cancel` | Only while `in_progress` |
 | `PUT` | `/assessment-sessions/{id}/corrections/{qvId}` | Post-submission correction (practice only) |
+| `GET` | `/me/sessions` | Active devices for the caller |
+| `DELETE` | `/me/sessions/{id}` | Revoke one device (scoped to the caller) |
 
 ### Answer write
 
@@ -161,3 +163,31 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | `GET` | `/admin/cases` | support, platform_admin |
 | `POST` | `/admin/cases/{id}/resolve` | support, platform_admin |
 | `POST` | `/support-cases` | any signed-in user |
+
+## Outside /v1
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /healthz` | `200 {status:"ok",time,driver}`. Liveness only: never checks a dependency, so a database blip cannot restart a healthy process. |
+| `GET /readyz` | `200` when the database answers and every migration is applied; `503` otherwise, with `checks[]` naming the failing dependency. Used by load balancers and deploy gates. |
+
+`/readyz` is deliberately stricter than `/healthz`. `healthz` green while `readyz` is red is the
+intended signal: the process is alive, it just cannot serve traffic yet.
+
+## Sessions
+
+```
+GET /v1/me/sessions
+→ 200 { "sessions": [
+    { "id": "9f2c…", "client": "web", "userAgent": "Mozilla/5.0…",
+      "createdAt": "…", "expiresAt": "…", "current": true } ] }
+
+DELETE /v1/me/sessions/{id}
+→ 200 { "revoked": true, "wasCurrent": false }
+→ 404 when the id is unknown or belongs to someone else
+```
+
+`id` is the stored session key — the sha256 of the token — so it can revoke a session but cannot be
+replayed as a credential. Revocation is scoped by `user_id` in the `WHERE` clause, not by a check in
+the handler, so a session id copied from another account cannot sign that learner out. Expired and
+revoked sessions never appear in the list.

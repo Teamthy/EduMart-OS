@@ -78,9 +78,11 @@ func NewRouter(d Deps) http.Handler {
 	})
 	r.Use(authHandlers.Middleware)
 
+	// Liveness: cheap, no dependencies. Readiness: real checks, used by the load balancer.
 	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "time": store.Now(), "driver": d.Store.Driver})
 	})
+	r.Get("/readyz", readyzHandler(d.Store))
 
 	r.Route("/v1", func(v1 chi.Router) {
 		wrap := func(fn httpx.HandlerFunc) http.HandlerFunc { return httpx.Wrap(d.Logger, fn) }
@@ -100,6 +102,8 @@ func NewRouter(d Deps) http.Handler {
 		v1.Patch("/signup-drafts/current", wrap(signupHandlers.Update))
 
 		v1.Get("/me", wrap(authHandlers.Me))
+		v1.Get("/me/sessions", wrap(authHandlers.Sessions))
+		v1.Delete("/me/sessions/{id}", wrap(authHandlers.RevokeSession))
 		v1.Patch("/me", wrap(authHandlers.UpdateMe))
 
 		// ── taxonomy (public: needed before an account exists) ───────────

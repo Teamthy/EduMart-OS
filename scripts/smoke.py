@@ -13,12 +13,15 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/") + "/v1"
+ROOT = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/")
+BASE = ROOT + "/v1"
 
 
 def call(method, path, body=None, token=None):
+    """Call the versioned API. Pass path="" for the root endpoints (/healthz, /readyz)."""
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(BASE + path, data=data, method=method)
+    base = ROOT if path == "" or path.startswith("/health") or path.startswith("/ready") else BASE
+    request = urllib.request.Request(base + path, data=data, method=method)
     request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", "Bearer " + token)
@@ -38,6 +41,15 @@ def expect(condition, message):
 
 
 def main():
+    print("readiness")
+    status, body = call("GET", "/healthz")
+    expect(status == 200 and body["status"] == "ok", "liveness answers")
+    status, body = call("GET", "/readyz")
+    expect(status == 200 and body["status"] == "ok", "readiness answers")
+    checked = {check["name"]: check["status"] for check in body["checks"]}
+    expect(checked.get("database") == "ok", "the database probe is real and passing")
+    expect(checked.get("migrations") == "ok", "the schema is up to date")
+
     print("taxonomy")
     status, body = call("GET", "/subjects")
     expect(status == 200 and body["subjects"], "subjects are served")
@@ -90,6 +102,12 @@ def main():
     status, corrected = call("PUT", correction_path, {"selectedOptionId": correct, "expectedVersion": 1}, token)
     expect(status == 200 and corrected["saved"], "a practice answer can be corrected after submit")
     expect("score" not in json.dumps(corrected), "a correction does not leak the score")
+
+    print("sessions")
+    status, sessions = call("GET", "/me/sessions", None, token)
+    expect(status == 200 and sessions["sessions"], "the caller's sessions are listed")
+    expect(sum(1 for s in sessions["sessions"] if s["current"]) == 1, "exactly one session is current")
+    expect(all("token" not in s for s in sessions["sessions"]), "no session token is exposed")
 
     print("commerce")
     status, products = call("GET", "/products", None, token)
