@@ -185,14 +185,14 @@ def redact(line, match):
 # Fixtures for --self-test. These are not credentials: they are shapes that must be caught, and shapes
 # that must not be. A scanner is only worth its noise if both halves are asserted.
 SELF_TEST_CASES = [
-    ("aws = AKIAIOSFODNN7EXAMPLE", True),
-    ("token: ghp_" + "a" * 36, True),
-    ("-----BEGIN RSA PRIVATE KEY-----", True),
-    ("key = sk_live_" + "b" * 24, True),
-    ("slack = xoxb-123456789012-abcdefghijkl", True),
-    ("hook: https://user:hunter2@hooks.prod.example.com/x", True),
-    ('client_secret = "s3cr3tvalue_thats_long_enough"', True),
-    ("jwt = eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk", True),
+    ("aws = AKIAIOSFODNN7EXAMPLE", True),  # scan: allow self-test fixture
+    ("token: ghp_" + "a" * 36, True),  # scan: allow self-test fixture
+    ("-----BEGIN RSA PRIVATE KEY-----", True),  # scan: allow self-test fixture
+    ("key = sk_live_" + "b" * 24, True),  # scan: allow self-test fixture
+    ("slack = xoxb-123456789012-abcdefghijkl", True),  # scan: allow self-test fixture
+    ("hook: https://user:hunter2@hooks.prod.example.com/x", True),  # scan: allow self-test fixture
+    ('client_secret = "s3cr3tvalue_thats_long_enough"', True),  # scan: allow self-test fixture
+    ("jwt = eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk", True),  # scan: allow self-test fixture
     # The development defaults this repository depends on: same shape, no reach.
     ("EDUMART_DSN=postgres://edumart:local_only_change_me@localhost:5432/edumart?sslmode=disable", False),
     ("EDUMART_TEST_POSTGRES_DSN: postgres://edumart:edumart@localhost:5432/edumart_test?sslmode=disable", False),
@@ -200,6 +200,8 @@ SELF_TEST_CASES = [
     ('password = "Student123!"', False),
     ("# rotate the EDUMART_WEBHOOK_SECRET per environment", False),
     ('{"email": "student@edumart.ng"}', False),
+    # A deliberate, documented exception is honoured — otherwise nobody could ever record one.
+    ('aws = AKIAIOSFODNN7EXAMPLE  # scan: allow fixture', False),
 ]
 
 
