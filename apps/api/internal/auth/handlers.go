@@ -268,6 +268,61 @@ func (h *Handlers) Reset(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// RequestVerification handles POST /v1/auth/verification/request — send a code.
+//
+// The response never contains the code and never echoes the full destination: whoever can call this
+// endpoint knows the account, and a full address in the response would turn a session into an
+// address book.
+func (h *Handlers) RequestVerification(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Channel string `json:"channel"`
+		Phone   string `json:"phone"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	issue, err := h.svc.RequestVerification(r.Context(), user, in.Channel, in.Phone)
+	if err != nil {
+		return err
+	}
+	h.logger.Info("verification code issued", "userId", user.ID, "channel", issue.Channel)
+	httpx.JSON(w, http.StatusAccepted, map[string]any{
+		"sent":             true,
+		"channel":          issue.Channel,
+		"destination":      issue.Destination,
+		"expires_at":       issue.ExpiresAt,
+		"resend_after":     issue.ResendAfterSeconds,
+		"attempts_allowed": issue.AttemptsAllowed,
+	})
+	return nil
+}
+
+// ConfirmVerification handles POST /v1/auth/verification/confirm — check a code and record proof.
+func (h *Handlers) ConfirmVerification(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Channel string `json:"channel"`
+		Code    string `json:"code"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	updated, err := h.svc.ConfirmVerification(r.Context(), user.ID, in.Channel, in.Code)
+	if err != nil {
+		return err
+	}
+	h.logger.Info("channel verified", "userId", user.ID, "channel", in.Channel)
+	httpx.JSON(w, http.StatusOK, map[string]any{"verified": true, "channel": in.Channel, "user": updated})
+	return nil
+}
+
 // Me handles GET /v1/me.
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) error {
 	user, err := RequireUser(r)

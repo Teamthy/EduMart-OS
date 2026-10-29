@@ -2,6 +2,8 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,28 +101,38 @@ func TestSchemaCoversTheDocumentedTables(t *testing.T) {
 func TestAdoptsADatabaseThatPredatesTheLedger(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "adopt.db")
 
-	db := open(t, dsn)
-	var users int
-	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users); err != nil {
-		t.Fatalf("users table: %v", err)
+	// Reproduce a database created by the runner that predates the ledger: the baseline schema
+	// exists, `schema_migrations` does not. Later migrations (0002 onwards) legitimately are not in
+	// this database, which is why only the baseline has to replay cleanly.
+	baseline, err := os.ReadFile(filepath.Join("migrations", "sqlite", "0001_init.sql"))
+	if err != nil {
+		t.Fatalf("read baseline migration: %v", err)
 	}
-	// Reproduce a database created by the previous runner: the schema exists, the ledger does not.
-	if _, err := db.DB.Exec(`DROP TABLE schema_migrations`); err != nil {
-		t.Fatalf("drop ledger: %v", err)
+	legacy, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
+	if _, err := legacy.Exec(string(baseline)); err != nil {
+		t.Fatalf("apply baseline: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
 	}
 
-	// Booting must adopt it: migrations are idempotent, so re-running records what is already there
-	// instead of failing on "table already exists".
+	// Booting must adopt it: the baseline's statements are idempotent, so re-running records what is
+	// already there, and the migrations that come after it apply for real.
 	adopted := open(t, dsn)
 	defer adopted.Close()
 	status, err := adopted.MigrationStatus(context.Background())
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.UpToDate || len(status.Applied) == 0 {
-		t.Fatalf("expected an adopted, up-to-date database, got %+v", status)
+	if !status.UpToDate || len(status.Applied) < 2 {
+		t.Fatalf("expected an adopted database with the baseline and everything after it, got %+v", status)
+	}
+	var column string
+	if err := adopted.DB.QueryRow(
+		`SELECT name FROM pragma_table_info('users') WHERE name = 'phone_verified_at'`).Scan(&column); err != nil {
+		t.Fatalf("an adopted database must receive later migrations too: %v", err)
 	}
 }

@@ -120,3 +120,38 @@ describe("formatters", () => {
     expect(initials("  ")).toBe("?");
   });
 });
+
+describe("Verification requests", () => {
+  it("sends the channel and, for phone, the number — and returns where the code went", async () => {
+    const { client, fetchImpl } = clientWith({
+      status: 202,
+      json: {
+        sent: true,
+        channel: "phone",
+        destination: "+23••••••••567",
+        expires_at: "2026-10-29T09:30:00Z",
+        resend_after: 60,
+        attempts_allowed: 5,
+      },
+    });
+
+    const issued = await client.requestVerification("phone", "0803 123 4567");
+
+    expect(issued.destination).toBe("+23••••••••567");
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ channel: "phone", phone: "0803 123 4567" });
+  });
+
+  it("confirms with exactly the channel and code the user typed", async () => {
+    const { client, fetchImpl } = clientWith({
+      json: { verified: true, channel: "email", user: { emailVerified: true } },
+    });
+
+    const result = await client.confirmVerification("email", "123456");
+
+    expect(result.user.emailVerified).toBe(true);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(String(url)).toContain("/v1/auth/verification/confirm");
+    expect(JSON.parse(String(init?.body))).toEqual({ channel: "email", code: "123456" });
+  });
+});

@@ -500,6 +500,12 @@ func (h *Handlers) CreateOrder(w http.ResponseWriter, r *http.Request) error {
 	if in.ProductID == "" {
 		return httpx.Validation([]httpx.FieldError{{Field: "productId", Message: "Choose a product."}})
 	}
+	// Money and receipts need a mailbox we can actually reach: an unverified address cannot receive
+	// a receipt, cannot be used for a refund, and lets throwaway accounts hold entitlements.
+	if !user.EmailVerified {
+		return httpx.NewError(httpx.CodeEmailUnverified,
+			"Confirm your email address before buying. It is how we send receipts and refunds.")
+	}
 	order, err := h.svc.CreateOrder(r.Context(), user.ID, in.ProductID)
 	if err != nil {
 		return err

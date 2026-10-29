@@ -1,204 +1,199 @@
-# Phase plan status
+# Phase status
 
-Where Edumart actually stands against the phase-by-phase build plan. Every claim points at code, a
-test or a document; nothing here is a projection.
+Where Edumart actually stands against the thirty phases in
+[`BUILD_BLUEPRINT.md`](./BUILD_BLUEPRINT.md). Every claim points at code, a test or a document.
+Nothing here is a projection, and a phase is never "done" because its screens exist.
 
-**Legend**
+**Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
+the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-- **Done** — implemented and covered by a test or CI check.
-- **Partial** — real code exists and works, but the phase's exit criteria are not all met.
-- **Not started** — nothing beyond scaffolding or design.
+Last updated with the email/phone verification work (Phase 7).
 
-Last updated with the migration-runner, `/readyz` and session-management work.
+## The whole board
+
+| # | Phase | Status | The gap that matters |
+| --- | --- | --- | --- |
+| 1 | Product specification | Partial | PRD exists; no recorded sign-off, no owners |
+| 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
+| 3 | Repository and developer environment | Done | — |
+| 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
+| 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
+| 6 | API platform and contracts | Done | 53 routes, contract checked in CI |
+| 7 | Identity and account lifecycle | Partial | Verification now works; **no refresh-token rotation**, no account suspension |
+| 8 | Authorization and multi-tenancy | Partial | Roles + class scoping; **no organisations, no audit trail** |
+| 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
+| 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
+| 11 | Taxonomy and syllabus | Partial | Exam → subject → topic; **no syllabus versioning** |
+| 12 | Question bank and content ops | Partial | Authoring, review, publishing; **no import pipeline, no withdrawal** |
+| 13 | Assessment configuration and snapshots | Partial | Snapshots and versioned scoring; **no assessment templates/sections** |
+| 14 | CBT attempt lifecycle | Partial | Durable, idempotent, deadline-authoritative; **no load test** |
+| 15 | Scoring and results | Done for practice and mocks | Re-scoring policy and adjustment audit trail missing |
+| 16 | Student dashboard | Partial | Dashboard, weak topics, streaks; no syllabus-coverage view |
+| 17 | PWA and offline | Partial | Installable and cache-aware; **no pending-write queue, no offline exams** |
+| 18 | Native mobile | Partial | Journeys work; **no crash reporting, no signed release builds** |
+| 19 | Classrooms and assignments | Partial | Classes, join codes, rosters, assignments; no expiry/usage limits on invites |
+| 20 | Institutions and administration | Not started | No `organizations` table; tenancy is per-class today |
+| 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
+| 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
+| 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
+| 24 | Notifications | Partial | Adapter + templates for codes; **no retries, no delivery status, no SMS provider** |
+| 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
+| 26 | Search and discovery | Not started | No search endpoint; lists only |
+| 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
+| 28 | Security and resilience | Not started as a phase | Controls exist; **no threat model, no scanning, no drills** |
+| 29 | Performance and QA | Not started | No load tests, no device matrix, no accessibility audit |
+| 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
+
+**Nine of thirty phases are done or effectively done.** The remaining twenty-one are real work, not
+polish.
 
 ---
 
-## Phase 0 — Product definition and governance · **Partial**
+## Detail: the phases with substance
 
-| Deliverable | Status |
-| --- | --- |
-| Product requirements | `edumart-prd/` (provider document, 107 KB) |
-| User journeys (student, teacher, institution, publisher, admin) | Student and teacher journeys are implemented end to end; institution and publisher journeys are **not** implemented |
-| Responsive design system | `packages/shared` tokens + `apps/web/components/ui` (hand-written, shadcn conventions) and `apps/mobile/src/components/ui.tsx` |
-| Architecture and domain boundaries | `docs/ARCHITECTURE.md` |
-| API conventions and OpenAPI contract | `packages/contracts/openapi.yaml`, **enforced** by `scripts/check-contract.py` (51 routes) |
-| Data classification and threat model | `docs/SECURITY_AND_DURABILITY.md` has the data classification and the consistency model; a formal threat model has **not** been written |
-| Backlog, owners, acceptance criteria | `docs/BACKLOG.md` (backlog only — no owners assigned) |
-| Definition of done | Below, in "Feature completion checklist" |
+### Phase 3 — Repository and developer environment · Done
 
-**Exit criteria:** scope approved ✗ (no formal sign-off recorded), measurable acceptance criteria
-partial, contract agreed ✓, owners ✗.
+`apps/api` (Go), `apps/web` (Next.js), `apps/mobile` (Expo), `packages/shared`, `packages/contracts`,
+`infra`, `docs`, `scripts`. Pinned toolchains, `make` targets for every routine task, `.env.example`
+covering both engines, and `README.md` carrying the commands CI actually runs. Verified by CI doing a
+clean install on every push.
 
----
-
-## Phase 1 — Repository, infrastructure and CI/CD · **Partial**
+### Phase 4 — Infrastructure and CI/CD · Partial
 
 | Item | Status |
 | --- | --- |
-| Monorepo, toolchains (Go / Next / Expo / TS) | Done — `apps/api`, `apps/web`, `apps/mobile`, `packages/shared` |
-| Migrations **and a migration runner** | Done — `store/migrate.go`: `schema_migrations` ledger, sha256 checksums, one transaction per migration, applied-once, refuses a edited-after-apply file, adopts a pre-ledger database |
-| PostgreSQL | **Done and tested** — `lib/pq` driver, `?` → `$n` translation at the driver boundary, migrations run on a real PostgreSQL 17. The full suite and the HTTP smoke journey run on both engines in CI. One cross-engine bug (writes while a result set was open) was found and fixed by doing this |
-| Environments (dev/test/staging/prod) | Dev and CI are real; staging and production are documented (`docs/PRODUCTION_READINESS.md`) but not provisioned |
-| Docker local dependencies | `infra/docker/compose.yml` (Postgres 17 + Redis 7). Neither is used by the app yet — SQLite is the tested driver, rate limiting is in-process |
-| Structured logging, request IDs, error envelope | Done — `internal/httpx` |
-| CI | Done — `.github/workflows/ci.yml`: gofmt, vet, contract check, Go tests with `-race`, web typecheck/tests/build, mobile typecheck + Metro bundle (Android/iOS/web), HTTP smoke |
+| CI quality gates | gofmt, vet, contract check, Go tests (`-race`) on **SQLite and PostgreSQL 17**, web typecheck/tests/`next build`, mobile typecheck + Metro bundle, HTTP smoke against both engines |
+| Migration execution policy | `store/migrate.go`: checksummed, applied once, one transaction per migration, refuses an edited-after-apply file |
+| Environments | Development and CI are real. **Staging and production are not provisioned** |
+| Rollback | Documented in `docs/PRODUCTION_READINESS.md`; never exercised, because there is nothing to roll back |
 | Secret/dependency scanning | **Not started** |
-| Deployment + rollback procedure | Documented only; no deployment pipeline exists |
-| `/readyz` checks real dependencies | **Done** — `internal/api/health.go`: database ping + real read, migration state, per-check breakdown, 503 on failure; `TestReadinessChecksRealDependencies` |
 
-**Exit criteria:** clean checkout builds ☑, migrations create a working database from scratch ☑ on
-**both** SQLite and PostgreSQL 17, CI blocks failing merges ☑, secrets not committed ☑, staging
-deployable ✗, `/readyz` real ☑.
+### Phase 5 — Database and persistence foundation · Partial
 
----
+Both dialects are exercised by the whole suite. Constraints exist where they protect a real invariant
+(unique email, FK cascades, ledger append-only triggers where applicable). Timestamps are UTC RFC3339
+text. The gap is operational, not structural: no backup, no PITR, no restore rehearsal — so the exit
+gate ("a restore has been demonstrated") is not met.
 
-## Phase 2 — Identity, signup and authorization · **Partial**
+### Phase 6 — API platform and shared contracts · Done
 
-| Item | Status |
-| --- | --- |
-| Registration, login, logout | Done — `POST /v1/auth/{register,login,logout}` |
-| Five-step stateful signup | Done on both clients; progress is server-persisted in `signup_drafts` and no account exists until the final step |
-| Password hashing | **PBKDF2**, not Argon2id as the plan prefers. Argon2id needs `golang.org/x/crypto/argon2`; it is a drop-in change in `internal/auth/password.go` |
-| Sessions, revocation | Done — opaque tokens, server-side revocation, `GET /v1/me/sessions`, `DELETE /v1/me/sessions/{id}` (**new**), scoped by user id |
-| Password reset | Done, with enumeration-safe responses and full session invalidation on reset |
-| Email / phone verification | **Not started** — accounts are usable immediately. This is the largest identity gap and gates launch |
-| Role-based authorization | Done — roles + class-scoped teacher access; `TestTenantAndRoleAuthorisation` |
-| Refresh tokens / session rotation | Not started — single 7-day opaque session |
-| Account recovery beyond password (lost email) | Not started |
+53 routes in `packages/contracts/openapi.yaml`, enforced in both directions against the router by
+`scripts/check-contract.py`. One error envelope with stable codes (`VALIDATION_ERROR`,
+`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `ASSESSMENT_NOT_OPEN`,
+`SESSION_EXPIRED`, `SESSION_CLOSED`, `PAYMENT_PENDING`, `EMAIL_NOT_VERIFIED`, `INTERNAL_ERROR`).
+Request ids on every response. Idempotency keys on retry-sensitive writes. `packages/shared` is one
+TypeScript client used by web and mobile.
 
-**Exit criteria:** registration/login against PostgreSQL ☑ (now covered by the PostgreSQL CI job),
-verification tested ✗,
-expired/revoked sessions rejected ☑ (`TestSessionListAndRevocation`,
-`TestPasswordResetInvalidatesSessions`), horizontal escalation tests ☑, duplicate registration retry
-safe ☑ (`TestDuplicateRegistrationIsRejected`).
-
----
-
-## Phase 3 — Catalogue and content management · **Partial**
+### Phase 7 — Identity and account lifecycle · Partial
 
 | Item | Status |
 | --- | --- |
-| Exam categories (JAMB/UTME, WAEC, NECO) | Pathways + subjects + topics seeded from `internal/seed/content.json` |
-| Question bank, options, explanations | Done — `questions`, `question_versions`, options and explanation per version |
-| Immutable question versions | Done — attempts snapshot the version used |
-| Editorial review → published | Done — `POST /v1/admin/question-versions/{id}/review`, `TestContentReviewPublishesQuestions` |
-| Content import pipeline | Seed JSON only; no validated CSV/JSON import tool or duplicate-key validation report |
-| Provenance / rights metadata | Schema has source fields; no rights workflow |
-| Withdrawal / supersede | Not started (publishing exists, withdrawal does not) |
+| Registration, login, logout | Done |
+| Password hashing | PBKDF2, not Argon2id. Argon2id needs `golang.org/x/crypto/argon2`; drop-in in `internal/auth/password.go` |
+| Password recovery | Done, enumeration-safe, invalidates every session |
+| Sessions and revocation | Done — opaque tokens, server-side revocation, `GET /v1/me/sessions`, `DELETE /v1/me/sessions/{id}` |
+| **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through a `notify.Sender` adapter |
+| Verification gate | Checkout (`POST /v1/orders`) refuses an unverified address with `EMAIL_NOT_VERIFIED` |
+| Rate limits | Per-route, **in-process** — resets on restart and does not span instances |
+| Refresh tokens / rotation | **Not started** — one 7-day opaque session |
+| Account suspension and recovery beyond password | **Not started** |
 
-**Exit criteria:** repeatable imports partial, no unpublished publication ☑, version history ☑,
-permission-controlled access ☑, rights documented ✗, reviewed bank for pilot ✗ (seed content is
-synthetic).
+Verification is proven by `TestEmailVerificationJourney`, `TestCheckoutRequiresVerifiedEmail`,
+`TestVerificationAttemptsAreLimited`, `TestVerificationResendIsThrottled`, `TestPhoneVerification`,
+`TestVerificationRejectsBadInput`, `TestUndeliveredCodeIsNotUsable`, plus the live smoke run.
 
----
+**What verification does not yet do:** it is not a required onboarding step, so an unverified account
+can still practise, take mocks and hold points. Only money is gated. That is a deliberate, documented
+scope decision — not an oversight.
 
-## Phase 4 — CBT and assessment engine · **Mostly done**
+### Phase 8 — Authorization and multi-tenancy · Partial
 
-| Reliability rule | Status |
-| --- | --- |
-| Server owns start, deadline, final state | Done — `domain.CanAcceptAnswer`; client timer is display-only |
-| Immutable snapshots + versioned scoring | Done — `assessment_sessions.snapshot_json`, `scoring_policy_json` |
-| Idempotent answer mutations | Done — replay returns the stored version, stale writes `409` with `current_version` |
-| Durable acknowledgement | Done — "saved" only after commit; the UI has distinct pending/saved/failed states |
-| Transactional submission and scoring | Done — re-checked inside the transaction; double submit awards points once |
-| Concurrent edits / timeout-after-commit | Covered by tests (replay + stale version); **not** load-tested |
-| Cross-user attempt access | Done — `TestTenantAndRoleAuthorisation` |
-| Corrections after submit | Practice only, rescored from stored responses, leaks no correctness |
-| Offline queue on clients | Partial — mobile retries a failed save; there is no persistent offline queue |
-| Load testing (start bursts, autosave, deadline spikes) | **Not started** |
+Roles (`student`, `teacher`, `org_admin`, `content_editor`, `finance`, `support`, `platform_admin`) and
+class-scoped checks are implemented and covered by `TestTenantAndRoleAuthorisation`: a learner cannot
+read another learner's attempt, a teacher cannot reach a class they do not teach, and a self-selected
+signup role never becomes a privileged role. There is no `organizations` table, no membership model
+and no privileged-action audit stream, so the phase's exit gate (cross-tenant isolation at the
+organisation level) cannot be met yet.
 
-**Exit criteria:** web/mobile journey ☑, duplicate submissions safe ☑, concurrency tested ☑,
-deadlines enforced ☑, restart keeps acknowledged answers ☑, scoring reproducible ☑, **load tests ✗**.
+### Phase 9 — Design system and shells · Partial
 
----
+One token set (`packages/shared/src/design-tokens.ts`) drives Tailwind on web and React Native styles
+on mobile. `apps/web/components/ui` follows shadcn conventions; `apps/mobile/src/components/ui.tsx`
+mirrors it. Loading, empty, error, offline and permission-denied states exist on every P0 screen.
+Accessibility is designed for WCAG 2.2 AA but **has not been verified with assistive technology**, so
+the exit gate is unmet.
 
-## Phase 5 — Web, PWA and native mobile · **Partial**
+### Phase 10 — Student onboarding and profiles · Partial
 
-| Item | Status |
-| --- | --- |
-| Web app (Next.js, Tailwind, shadcn-style UI) | Done — 20+ routes, authenticated shell, signup wizard |
-| PWA | Manifest, icons, service worker, offline page — but no offline exam support or answer queue |
-| Native app (Expo Router) | Done — same five signup steps, attempt runner, results; bundles for Android/iOS/web verified in CI |
-| Shared contract + tokens | Done — desktop and native compile the same TypeScript and render the same tokens |
-| Loading / empty / error / offline / permission-denied states | Implemented on P0 screens |
-| Institution and admin route groups from the plan | **Not started** — the plan's `(institution)` and `(publisher)` areas do not exist |
-| Accessibility audit | Designed to WCAG 2.2 AA; **not** verified with assistive technology |
+The five-step wizard is implemented on web and mobile, with server-persisted drafts
+(`signup_drafts`) that exclude passwords and verification secrets. An interrupted signup resumes at the
+same step. The blueprint's step 2 is *verification*; today verification is offered after account
+creation (settings) rather than inside the wizard, and the account is created at the end of step 5.
+That ordering difference is the main gap.
 
----
+### Phases 13–16 — The learning engine · Partial, and the strongest part of the build
 
-## Phase 6 — Classrooms and institutions · **Partial**
+Server-owned deadlines; immutable per-attempt question snapshots; versioned scoring rules; idempotent
+answer writes with `409` + `current_version` on stale writes; acknowledgement only after commit;
+transactional submission with re-check inside the transaction; double-submit awarding points once;
+practice-only corrections that leak no correctness; deterministic re-scoring from stored responses.
 
-Classes, join codes, rosters, assignments, teacher dashboards: done (`internal/classroom`,
-`TestClassJoinByCode`). Organisations, organisation memberships, invitations with expiry,
-institution reports and report exports: **not started**. There is no `organizations` table; tenancy
-today is per-class.
+Gaps: no assessment templates or sections (a mock is assembled from subject/topic rules), no negative
+marking, no load test of concurrent starts or autosaves, and no syllabus-coverage view on the
+dashboard.
 
----
+### Phase 17 — PWA and offline · Partial
 
-## Phase 7 — Commerce · **Partial**
+Installable manifest, branded icons, cache-versioned service worker, offline fallback page, and a
+connection indicator. There is **no pending-write queue**: a save that fails is retried by the client
+while the screen is open, and an answer that never reaches the server is visibly unsaved rather than
+silently queued. Offline exams are explicitly out of scope until the separate design exists.
 
-| Item | Status |
-| --- | --- |
-| Catalogue, orders, entitlements | Done |
-| Verified webhook only | Done — HMAC-SHA256, `provider_events` dedupe, amount/currency check; `TestWebhookIsTheOnlySourceOfPaymentTruth` |
-| Live payment provider adapter | **Not started** — sandbox only |
-| Refunds, partial refunds, disputes, reconciliation | **Not started** |
-| Publisher onboarding and revenue | **Not started** |
-| Integer minor units end to end | Done, with formatting tests |
+### Phases 22–23 — Commerce and rewards · Partial
 
----
+Webhook-only payment truth with HMAC verification, provider-event dedupe and amount/currency checks.
+Entitlements granted in the same transaction as the verified event. Purchase now also requires a
+verified email. Points and commission ledgers are separate and append-only, with balances derived from
+entries.
 
-## Phase 8 — Rewards and analytics · **Partial**
+Gaps: sandbox provider only (no live Paystack adapter), no refunds, disputes or reconciliation job, no
+commission approval or payout workflow, no reversal tooling for refunds.
 
-Two separate append-only ledgers (points vs commission), deduplicated awards, referral validation:
-done. Payouts, commission approval workflow, reversal tooling and published reward rules: **not
-started**. Analytics are rebuildable read models derived from stored responses — no separate event
-pipeline or transactional outbox yet.
+### Phase 24 — Notifications · Partial
 
----
-
-## Phase 9 — Security, resilience, performance · **Not started (as a phase)**
-
-Individual controls exist (rate limits, HMAC verification, tenant-scoped authorisation, security
-headers, password hashing). The phase itself has not run: no threat model, no penetration test, no
-load test, no backup or restore drill, no observability beyond structured logs, no alerts.
-
----
-
-## Phase 10 — Staging, pilot, launch · **Not started**
-
-No staging environment, no pilot, no production deployment, no on-call or incident process.
+`internal/notify` defines the adapter (`Sender`), a development `LogSender` that redacts codes in
+production, and a test `Recorder`. Verification codes and password reset links use it. There is no
+provider integration, no template store, no retry/backoff, no delivery-status tracking, and no SMS or
+push channel — so the blueprint's exit gate is not met.
 
 ---
 
 ## Recommended next three steps
 
-1. **Email verification (Phase 2).** The remaining blocker to a public launch in identity: accounts
-   currently become usable without proving ownership of the address.
-2. **A backup + restore drill against a production-like PostgreSQL, and metrics (Phase 9).** The
-   engine now works; what is untested is recovery, monitoring, and behaviour under real volume.
-3. **A threat model and dependency/secret scanning (Phase 9).** Nothing has been scanned, and no
-   document yet enumerates the threats the platform accepts.
-
----
+1. **Phase 20 (institutions) or Phase 19 hardening.** Tenancy is per-class; every institutional
+   feature — org dashboards, reports, renewals — is blocked on an `organizations` model. It is the
+   largest structural absence.
+2. **Phase 28's first slice: a threat model, dependency/secret scanning and a restore drill.** These
+   are cheap, and they convert "we think it is safe and recoverable" into evidence.
+3. **Phase 24: a real email provider with retries and delivery status.** Verification now depends on
+   delivery, and today delivery is a log line.
 
 ## Feature completion checklist
 
-The plan defines thirteen conditions for "done". Applied to the assessment engine as a worked
-example:
+Applied to email/phone verification as a worked example of the standard:
 
-| # | Condition | Assessment engine |
+| # | Condition | Verification |
 | --- | --- | --- |
-| 1 | Requirements and acceptance criteria approved | partial — documented, not formally signed off |
-| 2 | UX covers loading/empty/error/success | yes |
-| 3 | API contract documented and validated | yes — CI-checked |
-| 4 | Server-side authn/authz | yes — tested |
-| 5 | DB constraints and migration | yes — versioned migrations now |
-| 6 | Input validation, safe errors | yes — one error envelope |
-| 7 | Idempotency and concurrency defined | yes — versions + replay |
-| 8 | Unit and integration tests pass | yes — 33+ Go tests, `-race` in CI |
-| 9 | Web and mobile integration tested | web: yes; mobile: bundle-verified, not UI-tested on a device |
-| 10 | Accessibility and responsive checked | partial — unverified with assistive tech |
-| 11 | Logs, metrics, audit events | logs yes; metrics and audit stream no |
-| 12 | Documentation updated | yes |
+| 1 | Requirements and acceptance criteria documented | yes — blueprint Phase 7 + contract |
+| 2 | UX covers loading/empty/error/success | yes — settings card with sending, sent, error, verified states |
+| 3 | Contract documented and validated | yes — two routes, CI-checked |
+| 4 | Server-side authn/authz | yes — authenticated endpoints, codes bound to user + channel |
+| 5 | DB constraints and migration | yes — 0002 on both dialects, CHECK on channel |
+| 6 | Input validation, safe errors | yes — one error shape, no code or destination leakage |
+| 7 | Idempotency and concurrency defined | yes — single-use claimed by affected-row count |
+| 8 | Unit and integration tests pass | yes — 7 API tests + phone/mask unit tests, both engines |
+| 9 | Web and mobile integration | web: yes; **mobile: not yet** (API and shared client are ready) |
+| 10 | Accessibility checked | partial — labels, 44px targets, no screen-reader pass |
+| 11 | Logs, metrics, audit events | logs yes; no metric, no audit stream |
+| 12 | Documentation updated | yes — README, ARCHITECTURE, API, PHASE_STATUS, contract |
 | 13 | QA acceptance and release owner approval | no |

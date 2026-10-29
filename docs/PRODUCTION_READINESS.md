@@ -12,6 +12,8 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Idempotent writes | Replay returns the existing version; `409` with `current_version` on stale writes |
 | Payment integrity | HMAC verification, amount/currency checks, `provider_events` uniqueness, entitlement granted only by webhook |
 | Separate ledgers | Points and commission in distinct append-only tables; balances derived |
+| Contact verification | Email and phone codes are HMAC-stored, single-use, attempt-limited and throttled; purchase requires a verified address; verified against a live PostgreSQL server |
+| Dual database engines | The full suite and the HTTP smoke journey run on SQLite and PostgreSQL 17 in CI |
 | Tenant/role authorisation | Role checks live in handlers; teacher access is class-scoped; covered by tests |
 | Money handling | Integer minor units end to end; formatting tested |
 | Error contract | One envelope, request ids on every response, mapped statuses |
@@ -36,10 +38,10 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 
 | Area | Why it matters |
 | --- | --- |
-| Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). What is still missing is a forward-fix/rollback rehearsal against a production-shaped database, and any PostgreSQL execution at all |
+| Migration strategy | **Versioned runner exists** (`schema_migrations` + checksums, applied once, refuses edited-after-apply files). Migrations now run on SQLite and PostgreSQL 17 in CI. What is still missing is a forward-fix/rollback rehearsal against a production-shaped database |
 | Observability | Structured logs and request ids only: no metrics, tracing, error aggregation or alerting. `GET /readyz` gives a load balancer something real to probe |
 | Backups | No snapshot policy, no tested restore |
-| Notification delivery | No email or push provider; password-reset tokens are logged server-side in development |
+| Notification delivery | No email, SMS or push provider: the adapter boundary exists, but the only implementation writes to the log, with no retries or delivery status |
 | Live payment provider | No adapter, no key management, no webhook replay window |
 | Content operations | 50 demo questions; no editorial pipeline or licensing workflow in practice |
 | Load testing | No measurement of concurrent attempts against a realistic PostgreSQL instance |

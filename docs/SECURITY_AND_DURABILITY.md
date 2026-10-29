@@ -58,12 +58,18 @@ Implemented:
 - Webhook authentication by HMAC-SHA256 over the raw body, with the secret per environment.
 - Security headers on the web app (no framing outside development, no sniffing, no referrer leak).
 - One error envelope with a request id; no stack traces or SQL errors reach the client.
+- Email and phone verification: six-digit codes stored only as an HMAC keyed by a server secret,
+  single-use (claimed by an affected-row count), valid for 15 minutes, spent after five wrong
+  attempts, throttled to one send per 60 seconds and five per hour per channel. An undelivered code is
+  deleted rather than left valid. Checkout requires a verified address.
 
 Not there yet — see `docs/PRODUCTION_READINESS.md` for the full list:
 
 - MFA, device/session listing, idle timeout, and login anomaly detection.
-- Email or phone verification: accounts are created and usable immediately. This is the largest
-  remaining identity gap and it gates public launch.
+- Verification is not a mandatory onboarding step: an unverified account can still practise and take
+  mocks. Money is gated; learning is not.
+- No real delivery provider yet — codes go to the structured log in development, which is why the log
+  sender redacts in production and refuses to pretend it delivered anything.
 - Secret management, key rotation, SAST/dependency scanning in CI.
 - Audit trail for privileged actions: admin review and case resolution are recorded, but there is no
   general audit stream yet.

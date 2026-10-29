@@ -30,6 +30,7 @@ const (
 	CodeSessionClosed    ErrorCode = "SESSION_CLOSED"
 	CodeRateLimited      ErrorCode = "RATE_LIMITED"
 	CodePaymentPending   ErrorCode = "PAYMENT_PENDING"
+	CodeEmailUnverified  ErrorCode = "EMAIL_NOT_VERIFIED"
 	CodeInternal         ErrorCode = "INTERNAL_ERROR"
 )
 
@@ -44,6 +45,7 @@ var statusFor = map[ErrorCode]int{
 	CodeSessionClosed:    http.StatusConflict,
 	CodeRateLimited:      http.StatusTooManyRequests,
 	CodePaymentPending:   http.StatusConflict,
+	CodeEmailUnverified:  http.StatusForbidden,
 	CodeInternal:         http.StatusInternalServerError,
 }
 

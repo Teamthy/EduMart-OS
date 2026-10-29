@@ -127,6 +127,24 @@ Driver: `lib/pq`, not `pgx`. pgx is the more modern client, but its module graph
 the environment this was built in. `lib/pq` has no external dependencies and supports SCRAM-SHA-256;
 swapping to pgx later is a change to one file.
 
+## Verifying an address
+
+Codes are six digits, single-use, valid for 15 minutes, and stored only as an HMAC — a leaked
+database hands out nothing usable. The endpoint is throttled per user and channel, and a code that
+fails to deliver is discarded rather than left valid.
+
+```bash
+# Requires a session; the code never appears in the response.
+curl -X POST localhost:8080/v1/auth/verification/request \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel":"email"}'
+# → 202 {"sent":true,"destination":"a••••@example.com","resend_after":60,...}
+```
+
+In development the code is printed by the log sender, so the flow works on a laptop with no mail
+server. Buying anything requires a verified address: `POST /v1/orders` answers `403
+EMAIL_NOT_VERIFIED` until then, because a receipt and a refund both need a mailbox that exists.
+
 ## What is actually enforced
 
 These are the invariants the product depends on; each has a test.

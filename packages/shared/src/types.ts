@@ -15,6 +15,7 @@ export type ErrorCode =
   | "SESSION_CLOSED"
   | "RATE_LIMITED"
   | "PAYMENT_PENDING"
+  | "EMAIL_NOT_VERIFIED"
   | "INTERNAL_ERROR";
 
 export interface FieldError {
@@ -54,7 +55,23 @@ export interface User {
   onboardingComplete: boolean;
   roles: Role[];
   subjectIds: string[];
+  /** E.164 number on file, whether or not it has been verified. */
+  phone: string | null;
+  /** True only after a code sent to the address was confirmed. */
+  emailVerified: boolean;
+  phoneVerified: boolean;
   createdAt: string;
+}
+
+/** Where a verification code was sent, and for how long it is good. */
+export interface VerificationIssued {
+  sent: boolean;
+  channel: "email" | "phone";
+  /** Masked: enough to recognise the address or number, not enough to harvest it. */
+  destination: string;
+  expires_at: string;
+  resend_after: number;
+  attempts_allowed: number;
 }
 
 export interface SessionResponse {

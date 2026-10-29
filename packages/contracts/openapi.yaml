@@ -201,6 +201,84 @@ paths:
         "200": { description: Password changed }
         "400": { $ref: "#/components/responses/ValidationError" }
 
+  /v1/auth/verification/request:
+    post:
+      tags: [identity]
+      summary: Send a verification code
+      description: |
+        Sends a six-digit code to the account's email address, or to a phone number supplied with the
+        request (stored unverified first, normalised to E.164). The code itself is never returned and
+        never logged outside development; the response only says where it went, masked.
+
+        Throttled per user and channel: one code per 60 seconds, five per hour. A code that fails to
+        deliver is discarded rather than left valid.
+      operationId: requestVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { type: string, enum: [email, phone] }
+                phone:
+                  type: string
+                  description: Required the first time a phone is verified. Local numbers such as 0803 123 4567 are normalised.
+      responses:
+        "202":
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: boolean }
+                  channel: { type: string, enum: [email, phone] }
+                  destination:
+                    type: string
+                    description: Masked, for recognising which address or number was used.
+                  expires_at: { type: string, format: date-time }
+                  resend_after: { type: integer, description: Seconds before another code may be requested }
+                  attempts_allowed: { type: integer }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { description: Too many codes requested }
+
+  /v1/auth/verification/confirm:
+    post:
+      tags: [identity]
+      summary: Confirm a verification code
+      description: |
+        Checks the newest live code for the channel and, on success, records proof of ownership.
+        A code is single-use, expires after 15 minutes, and is spent after five wrong attempts.
+        Every failure returns the same validation shape, so the response never reveals whether a
+        code existed.
+      operationId: confirmVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, code]
+              properties:
+                channel: { type: string, enum: [email, phone] }
+                code: { type: string, description: Six digits, as sent }
+      responses:
+        "200":
+          description: Channel verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified: { type: boolean }
+                  channel: { type: string }
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
   /v1/signup-drafts:
     post:
       tags: [signup]
@@ -794,6 +872,11 @@ paths:
                 productId: { type: string }
       responses:
         "201": { description: Order created (status pending) }
+        "403":
+          description: |
+            The account's email address has not been verified. Purchases are refused until it is:
+            a receipt and a refund both need a mailbox the platform can actually reach.
+            Error code `EMAIL_NOT_VERIFIED`.
 
   /v1/orders/{id}:
     get:
@@ -1123,6 +1206,13 @@ components:
           type: array
           items: { type: string }
         onboardingStep: { type: integer }
+        phone:
+          type: [string, "null"]
+          description: E.164 number on file, verified or not.
+        emailVerified:
+          type: boolean
+          description: True only after a code sent to the address was confirmed.
+        phoneVerified: { type: boolean }
 
     SessionIssued:
       type: object

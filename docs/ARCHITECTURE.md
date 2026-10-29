@@ -144,3 +144,30 @@ start if an applied one was edited afterwards.
 
 Redis is provisioned in `infra/docker` but unused: rate limiting is in-process, and there is no
 background worker yet. Both are Phase 9 items.
+
+## Proving an address is real
+
+An email address typed into a signup form is a claim. `internal/auth/verification.go` turns it into a
+fact, and everything about how it does that follows from the fact that a six-digit code is a very
+small secret.
+
+- **Stored as a keyed hash.** `HMAC-SHA256(secret, userID ‖ channel ‖ code)`. Plain `sha256` would be
+  pointless — a million candidates fall instantly — so the key lives in the environment rather than
+  the database. A SQL dump alone reveals nothing, and a row cannot be replayed against another account
+  or channel.
+- **Single use, claimed by the database.** Confirmation is an `UPDATE … WHERE consumed_at IS NULL`
+  whose affected-row count decides the winner, so two simultaneous confirmations cannot both succeed.
+- **Finite guessing.** Attempts are counted on the row and the code is *spent* on the last try, rather
+  than remaining valid forever at five attempts.
+- **Throttled sending.** 60-second cooldown and five codes per hour per user and channel: an endpoint
+  that sends a message is an endpoint that can be used to bill you and flood someone's inbox.
+- **Delivery is an adapter.** `internal/notify` defines `Sender`; `LogSender` is the development
+  default (redacting codes whenever the deployment is not development), `Recorder` is what tests read.
+  A provider integration is one new type, not a change to identity code.
+- **Failure is not success.** If the sender errors, the row is deleted rather than left live: a code
+  nobody received must not remain a valid credential, and it must not consume the user's hourly quota.
+
+Verification is enforced where it protects something concrete: `POST /v1/orders` refuses an unverified
+address (`EMAIL_NOT_VERIFIED`), because receipts and refunds need a mailbox that exists. It is
+deliberately *not* a blanket gate on practice or mocks — an unverified learner loses nothing by
+practising, and blocking them would only teach people to type fake addresses.

@@ -95,6 +95,8 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/auth/logout", wrap(authHandlers.Logout))
 			g.Post("/auth/password/forgot", wrap(authHandlers.Forgot))
 			g.Post("/auth/password/reset", wrap(authHandlers.Reset))
+			g.Post("/auth/verification/request", wrap(authHandlers.RequestVerification))
+			g.Post("/auth/verification/confirm", wrap(authHandlers.ConfirmVerification))
 		})
 		// Anonymous signup wizard: progress is persisted server-side before an account exists.
 		v1.Get("/signup-drafts/current", wrap(signupHandlers.Current))
