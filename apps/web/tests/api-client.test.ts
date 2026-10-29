@@ -159,3 +159,39 @@ describe("Verification requests", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ channel: "email", code: "123456" });
   });
 });
+
+describe("Institutions", () => {
+  it("invites with the address and role the administrator chose", async () => {
+    const { client, fetchImpl } = clientWith({
+      status: 201,
+      json: {
+        invitation: { id: "inv_1", email: "teacher@school.edu.ng", role: "teacher", status: "pending" },
+        token: "tok_abc",
+      },
+    });
+
+    const result = await client.inviteToOrganization("org_1", {
+      email: "teacher@school.edu.ng",
+      role: "teacher",
+    });
+
+    expect(result.token).toBe("tok_abc");
+    const call = fetchImpl.mock.calls[0];
+    expect(call).toBeDefined();
+    const [url, init] = call!;
+    expect(String(url)).toContain("/v1/organizations/org_1/invitations");
+    expect(JSON.parse(String(init?.body))).toEqual({ email: "teacher@school.edu.ng", role: "teacher" });
+  });
+
+  it("removes a member with DELETE, not a POST that pretends to", async () => {
+    const { client, fetchImpl } = clientWith({ json: { removed: true } });
+
+    await client.removeMember("org_1", "user_9");
+
+    const call = fetchImpl.mock.calls[0];
+    expect(call).toBeDefined();
+    const [url, init] = call!;
+    expect(String(url)).toContain("/v1/organizations/org_1/members/user_9");
+    expect(init?.method).toBe("DELETE");
+  });
+});

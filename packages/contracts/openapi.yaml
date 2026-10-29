@@ -761,6 +761,260 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/organizations:
+    get:
+      tags: [institutions]
+      summary: Organisations the caller belongs to
+      description: Each entry carries the caller's own membership role, so the list doubles as "what may I do here".
+      operationId: listOrganizations
+      responses:
+        "200": { description: Organisations }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [institutions]
+      summary: Register an organisation
+      description: |
+        The caller becomes the organisation's owner — scoped to that organisation and recorded as an
+        auditable membership. No platform-wide role is granted: authority inside an institution comes
+        from membership, never from a role chosen at signup.
+
+        The organisation starts `pending_verification` and a platform administrator approves it. A
+        verified email is required, because there must be a reachable person responsible for it.
+      operationId: createOrganization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 3 }
+                kind: { type: string, enum: [school, centre, ngo, company], default: school }
+      responses:
+        "201":
+          description: Organisation created, unverified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: The caller's email address is not verified (`EMAIL_NOT_VERIFIED`)
+
+  /v1/organizations/{id}:
+    get:
+      tags: [institutions]
+      summary: One organisation
+      description: Members only. A non-member receives 404 rather than 403, so the endpoint cannot be used to enumerate organisations.
+      operationId: getOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Organisation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: "#/components/schemas/Organization" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/organizations/{id}/members:
+    get:
+      tags: [institutions]
+      summary: Membership roster
+      description: Owners and administrators only — a roster contains other people's contact details.
+      operationId: listOrganizationMembers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/OrganizationMember" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/organizations/{id}/members/{userId}:
+    delete:
+      tags: [institutions]
+      summary: Remove a member (or leave)
+      description: |
+        Ends the membership and, in the same transaction, the access it carried — including the global
+        teacher role when no other organisation still grants it. An administrator cannot remove a peer
+        or a superior; anyone may leave on their own behalf. The last owner cannot be removed.
+      operationId: removeOrganizationMember
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Membership ended }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The organisation would be left without an owner
+
+  /v1/organizations/{id}/invitations:
+    get:
+      tags: [institutions]
+      summary: Invitations issued by an organisation
+      description: Owners and administrators. Tokens are never listed — only the state of each invitation.
+      operationId: listOrganizationInvitations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invitation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [institutions]
+      summary: Invite someone into an organisation
+      description: |
+        Creates a single-use, email-locked invitation valid for seven days and returns its token once.
+        The token is stored as a hash, so a database reader cannot use one. Any earlier open invitation
+        for the same address is superseded. Ownership is never invitable.
+      operationId: createOrganizationInvitation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string, enum: [admin, teacher, student], default: teacher }
+      responses:
+        "201":
+          description: Invitation created; the token is returned only here
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation: { $ref: "#/components/schemas/Invitation" }
+                  token:
+                    type: string
+                    description: Opaque invitation token. Deliver it; do not log or store it client-side.
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: That person is already a member }
+
+  /v1/organizations/{id}/invitations/{invitationId}:
+    delete:
+      tags: [institutions]
+      summary: Withdraw an invitation
+      description: The link stops working immediately. Distinct from expiry, which happens on its own.
+      operationId: revokeOrganizationInvitation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: invitationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Invitation withdrawn }
+        "404": { description: No open invitation with that id }
+
+  /v1/organizations/invitations/accept:
+    post:
+      tags: [institutions]
+      summary: Accept an invitation
+      description: |
+        The token must be live, have uses left, and have been addressed to the signed-in account.
+        A teacher invitation is a deliberate grant by an owner, so it confers the platform teacher role;
+        admin and student invitations confer nothing global.
+      operationId: acceptOrganizationInvitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Membership created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  joined: { type: boolean }
+                  organization: { $ref: "#/components/schemas/Organization" }
+        "403": { description: The invitation was addressed to a different account }
+        "404": { description: The token is not valid }
+        "409": { description: Already used, revoked or expired }
+
+  /v1/admin/organizations/{id}/verify:
+    post:
+      tags: [institutions]
+      summary: Approve an organisation
+      description: Platform administrators only. An institution vouching for itself is not verification.
+      operationId: verifyOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: "#/components/schemas/Organization" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Already verified }
+
   /v1/classes:
     get:
       tags: [classroom]
@@ -1213,6 +1467,48 @@ components:
           type: boolean
           description: True only after a code sent to the address was confirmed.
         phoneVerified: { type: boolean }
+
+    Organization:
+      type: object
+      required: [id, name, slug, kind, status, verified, role]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        kind: { type: string, enum: [school, centre, ngo, company] }
+        status: { type: string, enum: [pending_verification, active, suspended] }
+        verified: { type: boolean }
+        verifiedAt: { type: string }
+        role:
+          type: string
+          enum: [owner, admin, teacher, student, platform_admin]
+          description: The caller's own membership role; `platform_admin` when access is administrative.
+        members: { type: integer }
+        classes: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    OrganizationMember:
+      type: object
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [owner, admin, teacher, student] }
+        status: { type: string }
+        joinedAt: { type: string, format: date-time }
+
+    Invitation:
+      type: object
+      description: An offer of membership. The token is returned once, at creation, and never listed.
+      properties:
+        id: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, teacher, student] }
+        status: { type: string, enum: [pending, accepted, revoked, expired] }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        maxUses: { type: integer }
+        useCount: { type: integer }
 
     SessionIssued:
       type: object

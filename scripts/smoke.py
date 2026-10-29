@@ -146,6 +146,54 @@ def main():
     expect(issued["destination"] != fresh_email and "@example.com" in issued["destination"],
            "the destination is masked in the response")
 
+    print("institutions")
+    teacher_token = call("POST", "/auth/login", {"email": "teacher@edumart.ng", "password": "Teacher123!"})[1]["token"]
+
+    status, created_org = call(
+        "POST",
+        "/organizations",
+        {"name": "Smoke Test College %s" % uuid.uuid4().hex[:6], "kind": "school"},
+        teacher_token,
+    )
+    expect(status == 201, "a verified account can register an organisation")
+    organization = created_org["organization"]
+    expect(organization["status"] == "pending_verification", "a new organisation starts unverified")
+    expect(organization["role"] == "owner", "the creator owns the organisation they created")
+
+    # Membership, not a chosen role, decides access: a student is not a member of a brand-new org.
+    outsider_token = call("POST", "/auth/login", {"email": "student@edumart.ng", "password": "Student123!"})[1]["token"]
+    status, body = call("GET", "/organizations/" + organization["id"], None, outsider_token)
+    expect(status == 404, "a non-member cannot see an organisation, and gets 404 rather than 403")
+
+    status, invited = call(
+        "POST",
+        "/organizations/" + organization["id"] + "/invitations",
+        {"email": "student@edumart.ng", "role": "student"},
+        teacher_token,
+    )
+    expect(status == 201 and invited["token"], "an owner can invite someone, and the token is returned once")
+
+    status, joined = call("POST", "/organizations/invitations/accept", {"token": invited["token"]}, outsider_token)
+    expect(status == 200 and joined["joined"] is True, "the invited account can join with the token")
+
+    status, body = call("GET", "/organizations/" + organization["id"] + "/members", None, outsider_token)
+    expect(status == 403, "a student member cannot read the organisation roster")
+
+    status, body = call("POST", "/organizations/invitations/accept", {"token": invited["token"]}, outsider_token)
+    expect(status >= 400, "an invitation cannot be used twice")
+
+    status, body = call("GET", "/organizations/" + organization["id"], None, outsider_token)
+    expect(status == 200, "the member can see the organisation after joining")
+
+    student_id = call("GET", "/me", None, outsider_token)[1]["user"]["id"]
+    status, removed = call(
+        "DELETE", "/organizations/" + organization["id"] + "/members/" + student_id, None, teacher_token
+    )
+    expect(status == 200 and removed["removed"] is True, "an owner can remove a member")
+
+    status, body = call("GET", "/organizations/" + organization["id"], None, outsider_token)
+    expect(status == 404, "removing the membership removes the access it carried")
+
     print("\nsmoke passed")
 
 

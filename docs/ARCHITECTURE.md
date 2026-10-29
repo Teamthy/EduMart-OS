@@ -171,3 +171,24 @@ Verification is enforced where it protects something concrete: `POST /v1/orders`
 address (`EMAIL_NOT_VERIFIED`), because receipts and refunds need a mailbox that exists. It is
 deliberately *not* a blanket gate on practice or mocks — an unverified learner loses nothing by
 practising, and blocking them would only teach people to type fake addresses.
+
+## Institutions and the authorisation model
+
+Authority inside an institution comes from a membership or an invitation. Never from a role chosen at
+signup, and never from an identifier a client sends.
+
+- `organization_memberships` is the source of truth: `owner`, `admin`, `teacher`, `student`.
+- Creating an organisation makes you its owner *and grants nothing platform-wide*. The owner can act
+  on that institution and nowhere else.
+- A teacher invitation is the one invitation that confers the global teacher role, because an owner
+  deliberately issued it. Removing the membership withdraws that role when no other organisation still
+  grants it — otherwise "removed" would be a label rather than a boundary.
+- Every query is scoped by the caller's membership. A non-member receives `404`, not `403`: whether a
+  given institution exists is itself information, and a distinguishable `403` turns id guessing into a
+  map of other schools.
+- Privileged actions write to `audit_logs` in the same transaction as the change they describe, so an
+  audit trail cannot disagree with the state it is meant to explain.
+
+Approval is deliberately outside the institution's control: a new organisation is
+`pending_verification` until a platform administrator approves it. An institution vouching for itself
+is not verification.

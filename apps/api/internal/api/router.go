@@ -17,6 +17,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/content"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
@@ -41,6 +42,7 @@ type Deps struct {
 	Insights *insights.Service
 	Staff    *admin.Service
 	Signup   *signup.Service
+	Orgs     *orgs.Service
 	Logger   *slog.Logger
 	Config   Config
 }
@@ -59,6 +61,7 @@ func NewRouter(d Deps) http.Handler {
 	insightsHandlers := insights.NewHandlers(d.Insights)
 	staffHandlers := admin.NewHandlers(d.Staff)
 	signupHandlers := signup.NewHandlers(d.Signup)
+	orgHandlers := orgs.NewHandlers(d.Orgs)
 
 	r.Use(httpx.RequestIDMiddleware)
 	r.Use(httpx.Recover(d.Logger))
@@ -133,6 +136,22 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/assessment-sessions/{id}/cancel", wrap(assessmentHandlers.Cancel))
 		})
 
+		// ── institutions ─────────────────────────────────────────────────
+		// Membership, not a self-selected role, is what grants authority here. A non-member gets 404
+		// rather than 403, so the API cannot be used to enumerate other organisations.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("organizations", 60, time.Minute))
+			g.Get("/organizations", wrap(orgHandlers.List))
+			g.Post("/organizations", wrap(orgHandlers.Create))
+			g.Get("/organizations/{id}", wrap(orgHandlers.Get))
+			g.Get("/organizations/{id}/members", wrap(orgHandlers.Members))
+			g.Post("/organizations/{id}/invitations", wrap(orgHandlers.Invite))
+			g.Get("/organizations/{id}/invitations", wrap(orgHandlers.Invitations))
+			g.Delete("/organizations/{id}/invitations/{invitationId}", wrap(orgHandlers.RevokeInvitation))
+			g.Delete("/organizations/{id}/members/{userId}", wrap(orgHandlers.RemoveMember))
+			g.Post("/organizations/invitations/accept", wrap(orgHandlers.Accept))
+		})
+
 		// ── classes ──────────────────────────────────────────────────────
 		v1.Get("/classes", wrap(classroomHandlers.List))
 		v1.Post("/classes", wrap(classroomHandlers.Create))
@@ -164,6 +183,7 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/admin/metrics", wrap(staffHandlers.Metrics))
 		v1.Get("/admin/cases", wrap(staffHandlers.Cases))
 		v1.Post("/admin/cases/{id}/resolve", wrap(staffHandlers.Resolve))
+		v1.Post("/admin/organizations/{id}/verify", wrap(orgHandlers.Verify))
 	})
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {

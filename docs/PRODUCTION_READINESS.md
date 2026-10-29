@@ -12,6 +12,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Idempotent writes | Replay returns the existing version; `409` with `current_version` on stale writes |
 | Payment integrity | HMAC verification, amount/currency checks, `provider_events` uniqueness, entitlement granted only by webhook |
 | Separate ledgers | Points and commission in distinct append-only tables; balances derived |
+| Institution tenancy | Organisation creation, approval, membership and invitations are enforced and tested, including cross-tenant IDOR cases |
 | Contact verification | Email and phone codes are HMAC-stored, single-use, attempt-limited and throttled; purchase requires a verified address; verified against a live PostgreSQL server |
 | Dual database engines | The full suite and the HTTP smoke journey run on SQLite and PostgreSQL 17 in CI |
 | Tenant/role authorisation | Role checks live in handlers; teacher access is class-scoped; covered by tests |

@@ -58,6 +58,9 @@ Implemented:
 - Webhook authentication by HMAC-SHA256 over the raw body, with the secret per environment.
 - Security headers on the web app (no framing outside development, no sniffing, no referrer leak).
 - One error envelope with a request id; no stack traces or SQL errors reach the client.
+- Institution membership: org-scoped authority from membership, invitations that are single-use,
+  email-locked, hash-stored and revocable, `404` (not `403`) for non-members to prevent organisation
+  enumeration, and every privileged change written to `audit_logs` in the same transaction.
 - Email and phone verification: six-digit codes stored only as an HMAC keyed by a server secret,
   single-use (claimed by an affected-row count), valid for 15 minutes, spent after five wrong
   attempts, throttled to one send per 60 seconds and five per hour per channel. An undelivered code is
@@ -71,8 +74,8 @@ Not there yet — see `docs/PRODUCTION_READINESS.md` for the full list:
 - No real delivery provider yet — codes go to the structured log in development, which is why the log
   sender redacts in production and refuses to pretend it delivered anything.
 - Secret management, key rotation, SAST/dependency scanning in CI.
-- Audit trail for privileged actions: admin review and case resolution are recorded, but there is no
-  general audit stream yet.
+- Audit trail: admin review, case resolution and organisation membership changes are recorded in
+  `audit_logs`, but there is no general audit stream and no retention policy for it.
 
 ## Backup, restore and the honest gaps
 

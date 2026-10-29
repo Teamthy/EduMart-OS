@@ -46,6 +46,25 @@ Every non-2xx response has the same shape:
 | `GET` | `/me` | Current principal with roles, subject preferences, `emailVerified`, `phoneVerified`, `phone` |
 | `PATCH` | `/me` | Profile, plan and onboarding progress |
 
+### Institutions
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/organizations` | Organisations the caller belongs to, each with their own role |
+| `POST` | `/organizations` | Create one; caller becomes owner. Requires a verified email. Starts `pending_verification` |
+| `GET` | `/organizations/{id}` | Members only; non-members get `404`, not `403` |
+| `GET` | `/organizations/{id}/members` | Owner/admin only (roster holds other people's contact details) |
+| `POST` | `/organizations/{id}/invitations` | `{email, role}` → `201 {invitation, token}`; the token is returned **once** |
+| `GET` | `/organizations/{id}/invitations` | Open and recent invitations, never their tokens |
+| `DELETE` | `/organizations/{id}/invitations/{invitationId}` | Withdraw; the link stops working immediately |
+| `POST` | `/organizations/invitations/accept` | `{token}`; must match the signed-in account's email |
+| `DELETE` | `/organizations/{id}/members/{userId}` | Remove a member, or leave. Withdraws the teacher role with the membership |
+| `POST` | `/admin/organizations/{id}/verify` | Platform administrator approves the institution |
+
+Invitation rules: single use, addressed to one email, valid seven days, single-use claimed by
+affected-row count. A teacher invitation grants the platform teacher role — an owner issued it
+deliberately — while admin and student invitations grant nothing outside the organisation.
+
 ### Signup wizard
 
 | Method | Path | Notes |

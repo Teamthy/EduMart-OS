@@ -20,7 +20,7 @@ Last updated with the email/phone verification work (Phase 7).
 | 5 | Database and persistence | Partial | Both engines tested; **no backup or restore drill** |
 | 6 | API platform and contracts | Done | 53 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification now works; **no refresh-token rotation**, no account suspension |
-| 8 | Authorization and multi-tenancy | Partial | Roles + class scoping; **no organisations, no audit trail** |
+| 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations and audit events now exist; **no org-scoped class/dashboard data yet** |
 | 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
 | 11 | Taxonomy and syllabus | Partial | Exam → subject → topic; **no syllabus versioning** |
@@ -32,7 +32,7 @@ Last updated with the email/phone verification work (Phase 7).
 | 17 | PWA and offline | Partial | Installable and cache-aware; **no pending-write queue, no offline exams** |
 | 18 | Native mobile | Partial | Journeys work; **no crash reporting, no signed release builds** |
 | 19 | Classrooms and assignments | Partial | Classes, join codes, rosters, assignments; no expiry/usage limits on invites |
-| 20 | Institutions and administration | Not started | No `organizations` table; tenancy is per-class today |
+| 20 | Institutions and administration | Partial | Creation, approval, membership and invitations work; **no institution dashboards, data export or retention rules** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Sandbox provider only; **no refunds, disputes or reconciliation** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution; **no payouts or reversal tooling** |
@@ -45,7 +45,8 @@ Last updated with the email/phone verification work (Phase 7).
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
 **Nine of thirty phases are done or effectively done.** The remaining twenty-one are real work, not
-polish.
+polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do
+not.
 
 ---
 
@@ -108,12 +109,32 @@ scope decision — not an oversight.
 
 ### Phase 8 — Authorization and multi-tenancy · Partial
 
-Roles (`student`, `teacher`, `org_admin`, `content_editor`, `finance`, `support`, `platform_admin`) and
-class-scoped checks are implemented and covered by `TestTenantAndRoleAuthorisation`: a learner cannot
-read another learner's attempt, a teacher cannot reach a class they do not teach, and a self-selected
-signup role never becomes a privileged role. There is no `organizations` table, no membership model
-and no privileged-action audit stream, so the phase's exit gate (cross-tenant isolation at the
-organisation level) cannot be met yet.
+**Correction:** an earlier version of this page claimed there was no `organizations` table. That was
+wrong — `organizations`, `organization_memberships` and `invitations` were in the baseline schema all
+along, unused by any Go code. What was missing was the model, not the tables.
+
+Implemented now (`internal/orgs`):
+
+| Item | Evidence |
+| --- | --- |
+| Organisations and membership | `POST/GET /v1/organizations`, owner created with the organisation |
+| Approval flow | New organisations start `pending_verification`; only a platform administrator can approve (`/v1/admin/organizations/{id}/verify`) |
+| Invitations | Single-use, email-locked, seven-day tokens stored as hashes; withdrawing is separate from expiry; a new invitation supersedes an older open one |
+| Role assignment | Membership roles (`owner`, `admin`, `teacher`, `student`); a teacher invitation is the one path that grants the platform teacher role, because an owner deliberately issued it |
+| Role revocation | Removing a membership deletes the membership and the teacher role when no other organisation still grants it — access ends in the same transaction |
+| Tenant scoping | Every organisation query is scoped by membership; non-members get 404, not 403, so the API cannot be used to enumerate institutions |
+| Audit trail | `organization.*` events written to `audit_logs` with actor, resource and metadata, inside the same transaction as the change |
+| Negative tests | `TestCrossTenantIsolation`, `TestRosterIsForAdministrators`, `TestRemovingMembershipRemovesAccess`, `TestLastOwnerCannotBeRemoved` |
+
+Still missing: classes are not yet linked to an organisation by any code path (the column exists and is
+`NULL` for classes created through the API), there is no org-scoped reporting, no membership suspension,
+no ownership transfer, and no admin surface that lists pending organisations.
+
+### Phase 20 — Institutions and administration · Partial
+
+The institution *model* now exists (previous phase). What Phase 20 still needs: an approval queue for
+platform staff, institution dashboards, organisation-level data export and retention rules, and
+suspension with a recovery path. `status = 'suspended'` is defined but nothing sets it.
 
 ### Phase 9 — Design system and shells · Partial
 
@@ -170,13 +191,13 @@ push channel — so the blueprint's exit gate is not met.
 
 ## Recommended next three steps
 
-1. **Phase 20 (institutions) or Phase 19 hardening.** Tenancy is per-class; every institutional
-   feature — org dashboards, reports, renewals — is blocked on an `organizations` model. It is the
-   largest structural absence.
-2. **Phase 28's first slice: a threat model, dependency/secret scanning and a restore drill.** These
-   are cheap, and they convert "we think it is safe and recoverable" into evidence.
-3. **Phase 24: a real email provider with retries and delivery status.** Verification now depends on
-   delivery, and today delivery is a log line.
+1. **Phase 24: a real email provider with retries and delivery status.** Verification and
+   invitations both depend on delivery, and today delivery is a log line — so an invitation token can
+   only be copied by hand from the browser.
+2. **Phase 19/20: link classes to organisations and build the institution view.** The model exists and
+   is enforced; nothing yet uses it for reporting, which is what institutions actually buy.
+3. **Phase 28's first slice: a threat model, dependency/secret scanning and a restore drill.** Cheap,
+   and they convert "we think it is safe and recoverable" into evidence.
 
 ## Feature completion checklist
 
