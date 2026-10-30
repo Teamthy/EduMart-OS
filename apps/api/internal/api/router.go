@@ -21,6 +21,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
+	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
@@ -55,6 +56,7 @@ type Deps struct {
 	Signup   *signup.Service
 	Orgs     *orgs.Service
 	Notifier *notify.Service
+	Finder   *search.Service
 	Logger   *slog.Logger
 	Config   Config
 }
@@ -81,6 +83,7 @@ func NewRouter(d Deps) http.Handler {
 	staffHandlers := admin.NewHandlers(d.Staff, d.Notifier).WithReminders(d.Notifier)
 	signupHandlers := signup.NewHandlers(d.Signup)
 	orgHandlers := orgs.NewHandlers(d.Orgs)
+	searchHandlers := search.NewHandlers(d.Finder, d.Logger)
 
 	// Forwarded headers are believed only when an operator has said a proxy is in front of us. Without
 	// this, a caller rotating X-Forwarded-For bypasses every rate limit in the system.
@@ -209,6 +212,17 @@ func NewRouter(d Deps) http.Handler {
 		// Institution classes belong to the organisation's own administrators, not to whoever holds a
 		// platform-wide teacher role.
 		v1.Get("/organizations/{id}/classes", wrap(classroomHandlers.OrganizationClasses))
+
+		// ── discovery ────────────────────────────────────────────────────
+		// Public, like the taxonomy: somebody deciding whether to sign up should be able to find out
+		// whether the thing exists. The endpoint re-checks visibility against the source tables, so a
+		// stale index cannot surface an unpublished product or a draft.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("search", 60, time.Minute))
+			g.Get("/search", wrap(searchHandlers.Search))
+		})
+		// The projection is rebuilt whole, and only by someone who can see the whole catalogue.
+		v1.Post("/admin/search/reindex", wrap(searchHandlers.Reindex))
 
 		// ── commerce ─────────────────────────────────────────────────────
 		v1.Get("/products", wrap(commerceHandlers.Products))

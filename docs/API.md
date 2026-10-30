@@ -167,6 +167,25 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | `GET` | `/classes/{id}/roster` | Teacher-only, includes attempts and averages |
 | `GET` | `/classes/{id}/assignments` | Published assessments with submission counts |
 
+## Discovery
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/search?q=&type=&limit=` | Public. Prefix matching over a token index; every term must match |
+| `POST` | `/admin/search/reindex` | platform_admin. Full rebuild of the projection, idempotent |
+
+`terms` in the response is what the server actually searched for after tokenising and dropping stopwords, so
+a puzzling result can be explained instead of guessed at. An empty or stopword-only query returns
+`200 {results: [], terms: []}` — an empty answer is not an error, and a client that treats it as one shows a
+failure where it should show "no results".
+
+`type` accepts `all | product | subject | topic`; `limit` is clamped to 50 rather than refused. Ranking is
+title 3 / subtitle 2 / body 1, plus 5 for an exact title, with a stable total order.
+
+Results are filtered against the **source tables** on every query, so an unpublished product or a deactivated
+subject cannot appear even if the index is stale. The index only decides matching; it never decides
+visibility. See [`SEARCH.md`](./SEARCH.md).
+
 ## Commerce
 
 | Method | Path | Notes |

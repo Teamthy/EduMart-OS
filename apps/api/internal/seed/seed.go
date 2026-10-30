@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/teamthy/edumart/apps/api/internal/auth"
+	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -243,6 +244,13 @@ func Run(ctx context.Context, db *store.Store, opts Options) error {
 		if err := seedSamples(ctx, db); err != nil {
 			return err
 		}
+	}
+
+	// The search projection is built from what was just written. Doing it here rather than lazily on the
+	// first search means a fresh developer database has search that works, instead of an empty box that
+	// looks like a bug in the endpoint.
+	if _, err := search.New(db).Reindex(ctx); err != nil {
+		return fmt.Errorf("rebuild search index: %w", err)
 	}
 
 	return db.MetaSet(ctx, "seed_version", "2")

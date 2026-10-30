@@ -30,6 +30,7 @@ servers:
     description: Production
 
 tags:
+  - name: discovery
   - name: identity
   - name: signup
   - name: content
@@ -1309,6 +1310,93 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Product" }
 
+  /v1/search:
+    get:
+      tags: [discovery]
+      summary: Search the catalogue and the syllabus
+      description: |
+        Public, like the taxonomy: somebody deciding whether to sign up should be able to check whether
+        the thing they want exists.
+
+        Matching is **prefix-based on a token index**, not substring search, so "alg" finds "Algebra" and
+        "aljebra" finds nothing. Every term must match — two words are a narrower question, not an either/or —
+        and the response echoes `terms` so a confusing result can be explained rather than guessed at.
+
+        Ranking is: a title match (3) beats a subtitle match (2), which beats a body mention (1), plus 5 for
+        an exact title. Order is stable and total; the same query twice returns the same order.
+
+        Results are filtered against the source tables at query time, so an unpublished product, a
+        deactivated subject or a topic belonging to a deactivated subject can never appear, however stale the
+        index has become.
+      operationId: search
+      security: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: What to look for. An empty or stopword-only query returns zero results, not an error.
+          schema: { type: string, maxLength: 200 }
+        - name: type
+          in: query
+          required: false
+          description: Restrict to one kind of result.
+          schema: { type: string, enum: [all, product, subject, topic], default: all }
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Values above 50 are clamped to 50 rather than refused.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Ranked results, plus the terms the server actually searched for
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, terms, results, count, took_ms]
+                properties:
+                  query: { type: string }
+                  terms:
+                    type: array
+                    items: { type: string }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchResult" }
+                  count: { type: integer }
+                  took_ms: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/admin/search/reindex:
+    post:
+      tags: [staff]
+      summary: Rebuild the search projection
+      description: |
+        Rebuilds the whole index from the source tables in one transaction, so it is safe to call
+        repeatedly and never leaves a half-built index behind. Full rebuild rather than incremental
+        updates on purpose: an incremental path that misses one write site is a bug nobody reports as a
+        bug ("my new product is not searchable").
+
+        The rebuild is not required for correctness — visibility is re-checked on every query — but stale
+        entries are not *found*, so a new product is invisible to search until the next rebuild.
+      operationId: reindexSearch
+      responses:
+        "200":
+          description: Documents and tokens indexed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    type: object
+                    properties:
+                      documents: { type: integer }
+                      tokens: { type: integer }
+                      built_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/orders:
     get:
       tags: [commerce]
@@ -2079,6 +2167,20 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    SearchResult:
+      type: object
+      required: [type, id, title, href, score]
+      properties:
+        type: { type: string, enum: [product, subject, topic] }
+        id: { type: string }
+        title: { type: string }
+        subtitle: { type: string }
+        snippet:
+          type: string
+          description: A bounded excerpt around the first match, present only when the body matched.
+        href: { type: string, description: An in-app path the client can link to. }
+        score: { type: integer }
+
     ErrorEnvelope:
       type: object
       required: [error]

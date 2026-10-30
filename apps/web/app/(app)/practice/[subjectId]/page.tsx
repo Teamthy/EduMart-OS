@@ -15,9 +15,16 @@ import { StartPracticeForm } from "./start-form";
 export const metadata: Metadata = { title: "Start practice" };
 export const dynamic = "force-dynamic";
 
-export default async function StartPracticePage({ params }: { params: Promise<{ subjectId: string }> }) {
+export default async function StartPracticePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ subjectId: string }>;
+  searchParams: Promise<{ topic?: string }>;
+}) {
   await requireUser();
   const { subjectId } = await params;
+  const { topic } = await searchParams;
 
   let subject: Subject;
   let topics: Topic[];
@@ -64,7 +71,13 @@ export default async function StartPracticePage({ params }: { params: Promise<{ 
       ) : (
         <Card>
           <CardContent className="p-5">
-            <StartPracticeForm subject={subject} topics={topics.filter((topic) => topic.questionCount > 0)} />
+            <StartPracticeForm
+              subject={subject}
+              topics={topics.filter((item) => item.questionCount > 0)}
+              // From a search result: preselect the topic so the learner does not repeat their search
+              // inside a form.
+              initialTopicId={topic}
+            />
           </CardContent>
         </Card>
       )}

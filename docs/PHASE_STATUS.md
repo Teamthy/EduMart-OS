@@ -7,8 +7,9 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the backup and recovery work: scheduled dumps with verification and retention, WAL
-archiving, and point-in-time recovery proven by a drill that deletes the cluster first.
+Last updated with search: a public endpoint over the catalogue and syllabus, with ranking that is identical
+on both engines and visibility that is never taken from the index. Before that, accessibility was measured
+rather than claimed, and the system was load-tested with its invariants proved to survive.
 
 ## The whole board
 
@@ -39,7 +40,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
-| 26 | Search and discovery | Not started | No search endpoint; lists only |
+| 26 | Search and discovery | Partial | Prefix search across the catalogue and syllabus, public, with ranking that is identical on both engines and visibility re-checked against the source tables on every query; **no stemming, no typo tolerance, no question-bank search, no relevance evaluation** |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
 | 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
 | 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors), seven invariants proved to hold afterwards in CI, and accessibility now gated on contrast and structure; **no device matrix, no screen-reader or keyboard-only pass, no production-sized dataset, no soak run** |
@@ -469,6 +470,36 @@ can be a sequential scan at a million), nothing has been soaked beyond 45 second
 been load-tested. Still open, and named in [`ACCESSIBILITY.md`](./ACCESSIBILITY.md): **no screen-reader pass,
 no keyboard-only pass, no zoom or reflow check, and the device matrix is not started** — nothing has run on a
 low-end Android phone on 3G, which is the device most learners will actually use.
+
+### Phase 26 — Search and discovery · the endpoint exists, the relevance is unproven
+
+Search was the last "lists only" gap in the product: a learner could browse six subjects and thirty topics,
+and had no way to ask a question. `GET /v1/search` answers it, publicly — somebody deciding whether to sign up
+should be able to check whether the thing they want exists.
+
+Three decisions carry the implementation, and each is in [`SEARCH.md`](./SEARCH.md) with the reasoning:
+
+- **The index is a projection, not the truth.** Tokens decide *matching*; `products.status` and
+  `subjects.active` decide *visibility*, re-checked on every query. A stale index costs recall, never
+  correctness. A test withdraws a product, deliberately skips the reindex, and asserts it disappears.
+- **Tokens, not `LIKE '%term%'`.** A leading wildcard cannot use an index on either engine, so the token
+  table turns a search into a prefix range scan — and keeps one SQL statement working on SQLite and
+  PostgreSQL. On PostgreSQL the index is `text_pattern_ops`, because without it the planner ignores a B-tree
+  for `LIKE 'prefix%'` and quietly sequential-scans.
+- **Ranking in Go.** `ts_rank` and FTS5 rank on different scales, so the two engines would order the same
+  query differently and no test would catch it. One scorer, one stable total order.
+
+The tokeniser keeps diacritics: an ASCII-only implementation, which is the obvious one, makes a correctly
+spelled Yoruba word unsearchable. That was a real bug in the first draft and a test now pins it.
+
+Two smaller things the tests forced, both of which would have shipped as annoyances: an empty result set was
+serialised as `null` rather than `[]` (every client then has to special-case it), and a search for `%` was a
+wildcard that would enumerate the corpus — it is now escaped and returns nothing.
+
+**What is not done, and is not claimed:** no stemming beyond prefix matching, no typo tolerance, no semantic
+search, no relevance evaluation against real queries at all. The weights (title 3, subtitle 2, body 1, exact
+title +5) were chosen by argument, not by looking at a page of results and agreeing they were the right ones.
+The corpus is under 100 documents, so nothing here says how search behaves against a production syllabus.
 
 ### Phase 28 — Security and resilience · Partial, and now measured
 

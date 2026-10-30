@@ -28,6 +28,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
+	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
@@ -119,6 +120,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Signup:   signup.New(db),
 		Orgs:     orgs.New(db).WithNotifier(courier, "http://localhost:3000"),
 		Notifier: courier,
+		Finder:   search.New(db),
 		Logger:   logger,
 		Config:   config,
 	})

@@ -60,6 +60,18 @@ Statuses: `in_progress → submitted | expired | cancelled`. Terminal states nev
 | `provider_events` | Raw webhook events, unique per `(provider, event_id)`, with a processing status |
 | `entitlements` | Granted only by a verified webhook; the source of truth for `/library` |
 
+## Discovery
+
+| Table | Purpose |
+| --- | --- |
+| `search_documents` | One row per findable thing (product, subject, topic); the fields a result card needs |
+| `search_tokens` | One row per `(document, token, field)`; matching happens here, and a prefix range scan is what makes it cheap |
+
+The projection is rebuilt whole and is never authoritative for visibility: `products.status` and
+`subjects.active` are re-checked at query time, so a stale index costs recall rather than correctness.
+Question stems and answers are deliberately **not** indexed — the question bank is what people pay for, and a
+public endpoint that echoes paid content in a snippet is a content leak with a helpful UI.
+
 ## Ledgers (never mixed)
 
 | Table | Asset | Notes |
