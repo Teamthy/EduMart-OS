@@ -227,7 +227,7 @@ apps/
 packages/shared/            wire types, API client, signup definition, design tokens
 legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
 docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model,
-                            backup and recovery, observability and alerting, performance
+                            backup and recovery, observability and alerting, performance, accessibility
 ```
 
 ---

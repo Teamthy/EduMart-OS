@@ -22,7 +22,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
-| 9 | Design system and shells | Partial | Tokens and components shared; **no accessibility verification** |
+| 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
 | 11 | Taxonomy and syllabus | Partial | Exam → subject → topic; **no syllabus versioning** |
 | 12 | Question bank and content ops | Partial | Authoring, review, publishing; **no import pipeline, no withdrawal** |
@@ -42,7 +42,7 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
 | 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
-| 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors) and seven invariants proved to hold afterwards in CI; **no device matrix, no accessibility audit, no production-sized dataset, no soak run** |
+| 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors), seven invariants proved to hold afterwards in CI, and accessibility now gated on contrast and structure; **no device matrix, no screen-reader or keyboard-only pass, no production-sized dataset, no soak run** |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
 **Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
@@ -280,8 +280,12 @@ and a web console — the API exists, the screen does not.
 One token set (`packages/shared/src/design-tokens.ts`) drives Tailwind on web and React Native styles
 on mobile. `apps/web/components/ui` follows shadcn conventions; `apps/mobile/src/components/ui.tsx`
 mirrors it. Loading, empty, error, offline and permission-denied states exist on every P0 screen.
-Accessibility is designed for WCAG 2.2 AA but **has not been verified with assistive technology**, so
-the exit gate is unmet.
+Accessibility is designed for WCAG 2.2 AA and the mechanical half is now enforced on every build:
+contrast is computed from the real tokens and cross-checked against the stylesheet, axe checks structure on
+the primitives, the shell and the high-stakes screens, and a static scan rejects a bare `outline-none`. It
+found seven contrast failures that had shipped (the amber subject chip at 2.72:1, the field border at
+1.55:1) and two structural defects. **No screen-reader or keyboard-only pass has been done**, so the exit
+gate remains unmet — see [`ACCESSIBILITY.md`](./ACCESSIBILITY.md).
 
 ### Phase 10 — Student onboarding and profiles · Partial
 
@@ -450,11 +454,21 @@ contradictions across its six checks. The `Load and invariants` CI job runs both
 loose budget (p95 400 ms, error rate 0.5%): a tight p95 on a shared runner measures the runner, and a flaky
 gate gets switched off.
 
+**Accessibility, the other half of the gate, moved from "designed for" to "measured"** — see
+[`ACCESSIBILITY.md`](./ACCESSIBILITY.md). Contrast is now computed from the real tokens on every build
+(WCAG 1.4.3 at 4.5:1 for text, 1.4.11 at 3:1 for control boundaries), and it found **seven failures that had
+already shipped**: the amber subject chip at 2.72:1, the field border at 1.55:1, the focus ring against a
+filled button at 2.24:1, and muted text on a muted panel at 4.39:1 among them. axe against real markup found
+two structural defects, the worse being the question navigator in a live attempt, which used
+`role="listitem"` on a `<button>` and so announced itself as a list that was not a list — on the screen where
+a learner can least afford to lose their place.
+
 Still open, and named in [`PERFORMANCE.md`](./PERFORMANCE.md): **the ceiling is unknown**, no run has used a
 production-sized dataset (index behaviour at 10⁵–10⁶ rows is unmeasured, and a plan that is fine at 50 rows
-can be a sequential scan at a million), nothing has been soaked beyond 45 seconds, the web app has never been
-load-tested, and **the device matrix and accessibility audit are not started** — nothing has been checked with
-a screen reader or on a low-end Android device.
+can be a sequential scan at a million), nothing has been soaked beyond 45 seconds, and the web app has never
+been load-tested. Still open, and named in [`ACCESSIBILITY.md`](./ACCESSIBILITY.md): **no screen-reader pass,
+no keyboard-only pass, no zoom or reflow check, and the device matrix is not started** — nothing has run on a
+low-end Android phone on 3G, which is the device most learners will actually use.
 
 ### Phase 28 — Security and resilience · Partial, and now measured
 
@@ -585,7 +599,7 @@ Applied to email/phone verification as a worked example of the standard:
 | 7 | Idempotency and concurrency defined | yes — single-use claimed by affected-row count |
 | 8 | Unit and integration tests pass | yes — 7 API tests + phone/mask unit tests, both engines |
 | 9 | Web and mobile integration | web: yes; **mobile: not yet** (API and shared client are ready) |
-| 10 | Accessibility checked | partial — labels, 44px targets, no screen-reader pass |
+| 10 | Accessibility checked | automated: contrast maths against the tokens, axe structure, focus-outline scan; **manual: not done** — no screen-reader or keyboard-only pass |
 | 11 | Logs, metrics, audit events | logs yes; no metric, no audit stream |
 | 12 | Documentation updated | yes — README, ARCHITECTURE, API, PHASE_STATUS, contract |
 | 13 | QA acceptance and release owner approval | no |

@@ -129,8 +129,12 @@ export function AppShell({ user, children }: { user: User; children: React.React
         </div>
       </div>
 
-      {/* Mobile tab bar: five destinations, 44px targets */}
-      <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 backdrop-blur lg:hidden">
+      {/* Mobile tab bar: five destinations, 44px targets.
+          Deliberately *not* labelled "Main" like the sidebar. The two are never on screen together, but
+          only because one is `display: none` at each breakpoint — relying on CSS to keep two landmarks
+          apart is fragile, and if it ever regressed a screen-reader user would hear "navigation" twice
+          with nothing to tell them apart. */}
+      <nav aria-label="Tab bar" className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 backdrop-blur lg:hidden">
         <ul className="grid grid-cols-5">
           {primary.map((item) => (
             <li key={item.href}>

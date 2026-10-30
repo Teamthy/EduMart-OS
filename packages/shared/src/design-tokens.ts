@@ -14,23 +14,29 @@ export const palette = {
   green50: "#eff7f2",
   ink: "#12181d",
   ink2: "#3a444d",
-  ink3: "#667079",
+  // ink3 was #667079, which measured 4.39:1 on the muted panel — a near miss that only bites the
+  // moment muted text lands on a muted background. Darkened to clear 4.5:1 on every surface we use.
+  ink3: "#5b666e",
   ink4: "#8d969e",
   paper: "#f8f7f4",
   surface: "#ffffff",
   line: "#e4e1da",
-  lineStrong: "#d3cfc6",
-  amber500: "#c98508",
+  // lineStrong is the *only* boundary of a text field, a checkbox and a radio. At #d3cfc6 it measured
+  // 1.55:1 against the card: WCAG 1.4.11 wants 3:1 for the visual information that identifies a control.
+  lineStrong: "#8f8672",
+  // amber500 carries warning icons *and* text on the amber cover chip, so it has to clear 4.5:1 on
+  // #fdf0d4 rather than the 3:1 an icon alone would need. #c98508 measured 2.72:1 there.
+  amber500: "#936106",
   amber100: "#fdf0d4",
   rose600: "#b0303f",
   rose100: "#fbe4e4",
   indigo600: "#3b4ec4",
   indigo100: "#e5e8fb",
-  teal600: "#0f7b81",
+  teal600: "#0e747a", // 4.24:1 on its own chip → 4.66:1
   teal100: "#d9f0f1",
   violet600: "#6b3fa0",
   violet100: "#ece3f8",
-  emerald600: "#0f7b4f",
+  emerald600: "#0e764c", // 4.46:1 on its own chip → 4.77:1
   emerald100: "#dbf1e3",
 } as const;
 
@@ -53,6 +59,21 @@ export const coverTones: Record<string, { background: string; foreground: string
   amber: { background: palette.amber100, foreground: palette.amber500 },
   rose: { background: palette.rose100, foreground: palette.rose600 },
 };
+
+/**
+ * Status banner tones, shared so the same five colours are used by the web alerts and the mobile shell.
+ *
+ * They live here rather than inline in the component because a colour literal buried in JSX is invisible
+ * to the contrast check, and the check is the only thing standing between a tasteful amber and an
+ * unreadable one.
+ */
+export const statusTones = {
+  info: { background: "#eef3fb", border: "#c9d6ef", foreground: "#243b63" },
+  success: { background: "#eaf7ef", border: "#bfe3cd", foreground: "#0b5837" },
+  warning: { background: "#fdf6e6", border: "#f0dcae", foreground: "#7a5200" },
+  error: { background: "#fdeeee", border: "#efc4c4", foreground: "#8f2431" },
+  offline: { background: "#f4f1ea", border: "#d9d4c9", foreground: "#4c4a44" },
+} as const;
 
 /** Minimum touch target, per WCAG 2.2 target size (minimum) 24px and platform guidance of 44px. */
 export const minTouchTarget = 44;

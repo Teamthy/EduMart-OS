@@ -17,7 +17,10 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"],
-      "@edumart/shared": ["../../packages/shared/src/index.ts"]
+      "@edumart/shared": ["../../packages/shared/src/index.ts"],
+      // axe-core ships its own declaration file but has no "types" field, so TypeScript needs pointing at
+      // it. The stale @types/axe-core stub (2.0.5) shadows the real 4.x API and types `axe.run` away.
+      "axe-core": ["../../node_modules/axe-core/axe.d.ts"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
