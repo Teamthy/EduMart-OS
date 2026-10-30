@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +73,16 @@ func Open(driver, dsn string) (*Store, error) {
 		// SQLite serialises writes anyway; a single connection avoids "database is locked" churn.
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
+	} else {
+		// Go's default is *unlimited* open connections, which is a footgun rather than a default: a busy
+		// process opens one per in-flight query until PostgreSQL refuses with "too many clients", and the
+		// failure arrives as a wave of 500s at exactly the moment the system is under the most pressure.
+		// Worse, the ceiling is per *server*, so three API replicas each happily opening a hundred
+		// connections fight over the same hundred slots.
+		//
+		// The bound has to be chosen against the database's own limit, not the application's concurrency:
+		// max_connections ÷ replicas, minus room for migrations, the backup job and an operator's psql.
+		applyPool(db)
 	}
 	db.SetConnMaxLifetime(time.Hour)
 
@@ -86,6 +97,46 @@ func Open(driver, dsn string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// applyPool wires the configured bounds onto a pool. It is separate from Open so it can be tested without a
+// database: the claim being made is about the pool's configuration, and proving it by connecting to
+// PostgreSQL inside the unit tests only makes the test slower and its failure harder to read.
+func applyPool(db *sql.DB) {
+	maxOpen, maxIdle := resolvePool()
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+}
+
+// resolvePool reads the pool bounds, clamping idle to open.
+//
+// An idle bound above the ceiling is not harmless: the pool cannot keep more idle connections than it may
+// open, so the surplus setting is silently unhonoured and the operator who wrote it believes something
+// about the system that is not true.
+func resolvePool() (maxOpen, maxIdle int) {
+	maxOpen = poolSize("EDUMART_DB_MAX_OPEN_CONNS", 20)
+	maxIdle = poolSize("EDUMART_DB_MAX_IDLE_CONNS", maxOpen/2)
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+	return maxOpen, maxIdle
+}
+
+// poolSize reads a connection-pool setting, falling back to the default when it is unset or nonsensical.
+//
+// A misconfigured pool is worse than an unset one: zero would mean "no connections", which fails every
+// request with a timeout that looks like a database outage. So an unusable value is ignored loudly rather
+// than obeyed.
+func poolSize(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // Close releases the pool.

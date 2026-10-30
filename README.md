@@ -227,7 +227,7 @@ apps/
 packages/shared/            wire types, API client, signup definition, design tokens
 legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
 docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model,
-                            backup and recovery, observability and alerting
+                            backup and recovery, observability and alerting, performance
 ```
 
 ---
@@ -249,6 +249,8 @@ Copy `.env.example` to `.env` for local overrides; both services read environmen
 | `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
 | `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
 | `EDUMART_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Set `true` **only** behind a load balancer or proxy — otherwise every rate limit is keyed on a value the caller chooses |
+| `EDUMART_DB_MAX_OPEN_CONNS` | `20` | PostgreSQL connection ceiling per process. Unbounded is Go's default and fails only under pressure |
+| `EDUMART_DB_MAX_IDLE_CONNS` | half of the above | Idle connections kept warm; clamped to the ceiling |
 | `EDUMART_METRICS_TOKEN` | unset | Bearer token required by `GET /metrics`. Unset means loopback-only scraping, which is what local development wants and the internet does not |
 | `EDUMART_BACKUP_HEARTBEAT` | unset | Path to the backup job's heartbeat file. Set it, or backup freshness cannot be alerted on |
 | `EDUMART_WEB_URL` | `http://localhost:3000` | Origin used in links sent by email (invitations) |
@@ -291,6 +293,10 @@ real event through the same code path, so the demo can never diverge from produc
 
 - Behind a load balancer, set `EDUMART_TRUST_PROXY=true` so rate limits key on the real client address.
   Left `false` in front of a proxy, every request looks like it came from the proxy and shares one budget.
+
+- Load it before believing it: `python3 scripts/loadtest.py both --dsn "$DSN" --concurrency 96` drives the
+  whole attempt lifecycle and then checks seven integrity invariants against the database it just wrote to.
+  `docs/PERFORMANCE.md` records the numbers and what they do not cover.
 
 - Scrape `GET /metrics` with a token set, and load `infra/observability/alerts.yml`. CI runs
   `scripts/check-alerts.py`, which fails when a rule names a metric the API does not emit — the failure mode
