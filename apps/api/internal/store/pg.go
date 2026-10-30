@@ -282,9 +282,7 @@ func openPostgres(dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := sql.OpenDB(connector)
-	// PostgreSQL handles concurrent writers properly, unlike SQLite: a real pool, not one connection.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
-	return db, nil
+	// The pool bounds are applied by the caller (Open), in one place, so there is no second, silently
+	// winning copy of this policy to drift out of sync with the documented environment variables.
+	return sql.OpenDB(connector), nil
 }

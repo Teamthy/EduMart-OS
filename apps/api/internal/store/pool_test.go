@@ -1,7 +1,7 @@
 package store
 
 import (
-	"os"
+	"database/sql"
 	"testing"
 )
 
@@ -48,23 +48,23 @@ func TestThePoolIsBoundedOnTheSQLitePathToo(t *testing.T) {
 	}
 }
 
-// TestAPoolBoundIsActuallyHonoured proves the setting is wired to the pool rather than merely parsed. It runs
-// against SQLite because it must pass on a machine with no PostgreSQL — the PostgreSQL half of the same
-// claim is exercised by the load test in CI, which would fail loudly if the ceiling were not applied.
+// TestAPoolBoundIsActuallyHonoured proves the setting is wired to the pool rather than merely parsed.
+//
+// It deliberately does not connect: sql.OpenDB creates the pool without dialling, so this pins the wiring on
+// every machine, with or without PostgreSQL. Opening for real would run migrations, and a unit test that
+// fights the other PostgreSQL tests over the same schema fails for a reason that has nothing to do with pools
+// — which is exactly what it did in CI the first time.
 func TestAPoolBoundIsActuallyHonoured(t *testing.T) {
 	t.Setenv("EDUMART_DB_MAX_OPEN_CONNS", "3")
 	t.Setenv("EDUMART_DB_MAX_IDLE_CONNS", "99") // deliberately above the open bound, so the clamp is exercised
-	if os.Getenv("EDUMART_TEST_POSTGRES_DSN") == "" {
-		t.Skip("set EDUMART_TEST_POSTGRES_DSN to exercise the PostgreSQL pool")
-	}
-	db, err := Open("postgres", os.Getenv("EDUMART_TEST_POSTGRES_DSN"))
+	db, err := sql.Open("postgres", "postgres://unused@127.0.0.1:1/unused?sslmode=disable&connect_timeout=1")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	stats := db.DB.Stats()
-	if stats.MaxOpenConnections != 3 {
-		t.Fatalf("expected a ceiling of 3, got %d", stats.MaxOpenConnections)
+	applyPool(db)
+	if got := db.Stats().MaxOpenConnections; got != 3 {
+		t.Fatalf("expected a ceiling of 3, got %d", got)
 	}
 	// The idle bound is clamped to the open bound, because an idle pool larger than the ceiling is a
 	// configuration that silently cannot be honoured.

@@ -82,9 +82,7 @@ func Open(driver, dsn string) (*Store, error) {
 		//
 		// The bound has to be chosen against the database's own limit, not the application's concurrency:
 		// max_connections ÷ replicas, minus room for migrations, the backup job and an operator's psql.
-		maxOpen, maxIdle := resolvePool()
-		db.SetMaxOpenConns(maxOpen)
-		db.SetMaxIdleConns(maxIdle)
+		applyPool(db)
 	}
 	db.SetConnMaxLifetime(time.Hour)
 
@@ -99,6 +97,15 @@ func Open(driver, dsn string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// applyPool wires the configured bounds onto a pool. It is separate from Open so it can be tested without a
+// database: the claim being made is about the pool's configuration, and proving it by connecting to
+// PostgreSQL inside the unit tests only makes the test slower and its failure harder to read.
+func applyPool(db *sql.DB) {
+	maxOpen, maxIdle := resolvePool()
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
 }
 
 // resolvePool reads the pool bounds, clamping idle to open.
