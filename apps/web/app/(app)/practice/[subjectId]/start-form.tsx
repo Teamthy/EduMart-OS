@@ -15,12 +15,24 @@ import { cn } from "@/lib/utils";
 
 const COUNTS = [5, 10, 20, 30];
 
-export function StartPracticeForm({ subject, topics }: { subject: Subject; topics: Topic[] }) {
+export function StartPracticeForm({
+  subject,
+  topics,
+  initialTopicId,
+}: {
+  subject: Subject;
+  topics: Topic[];
+  /** Set when the learner arrived from a search result for a specific topic. */
+  initialTopicId?: string;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [count, setCount] = useState(10);
   const [difficulty, setDifficulty] = useState("all");
-  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<string[]>(() =>
+    // A search result for a topic opened this form; ticking it here is the whole point of the deep link.
+    initialTopicId && topics.some((topic) => topic.id === initialTopicId) ? [initialTopicId] : [],
+  );
   const [error, setError] = useState<ApiError | null>(null);
   const [starting, setStarting] = useState(false);
 

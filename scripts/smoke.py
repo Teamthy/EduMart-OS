@@ -135,6 +135,20 @@ def main():
     expect(sum(1 for s in sessions["sessions"] if s["current"]) == 1, "exactly one session is current")
     expect(all("token" not in s for s in sessions["sessions"]), "no session token is exposed")
 
+    print("search")
+    status, found = call("GET", "/search?q=algebra")
+    expect(status == 200 and found["results"], "search finds a seeded topic by a prefix-free word")
+    expect(all(result["href"].startswith("/") for result in found["results"]),
+           "every result links somewhere inside the app")
+    types = {result["type"] for result in found["results"]}
+    expect(types <= {"product", "subject", "topic"}, "search returns only known kinds of result")
+    status, nothing = call("GET", "/search?q=%25")
+    expect(status == 200 and nothing["count"] == 0, "a wildcard is searched as text, not as a wildcard")
+    expect(call("GET", "/search?q=algebra&limit=0")[0] == 400, "a nonsense page size is refused")
+    status, empty = call("GET", "/search?q=")
+    expect(status == 200 and empty["results"] == [] and empty["terms"] == [],
+           "an empty query is an empty answer, not an error")
+
     print("commerce")
     status, products = call("GET", "/products", None, token)
     expect(status == 200 and products["products"], "the store lists products")

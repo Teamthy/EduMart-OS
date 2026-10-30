@@ -43,16 +43,21 @@ is a change, not a rewrite.
     is not started** — nothing has run on a low-end Android phone on 3G, which is the device most learners
     will actually use.
 
+12. **Search relevance.** `GET /v1/search` works and is tested, but the weights were chosen by argument and
+    nobody has evaluated a page of results against real queries. There is no stemming, no typo tolerance and
+    no search inside the question bank — and the corpus is under 100 documents, so nothing is known about
+    behaviour against a production syllabus.
+
 ## P2 — growth and polish
 
-12. **Study plan generation.** `study_plans` stores intent; nothing derives a week-by-week plan from
+13. **Study plan generation.** `study_plans` stores intent; nothing derives a week-by-week plan from
     topic performance.
-13. **Leaderboards and class analytics.** `topic_performance` and roster averages exist; the
+14. **Leaderboards and class analytics.** `topic_performance` and roster averages exist; the
     comparison views do not.
-14. **Publisher portal.** Product/payout management for third parties.
-15. **Localisation.** Copy is en-NG only; the design tokens and formatting helpers are centralised,
+15. **Publisher portal.** Product/payout management for third parties.
+16. **Localisation.** Copy is en-NG only; the design tokens and formatting helpers are centralised,
     so adding a second locale is contained.
-16. **PDF/print result sheets** for parents and schools.
+17. **PDF/print result sheets** for parents and schools.
 
 ## Explicit non-goals for now
 

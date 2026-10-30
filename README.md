@@ -227,7 +227,8 @@ apps/
 packages/shared/            wire types, API client, signup definition, design tokens
 legacy/web-sqlite/          the previous Next.js + node:sqlite prototype (reference only)
 docs/                       architecture, API, data model, signup flow, mobile, readiness, threat model,
-                            backup and recovery, observability and alerting, performance, accessibility
+                            backup and recovery, observability and alerting, performance, accessibility,
+                            search
 ```
 
 ---
@@ -293,6 +294,10 @@ real event through the same code path, so the demo can never diverge from produc
 
 - Behind a load balancer, set `EDUMART_TRUST_PROXY=true` so rate limits key on the real client address.
   Left `false` in front of a proxy, every request looks like it came from the proxy and shares one budget.
+
+- Find things: `curl 'http://localhost:8080/v1/search?q=algebra'` — prefix search over the catalogue and
+  syllabus, public, with visibility re-checked against the source tables on every query. `docs/SEARCH.md`
+  explains the ranking and what it deliberately does not do.
 
 - Load it before believing it: `python3 scripts/loadtest.py both --dsn "$DSN" --concurrency 96` drives the
   whole attempt lifecycle and then checks seven integrity invariants against the database it just wrote to.

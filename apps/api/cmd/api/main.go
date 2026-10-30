@@ -27,6 +27,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
+	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
@@ -109,6 +110,7 @@ func main() {
 		Signup:   signup.New(db),
 		Orgs:     institutions,
 		Notifier: notifier,
+		Finder:   search.New(db),
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:    splitList(env("EDUMART_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")),

@@ -63,6 +63,34 @@ export interface User {
   createdAt: string;
 }
 
+// ── discovery ─────────────────────────────────────────────────────────────
+
+/**
+ * One result from `GET /v1/search`.
+ *
+ * `href` is an in-app path rather than a URL, so both clients can link it with their own router, and
+ * `snippet` is present only when the body matched — an excerpt invented for a title match reads like a
+ * quote that does not exist.
+ */
+export interface SearchResult {
+  type: "product" | "subject" | "topic";
+  id: string;
+  title: string;
+  subtitle: string;
+  snippet?: string;
+  href: string;
+  score: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  /** What the server actually searched for, after tokenising and dropping stopwords. */
+  terms: string[];
+  results: SearchResult[];
+  count: number;
+  took_ms: number;
+}
+
 // ── institutions ──────────────────────────────────────────────────────────
 export type OrganizationRole = "owner" | "admin" | "teacher" | "student" | "platform_admin";
 export type OrganizationStatus = "pending_verification" | "active" | "suspended";
