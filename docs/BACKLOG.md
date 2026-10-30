@@ -35,8 +35,13 @@ is a change, not a rewrite.
 10. **Full offline mode.** The PWA caches the shell and the runner retries writes, but questions are
     deliberately not cached. A proper offline attempt (pre-fetched snapshot, signed deadline) needs a
     product decision about the clock.
-11. **Accessibility audit.** WCAG 2.2 AA is designed in (focus rings, aria-live save states, 44px
-    targets, reduced motion). It has not been verified with a screen reader on a real device.
+11. **Accessibility: the manual half.** Contrast is now measured against the tokens and structure is
+    checked by axe on every build (see `docs/ACCESSIBILITY.md`), which caught seven shipped contrast
+    failures and two landmark/role defects. What remains cannot be automated: **no screen-reader pass**
+    (NVDA/TalkBack/VoiceOver), **no keyboard-only pass** through signup, checkout or a timed attempt, no
+    200% zoom or 320px reflow check, and no testing with assistive-technology users. The **device matrix
+    is not started** — nothing has run on a low-end Android phone on 3G, which is the device most learners
+    will actually use.
 
 ## P2 — growth and polish
 

@@ -58,17 +58,20 @@
   --secondary: #eff7f2;
   --secondary-foreground: #0a4630;
   --muted: #f1efea;
-  --muted-foreground: #667079;
+  --muted-foreground: #5b666e; /* 4.39:1 on --muted was a near miss; see docs/ACCESSIBILITY.md */
   --accent: #dff0e7;
   --accent-foreground: #0a4630;
   --destructive: #b0303f;
   --destructive-foreground: #ffffff;
-  --success: #0f7b4f;
+  --success: #0e764c;
   --success-foreground: #ffffff;
-  --warning: #c98508;
-  --warning-foreground: #12181d;
+  /* Warning carries text on the amber chip as well as icons, so it clears 4.5:1 on that chip. Dark
+     enough to need white, not ink, as its foreground. */
+  --warning: #936106;
+  --warning-foreground: #ffffff;
   --border: #e4e1da;
-  --input: #d3cfc6;
+  /* The border is the only thing that identifies a text field: 3.01:1 or better on every surface. */
+  --input: #8f8672;
   --ring: #1a9a73;
 
   --font-sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

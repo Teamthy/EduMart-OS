@@ -34,7 +34,7 @@ An honest assessment of this repository. "Ready" means it has been exercised, no
 | Rate limiting | In-process only — resets on deploy and does not coordinate across instances (Redis is scaffolded in `infra/docker` but unused). Keyed on the socket address unless `EDUMART_TRUST_PROXY=true`, so a forwarded header cannot buy extra attempts |
 | Payments | Only the sandbox provider is wired. Refunds and reconciliation exist and are auditable, but a refund **records** money rather than moving it — there is no provider refund adapter |
 | Offline | Shell cached; attempts require connectivity by design |
-| Accessibility | Designed to WCAG 2.2 AA; not verified with assistive technology on real devices |
+| Accessibility | **Contrast and structure are measured** on every build: seven shipped contrast failures were found and fixed (the worst at 1.55:1) and axe caught two landmark/role defects. **Not verified with assistive technology**: no screen-reader pass, no keyboard-only pass, no zoom/reflow check, no testing with AT users. The device matrix is not started — see `docs/ACCESSIBILITY.md` |
 | Mobile builds | Bundles verified for all three platforms; signed `.apk`/`.aab`/`.ipa` still come from EAS (no SDK or signing identity here) |
 
 ## Not ready

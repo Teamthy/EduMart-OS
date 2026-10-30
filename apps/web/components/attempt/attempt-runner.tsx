@@ -331,16 +331,18 @@ export function AttemptRunner({ session }: { session: AssessmentSessionView }) {
               </span>
             </div>
 
-            <div className="grid grid-cols-5 gap-1.5" role="list" aria-label="Question navigation">
+            {/* A real `<ul>` rather than role="list" on a div: `listitem` is not an allowed role on a
+                `<button>`, so the previous markup gave screen readers a broken list — which is exactly
+                what axe flagged. The button stays the interactive element; the `li` carries the structure. */}
+            <ul className="grid grid-cols-5 gap-1.5" aria-label="Question navigation">
               {questions.map((question, index) => {
                 const state = answers[question.qvId];
                 const answered = state?.optionId !== null && state?.optionId !== undefined;
                 const status = state?.status ?? "idle";
                 return (
+                  <li key={question.qvId}>
                   <button
-                    key={question.qvId}
                     type="button"
-                    role="listitem"
                     onClick={() => setCurrentIndex(index)}
                     aria-current={index === currentIndex ? "true" : undefined}
                     aria-label={`Question ${index + 1}${answered ? ", answered" : ", not answered"}${
@@ -361,9 +363,10 @@ export function AttemptRunner({ session }: { session: AssessmentSessionView }) {
                       index + 1
                     )}
                   </button>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
 
             {/* Save state is announced politely: it is informative, not urgent. */}
             <div aria-live="polite" className="space-y-2 text-xs">
