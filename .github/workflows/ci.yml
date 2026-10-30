@@ -336,3 +336,49 @@ jobs:
       - name: Stop the API
         if: always()
         run: kill "$(cat /tmp/api.pid)" 2>/dev/null || true
+
+  load:
+    name: Load and invariants
+    runs-on: ubuntu-latest
+    needs: [api]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: edumart_load
+          POSTGRES_USER: edumart
+          POSTGRES_PASSWORD: edumart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edumart -d edumart_load"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: apps/api/go.sum
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get update -qq && sudo apt-get install -yqq postgresql-client
+      - name: Build the API and the load generator
+        working-directory: apps/api
+        run: |
+          go build -o /tmp/edumart-api ./cmd/api
+          go build -o /tmp/edumart-loadtest ./cmd/loadtest
+      - name: Load both engines, then prove the invariants survived
+        # The budget is deliberately loose. A tight p95 threshold on a shared CI runner measures the runner,
+        # not the code, and a flaky gate gets switched off — which is worse than no gate. What this catches
+        # is a real regression: an order of magnitude of latency, any 5xx under concurrency, or a broken
+        # invariant, which is the half that matters.
+        run: |
+          python3 scripts/loadtest.py sqlite --concurrency 24 --duration 15s --warmup 3s --ramp 2s \
+            --port 8099 --max-p95 400ms --max-error-rate 0.005
+          python3 scripts/loadtest.py postgres \
+            --dsn 'postgres://edumart:edumart@localhost:5432/edumart_load?sslmode=disable' \
+            --concurrency 64 --duration 20s --warmup 4s --ramp 3s \
+            --port 8101 --max-p95 400ms --max-error-rate 0.005
+        env:
+          EDUMART_API_BIN: /tmp/edumart-api

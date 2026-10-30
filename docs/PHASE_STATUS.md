@@ -42,11 +42,11 @@ archiving, and point-in-time recovery proven by a drill that deletes the cluster
 | 26 | Search and discovery | Not started | No search endpoint; lists only |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
 | 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
-| 29 | Performance and QA | Not started | No load tests, no device matrix, no accessibility audit |
+| 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors) and seven invariants proved to hold afterwards in CI; **no device matrix, no accessibility audit, no production-sized dataset, no soak run** |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
-**Nine of thirty phases are done or effectively done.** The remaining twenty-one are real work, not
-polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do
+**Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
+been measured under load and its invariants proved to survive it. The remaining work is real, not polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do
 not.
 
 ---
@@ -400,6 +400,61 @@ reconciliation job (the report is pulled, not pushed), and no commission approva
 Paystack adapter has never been exercised against the live API from this repository: its contract with the
 provider is covered by a fake server and its own documented shapes, which is not the same as a real refund
 having gone through it.
+
+### Phase 29 — Performance and QA · measured, not assumed
+
+The readiness document had been repeating the honest version of this gap for months: *no measurement of
+concurrent attempts against a realistic PostgreSQL instance*. [`PERFORMANCE.md`](./PERFORMANCE.md) is that
+measurement.
+
+**The workload is the whole attempt lifecycle** — browse, start an attempt, save three answers, submit, read
+it back — not one endpoint. A benchmark of `GET /products` would measure the cheapest thing in the system and
+say nothing about the write path, where the server owns deadlines, optimistic versions and duplicate-submission
+protection. Reads are 30% of journeys, virtual users hold keep-alive connections, and each carries its own
+`X-Forwarded-For` so a cohort is not collapsed into one client's rate-limit budget.
+
+| Engine | Users | Throughput | p50 | p95 | p99 | Errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| SQLite | 32 | 31 req/s | 0.9 ms | 2.2 ms | 3.2 ms | 0% |
+| PostgreSQL | 96 | 88 req/s | 3.1 ms | 6.6 ms | 8.7 ms | 0% |
+| PostgreSQL | 300 | 264 req/s | 3.4 ms | 8.5 ms | 16.1 ms | 0% |
+
+p95 barely moves from 96 to 300 users while throughput triples, so **the ceiling was not found** — which is
+the honest way to report it. The numbers are from a 2-vCPU sandbox with everything on loopback and 50 seeded
+questions; they are evidence about what the design costs, not a capacity plan.
+
+**Two defects the load found, both fixed:**
+
+- The PostgreSQL connection pool was **unbounded** — Go's default. Under load the process would open a
+  connection per in-flight query until the server refused, turning peak traffic into a wave of 500s, and each
+  additional API replica would make it worse. Now bounded (`EDUMART_DB_MAX_OPEN_CONNS`, default 20) and
+  refusing values that would make it worse (`0` means *unlimited* to `database/sql`). Measured cost: none.
+- The **demo seed violated the Phase 14 deadline rule**: its historical attempt was submitted ten minutes
+  after its own deadline, a state the server refuses to produce. The integrity check caught it on the first
+  run; the seed now produces a state the engine could actually have produced.
+
+**The half that matters is the invariants**, checked in SQL against the database the load just wrote to:
+
+| Check | What breaking looks like |
+| --- | --- |
+| `sessions_scored_once` | A submitted attempt with no score |
+| `responses_belong_to_a_session` | An orphaned answer row |
+| `no_duplicate_responses` | Two answer rows for one question in one attempt |
+| `deadline_respected` | Accepting a submission after the deadline the server set |
+| `points_ledger_traces_to_something` | A points entry with no owner |
+| `no_duplicate_ledger_keys` | Ledger idempotency keys colliding |
+| `reconciliation_clean` | Any of the six finance contradictions |
+
+All held at 300 concurrent users with 1,812 attempts submitted, and `reconciliation` reported zero
+contradictions across its six checks. The `Load and invariants` CI job runs both engines with a deliberately
+loose budget (p95 400 ms, error rate 0.5%): a tight p95 on a shared runner measures the runner, and a flaky
+gate gets switched off.
+
+Still open, and named in [`PERFORMANCE.md`](./PERFORMANCE.md): **the ceiling is unknown**, no run has used a
+production-sized dataset (index behaviour at 10⁵–10⁶ rows is unmeasured, and a plan that is fine at 50 rows
+can be a sequential scan at a million), nothing has been soaked beyond 45 seconds, the web app has never been
+load-tested, and **the device matrix and accessibility audit are not started** — nothing has been checked with
+a screen reader or on a low-end Android device.
 
 ### Phase 28 — Security and resilience · Partial, and now measured
 

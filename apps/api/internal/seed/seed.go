@@ -474,7 +474,12 @@ func seedHistoricalAttempt(ctx context.Context, db *store.Store, studentID strin
 		 score_raw, score_max, score_percent, snapshot_json, created_at)
 		VALUES (?,?,NULL,NULL,'practice',1,'submitted',?,?,?,?,?,?,?,?)
 		ON CONFLICT (id) DO NOTHING`,
-		sessionID, studentID, store.TS(completed.Add(-12*time.Minute)), store.TS(completed.Add(-2*time.Minute)),
+		// The deadline must be *after* the submission, because that is the only state the server itself can
+		// produce: a practice attempt has a 40-minute limit from its start, and submission closes it. Seeding
+		// a row that was submitted 10 minutes after it expired made the demo data violate the Phase 14 rule
+		// the engine enforces — which a load test's integrity check found, and which would have quietly
+		// taught anyone reading the seed that the rule does not hold.
+		sessionID, studentID, store.TS(completed.Add(-12*time.Minute)), store.TS(completed.Add(28*time.Minute)),
 		store.TS(completed), 7, len(snapshot.Questions), 70, string(raw), store.Now()); err != nil {
 		return err
 	}
