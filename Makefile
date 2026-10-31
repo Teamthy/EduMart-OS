@@ -64,6 +64,10 @@ smoke: ## Walk the learner journey against a running API (BASE=http://localhost:
 drill: ## Destroy a database and prove the backup brings it back (ENGINE=sqlite|postgres|both)
 	python3 scripts/restore-drill.py $(or $(ENGINE),sqlite) $(if $(DSN),--dsn $(DSN))
 
+rollback: ## Refuse unsafe migrations, then deploy forward and roll back (FROM=ref DSN=…)
+	python3 scripts/deploy-rehearsal.py --check-only
+	python3 scripts/deploy-rehearsal.py $(if $(FROM),--from $(FROM)) $(if $(DSN),--engine postgres --dsn $(DSN))
+
 assets: ## Regenerate the app icons and splash
 	python3 scripts/render-assets.py
 
