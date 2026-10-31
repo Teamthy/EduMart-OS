@@ -2,11 +2,14 @@
 //
 //	go run ./cmd/api                       # SQLite at ./data/edumart.db, seeded demo data
 //	EDUMART_DRIVER=postgres EDUMART_DSN=postgres://… go run ./cmd/api
+//	go run ./cmd/api -migrate-only         # apply pending migrations, report, exit 0
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,6 +37,16 @@ import (
 )
 
 func main() {
+	// A one-shot migration step, so a rollout can migrate *before* any replica starts serving.
+	//
+	// Migrations otherwise run when a process opens the database, which means N replicas booting together
+	// all see the same pending migration and race: the ledger stops them diverging, but the losers exit with
+	// a duplicate-key error and crashloop until the winner finishes. Running this first removes the race,
+	// and a replica that starts after it finds nothing pending and only verifies checksums.
+	migrateOnly := flag.Bool("migrate-only", false,
+		"apply pending migrations, report what is applied, and exit without serving")
+	flag.Parse()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	driver := env("EDUMART_DRIVER", "sqlite3")
@@ -45,6 +58,23 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	if *migrateOnly {
+		// Deliberately before seeding: a migration job that also writes demo fixtures is a job that does
+		// two things, and the second one is not safe to run against production.
+		status, err := db.MigrationStatus(context.Background())
+		if err != nil {
+			logger.Error("migration status unavailable", "error", err.Error())
+			os.Exit(1)
+		}
+		if len(status.Pending) > 0 {
+			logger.Error("migrations still pending after opening the database",
+				"pending", fmt.Sprint(status.Pending))
+			os.Exit(1)
+		}
+		logger.Info("migrations applied", "engine", db.Driver, "applied", len(status.Applied))
+		return
+	}
 
 	if env("EDUMART_SEED", "true") == "true" {
 		if err := seed.Run(context.Background(), db, seed.Options{

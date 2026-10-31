@@ -7,9 +7,10 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with search: a public endpoint over the catalogue and syllabus, with ranking that is identical
-on both engines and visibility that is never taken from the index. Before that, accessibility was measured
-rather than claimed, and the system was load-tested with its invariants proved to survive.
+Last updated with the deploy rehearsal: rollback is executed on every pull request instead of described in a
+document, and destructive migrations are refused. Before that, search closed the last "lists only" gap,
+accessibility was measured rather than claimed, and the system was load-tested with its invariants proved to
+survive.
 
 ## The whole board
 
@@ -18,7 +19,7 @@ rather than claimed, and the system was load-tested with its invariants proved t
 | 1 | Product specification | Partial | PRD exists; no recorded sign-off, no owners |
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
-| 4 | Infrastructure and CI/CD | Partial | CI is real; staging **does not exist**, so deploy *and* rollback are unproven |
+| 4 | Infrastructure and CI/CD | Partial | CI is real, and **deploy and rollback are now rehearsed on every PR** against PostgreSQL — previous release built from git, migrated forward, then rolled back and proved to read the newer release's data. **No hosting target, no staging environment, no container image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
@@ -61,15 +62,38 @@ not.
 covering both engines, and `README.md` carrying the commands CI actually runs. Verified by CI doing a
 clean install on every push.
 
-### Phase 4 — Infrastructure and CI/CD · Partial
+### Phase 4 — Infrastructure and CI/CD · rollback is no longer a hypothesis
 
 | Item | Status |
 | --- | --- |
-| CI quality gates | gofmt, vet, contract check, Go tests (`-race`) on **SQLite and PostgreSQL 17**, web typecheck/tests/`next build`, mobile typecheck + Metro bundle, HTTP smoke against both engines |
+| CI quality gates | gofmt, vet, contract check, Go tests (`-race`) on **SQLite and PostgreSQL 17**, web typecheck/tests/`next build`, mobile typecheck + Metro bundle, HTTP smoke against both engines, load + invariants, restore + backup + PITR drills, **deploy and rollback rehearsal** |
 | Migration execution policy | `store/migrate.go`: checksummed, applied once, one transaction per migration, refuses an edited-after-apply file |
-| Environments | Development and CI are real. **Staging and production are not provisioned** |
-| Rollback | Documented in `docs/PRODUCTION_READINESS.md`; never exercised, because there is nothing to roll back |
-| Secret/dependency scanning | **Not started** |
+| Migration safety | **New.** Destructive DDL (drop/rename) fails the build unless the file declares `-- rehearsal: destructive: <reason>` |
+| Migrate-then-serve | **New.** `edumart-api -migrate-only` applies pending migrations and exits, so a rollout migrates before any replica serves |
+| Rollback | **Rehearsed on every pull request.** Previous release built from git, migrated forward, then rolled back onto the newer schema and proved to read the newer release's data |
+| Environments | Development and CI are real. **Staging and production are still not provisioned** |
+| Container image | **Does not exist.** The rehearsal ships raw binaries, which is what has been tested |
+
+The gate that was missing is now executed rather than described. Phase 4's gap was never "we have no CI" —
+it was *deploy and rollback are unproven*, and a rollback plan nobody has run is a hypothesis that gets tested
+for the first time during an incident. `scripts/deploy-rehearsal.py` builds **two real releases** (the
+previous one from a git ref, this one from the working tree), deploys the old one, migrates, proves the old
+one still serves the migrated database, deploys the new one, writes an order with it, **rolls back**, and
+reads that order with the old code. Seven stages, both engines, in CI. See
+[`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
+Two things it found immediately, which is the point of running something rather than writing about it:
+
+- **The de-facto deploy order was wrong.** Migrations run when a process opens the database, so N replicas
+  starting together all claim the same pending migration — the ledger stops them diverging, but the losers
+  exit on a duplicate row and crashloop. `-migrate-only` gives the rollout the right order; replicas still
+  migrate at boot, so this is mitigation, not a lock.
+- **`sqlite` is `sqlite3` to database/sql.** The first run on the SQLite path died with
+  `unknown driver "sqlite"` — a reminder that a rehearsal with one engine misses what the other one catches.
+
+What is still missing, and not claimed: **no hosting target, no staging environment, no container image, no
+automated rollback trigger, and no data rollback** (reverting a schema change loses what the newer code wrote
+into it).
 
 ### Phase 5 — Database and persistence foundation · restore, backup and PITR all demonstrated
 

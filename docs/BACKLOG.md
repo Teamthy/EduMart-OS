@@ -48,16 +48,21 @@ is a change, not a rewrite.
     no search inside the question bank — and the corpus is under 100 documents, so nothing is known about
     behaviour against a production syllabus.
 
+13. **A hosting target and a staging environment.** Deploy and rollback are rehearsed against real binaries
+    and a real PostgreSQL database, but nothing has ever been *deployed to a host*: no container image, no
+    DNS, TLS, load balancer, secrets management, or rolling restart with two replicas in flight. Replicas
+    also still migrate on boot, so `-migrate-only` gives the right order without removing the race.
+
 ## P2 — growth and polish
 
-13. **Study plan generation.** `study_plans` stores intent; nothing derives a week-by-week plan from
+14. **Study plan generation.** `study_plans` stores intent; nothing derives a week-by-week plan from
     topic performance.
-14. **Leaderboards and class analytics.** `topic_performance` and roster averages exist; the
+15. **Leaderboards and class analytics.** `topic_performance` and roster averages exist; the
     comparison views do not.
-15. **Publisher portal.** Product/payout management for third parties.
-16. **Localisation.** Copy is en-NG only; the design tokens and formatting helpers are centralised,
+16. **Publisher portal.** Product/payout management for third parties.
+17. **Localisation.** Copy is en-NG only; the design tokens and formatting helpers are centralised,
     so adding a second locale is contained.
-17. **PDF/print result sheets** for parents and schools.
+18. **PDF/print result sheets** for parents and schools.
 
 ## Explicit non-goals for now
 
