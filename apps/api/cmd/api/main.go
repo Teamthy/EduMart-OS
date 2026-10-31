@@ -52,7 +52,11 @@ func main() {
 	driver := env("EDUMART_DRIVER", "sqlite3")
 	dsn := env("EDUMART_DSN", "data/edumart.db")
 
-	db, err := store.Open(driver, dsn)
+	// Migrations are a deployment step, not a startup side effect, once there is a fleet. Replicas set
+	// EDUMART_MIGRATE_ON_BOOT=false and a job runs `api -migrate-only` first; the capability stays on by
+	// default because a single-instance deployment (and every developer, and every test) wants one command.
+	migrateOnBoot := env("EDUMART_MIGRATE_ON_BOOT", "true") == "true"
+	db, err := store.OpenWith(driver, dsn, store.Options{MigrateOnBoot: &migrateOnBoot})
 	if err != nil {
 		logger.Error("database unavailable", "error", err.Error())
 		os.Exit(1)
@@ -75,6 +79,8 @@ func main() {
 		logger.Info("migrations applied", "engine", db.Driver, "applied", len(status.Applied))
 		return
 	}
+	logger.Info("database opened",
+		"engine", db.Driver, "migrate_on_boot", db.MigrateOnBoot())
 
 	if env("EDUMART_SEED", "true") == "true" {
 		if err := seed.Run(context.Background(), db, seed.Options{
