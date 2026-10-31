@@ -190,6 +190,9 @@ npm run typecheck:mobile    # Expo app (after npm run install:mobile)
 npm run smoke               # learner journey against a running API
 make drill                  # destroy a database and prove the snapshot brings it back
 make rollback               # refuse unsafe migrations, then deploy forward and roll back
+make fleet                  # start six replicas against one database and prove they all come up
+make rollout                # replace a fleet under live traffic, then abort the rollout and recover
+make image                  # build the API container image
 npm run contract            # OpenAPI spec vs Go router, both directions
 npm run assets              # regenerate the app icons + splash
 ```
@@ -287,7 +290,8 @@ real event through the same code path, so the demo can never diverge from produc
 
 ## Deployment notes
 
-- The API is a single static binary: `npm run build:api` → `dist/edumart-api`.
+- The API is a single binary: `npm run build:api` → `dist/edumart-api`, and a container image:
+  `make image` (`apps/api/Dockerfile`), built and started against a real database in CI.
 - The web app is a standard Next.js build (`npm run build`); it needs `EDUMART_API_URL` at runtime.
 - PostgreSQL is the production system of record. Apply `apps/api/internal/store/migrations/postgres`,
   then set `EDUMART_DRIVER=postgres` and `EDUMART_DSN`.

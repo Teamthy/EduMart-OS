@@ -11,6 +11,7 @@ build/
 *.tsbuildinfo
 
 # Go
+data/
 apps/api/data/
 apps/api/edumart.db*
 *.db-wal

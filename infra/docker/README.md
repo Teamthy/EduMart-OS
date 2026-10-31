@@ -11,6 +11,10 @@ docker compose -f infra/docker/compose.yml down -v       # drop volumes
 | `postgres` | 5432 | **Yes** — `EDUMART_DRIVER=postgres` runs the app against it; the suite and smoke journey run on it in CI |
 | `redis` | 6379 | No — reserved for cross-instance rate limits and workers. Rate limiting is in-process. |
 
+The API itself also builds as an image — `apps/api/Dockerfile`; `make image` builds it and
+`docker run --rm -p 8080:8080 -e EDUMART_DRIVER=postgres -e EDUMART_DSN='postgres://…' edumart-api:local`
+runs it. It is built and started against a real database in CI, not here.
+
 PostgreSQL is the production engine and is fully supported:
 
 ```bash

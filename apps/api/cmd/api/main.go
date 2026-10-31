@@ -36,6 +36,14 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
+// version is the release identity, set at build time:
+//
+//	go build -ldflags "-X main.version=$(git rev-parse --short HEAD)"
+//
+// It is reported by /healthz and /readyz so a rollout can be checked by asking a running replica what it is,
+// rather than by trusting what the deploy script believed it shipped. Left as "dev" for `go run`.
+var version = "dev"
+
 func main() {
 	// A one-shot migration step, so a rollout can migrate *before* any replica starts serving.
 	//
@@ -159,6 +167,8 @@ func main() {
 			// for a deployment, so production sets a token and Prometheus sends it.
 			MetricsToken:    os.Getenv("EDUMART_METRICS_TOKEN"),
 			BackupHeartbeat: os.Getenv("EDUMART_BACKUP_HEARTBEAT"),
+			// The build's own identity, so a rollout can be verified by asking the process.
+			Version: version,
 		},
 	})
 
