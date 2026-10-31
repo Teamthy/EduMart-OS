@@ -1,0 +1,13 @@
+# The build context is apps/api. Everything excluded here is something that must never end up in an image:
+# a developer's database, a build artifact from a different commit, or a local .env with real credentials.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+api
+edumart-api
+.env
+.env.*
+Dockerfile
+.dockerignore

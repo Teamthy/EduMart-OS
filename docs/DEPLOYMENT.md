@@ -145,6 +145,79 @@ or the database is ahead of the binary, it refuses to start rather than serving 
 understand. Readiness is the second line — pending migrations make `/readyz` fail, which removes the replica
 from the load balancer.
 
+## Rolling rollout: replacing replicas, not just starting them
+
+Starting a fleet and *replacing* it are different claims. A rollout has a failure mode a cold start cannot
+have: the service is up the whole time, and every second of it is a second a user can be served by the wrong
+replica — or by none.
+
+`scripts/rollout-rehearsal.py` runs four replicas of the previous release behind a small load balancer, then
+performs the swap while a client thread requests `/v1/subjects` continuously:
+
+| Scenario | What it does | Gate |
+| --- | --- | --- |
+| **rolling** | Surging replacement, one replica at a time (`maxSurge=1`) | Every replica ends on the new build; **no client request fails**; capacity never reaches zero |
+| **no-surge** | Stop the old replica, then start its replacement on the same port | Capacity dips to three of four — allowed. Zero capacity, or an error — not |
+| **abort** | Begin the rollout again, stop it half way, put every replaced replica back on the old binary *under traffic* | Nothing is left on the new build, and the session and data written before the rollout still work |
+| **fault: early** | A replica joins the rotation before its process is listening | The run **must fail** |
+| **fault: orphan** | A retired replica is stopped but left in the rotation | The run **must fail** |
+
+```bash
+python3 scripts/rollout-rehearsal.py --dsn 'postgres://…/throwaway'      # 4 replicas
+python3 scripts/rollout-rehearsal.py --fault early --dsn '…'             # prove the gate still fails
+```
+
+Recorded on one run: 182 client requests, zero failed, p95 4 ms; every replica reporting
+`new-e6ab8d7` after the rollout; the fleet back to nothing-on-the-new-build after the abort.
+
+### The gate is checked at registration, not by waiting to be unlucky
+
+The first version of this script asserted only "no client request failed", and its **`early` fault passed** —
+the window in which a replica is listening-but-not-ready is tens of milliseconds, and whether a client lands
+in it is a coin flip. A test that passes when the machine is fast is not a gate. Two checks are now
+deterministic:
+
+- **At registration**: a replica is only accepted into the rotation after its own `/readyz` returns 200, and
+  any replica that fails that check at registration is recorded by name. `early` now fails immediately with
+  `4 replica(s) were put in the rotation before they were ready: ['new-1', 'new-2', 'new-3', 'new-4']`.
+- **At the end of each scenario**: every replica still in the rotation must answer `/readyz`. `orphan` now
+  fails with `stopped or unready replicas are still in the rotation: ['old-4']`.
+
+Two more things the script had to get right, both found by running it:
+
+- **Drain before stop.** Removing a replica from the rotation and killing it in the same breath drops a
+  request that was already routed to it. The rehearsal waits a drain delay (`DRAIN_SECONDS`), which is the
+  process-level stand-in for a termination grace period.
+- **Stop everything on failure.** A failed run used to leave four API processes listening; the *next* run then
+  collided on a port and reported "the replica never became ready". Every replica and balancer is now stopped
+  in `finally`.
+
+What this still does not prove: a real container runtime, a real ingress with its own health checks, DNS,
+TLS, or a deployment controller. It is the ordering and the signals an orchestrator would use, exercised
+against real processes.
+
+## The container image
+
+`apps/api/Dockerfile` builds the API; the `Container image` CI job builds it, checks the container does not
+run as root, starts it against PostgreSQL, and waits for `/readyz`.
+
+```bash
+make image                                   # edumart-api:local, version = current commit
+docker run --rm -p 8080:8080 -e EDUMART_DRIVER=postgres -e EDUMART_DSN='postgres://…' edumart-api:local
+```
+
+| Decision | Why |
+| --- | --- |
+| `golang:1.27-bookworm` → `debian:bookworm-slim` | `EDUMART_DRIVER=sqlite3` is cgo. Built on Debian and run on a musl or `scratch` base, it would compile and then fail at the first request with a missing loader |
+| `USER 10001:10001` | Numeric, so a `runAsNonRoot` policy can verify it without resolving a name; the process writes nothing to disk |
+| `ca-certificates` | Refunds call the payment provider over TLS. A container without a trust store fails them with an opaque x509 error |
+| `HEALTHCHECK` on `/healthz` | Liveness must not depend on the database. If it did, a database blip would restart every healthy process and turn one outage into two |
+| `-X main.version` build stamp | `/healthz` and `/readyz` report the release, so "is the rollout finished?" is answered by asking a replica — see `TestTheProbesReportWhichBuildIsRunning` |
+
+The image is multi-hundred-megabytes because the build stage is not separate from a distroless runtime
+decision that has not been made yet: **no registry, no image signing, no SBOM, no web-app image.** The API is
+the only component with one.
+
 ## Migrations are expand-only
 
 The rule the rehearsal enforces, stated once:
@@ -162,8 +235,9 @@ and why the marker is a declaration rather than a bypass.
 Nothing here is automated end to end, because **there is no hosting target yet**. This is what the procedure
 will be, and each step is either proven or marked.
 
-1. **CI green**, including `Deploy and rollback rehearsal`. The rehearsal compares against `origin/main`, so
-   it is always rehearsing *this* code against *what is running*.
+1. **CI green**, including `Deploy and rollback rehearsal`, `Rolling rollout` and `Container image`. The
+   rehearsals compare against `origin/main`, so they are always rehearsing *this* code against *what is
+   running*.
 2. **Take a backup** — `make backup` and confirm the heartbeat. Untested until a restore drill passes
    (`docs/BACKUP_AND_RECOVERY.md`).
 3. **Migrate, then deploy.** Run the one-shot migration job before any replica starts:
@@ -172,10 +246,10 @@ will be, and each step is either proven or marked.
    EDUMART_DSN=… EDUMART_SEED=false ./edumart-api -migrate-only
    ```
 
-   It applies pending migrations, reports what is applied, and exits 0. Replicas still migrate on boot, but
-   after this step they find nothing pending and only verify checksums — so the race a fleet would otherwise
-   create (all N see the same pending migration; the losers exit on a duplicate ledger row and crashloop)
-   does not happen. `EDUMART_SEED=false` is not optional: a migration job that also writes demo fixtures is
+   It applies pending migrations, reports what is applied, and exits 0. Replicas then start with
+   `EDUMART_MIGRATE_ON_BOOT=false` and only verify checksums, so exactly one process ever owns the schema
+   during a rollout. (Boot-time migration stays on for a single instance and for every developer, and the
+   migration lock makes it safe even if several replicas do it — `scripts/fleet-start.py` proves that too.) `EDUMART_SEED=false` is not optional: a migration job that also writes demo fixtures is
    a job that does two things, and the second is not safe against production.
 4. **Watch the signals** for ten minutes: error rate, p95 latency, reconciliation contradictions, webhook
    failures. `docs/OBSERVABILITY.md` names the alert for each.
@@ -186,13 +260,15 @@ will be, and each step is either proven or marked.
 ## What is still missing, and is not claimed
 
 - **No staging environment.** Nothing has ever been deployed to a host. The rehearsal proves the *schema and
-  binary* transition; it proves nothing about DNS, TLS, a load balancer, container orchestration, secrets
-  management, or a rolling restart with two replicas in flight.
-- **No container image.** There is no `Dockerfile`; the rehearsal ships raw binaries, which is honest about
-  what has been tested but is not how this will run in production.
-- **No orchestrator.** The fleet check starts processes; nothing yet starts *containers* with a rolling
-  update, readiness probe and grace period. `EDUMART_MIGRATE_ON_BOOT=false` is what makes that rollout safe,
-  and it is verified — but the deployment controller itself does not exist.
+  binary* transition; it proves nothing about DNS, TLS, a real load balancer, secrets management, or an
+  orchestrator performing the rolling restart it rehearses.
+- **A container image for the API, and only the API.** `apps/api/Dockerfile` builds, runs as a non-root user
+  and passes a real readiness check in CI. There is **no image for the web app**, no registry push, no image
+  signing and no SBOM; the mobile app is not containerised at all.
+- **No orchestrator.** The rollout rehearsal performs the swap — surge, drain, abort — against real
+  processes behind a load balancer, which is the ordering an orchestrator would use. What does not exist is
+  the controller itself: no Kubernetes manifests, no `Deployment`, no PodDisruptionBudget, no readiness
+  probe wired into an ingress.
 - **No automated rollback trigger.** Deciding to roll back is a human judgement on the signals above.
 - **No data rollback.** Reverting a schema change loses whatever the newer code wrote into it. The rehearsal
   proves the *old code* can read the *old columns*; it says nothing about a column added and populated by the

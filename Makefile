@@ -71,6 +71,17 @@ rollback: ## Refuse unsafe migrations, then deploy forward and roll back (FROM=r
 	python3 scripts/deploy-rehearsal.py --check-only
 	python3 scripts/deploy-rehearsal.py $(if $(FROM),--from $(FROM)) $(if $(DSN),--engine postgres --dsn $(DSN))
 
+rollout: ## Replace every replica under live traffic, then abort the rollout and recover (DSN=…)
+	python3 scripts/rollout-rehearsal.py $(if $(FROM),--from $(FROM)) $(if $(DSN),--dsn $(DSN),--engine sqlite)
+
+rollout-fails: ## Prove the rollout gate still fails when a replica joins before it is ready
+	python3 scripts/rollout-rehearsal.py --fault early $(if $(DSN),--dsn $(DSN),--engine sqlite)
+
+image: ## Build the API container image (VERSION=… TAGS=…)
+	docker build -f apps/api/Dockerfile \
+	  --build-arg VERSION=$(or $(VERSION),$(shell git rev-parse --short HEAD)) \
+	  -t $(or $(TAG),edumart-api:local) apps/api
+
 assets: ## Regenerate the app icons and splash
 	python3 scripts/render-assets.py
 

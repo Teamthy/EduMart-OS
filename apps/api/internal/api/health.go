@@ -24,7 +24,16 @@ type checkResult struct {
 // It is deliberately stricter than /healthz. A liveness probe must stay cheap and never fail
 // because a dependency is down (that would restart a healthy process); a readiness probe must
 // fail, so a load balancer stops sending traffic to an instance that cannot serve it.
-func readyzHandler(db *store.Store) http.HandlerFunc {
+// releaseVersion normalises an unstamped build. "dev" is honest for `go run`, and an empty string would
+// look like a process that cannot report its identity at all.
+func releaseVersion(version string) string {
+	if version == "" {
+		return "dev"
+	}
+	return version
+}
+
+func readyzHandler(db *store.Store, version string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -45,6 +54,7 @@ func readyzHandler(db *store.Store) http.HandlerFunc {
 			"status":     status,
 			"time":       store.Now(),
 			"driver":     db.Driver,
+			"version":    version,
 			"request_id": httpx.RequestID(ctx),
 			"checks":     checks,
 		})

@@ -40,6 +40,9 @@ type Config struct {
 	// BackupHeartbeat is the file the backup job writes after a verified backup. It is optional: with no
 	// path, the backup metrics are simply absent, and the alert on absence is what reports it.
 	BackupHeartbeat string
+	// Version is the release identity stamped in at build time. It answers "which build is this?" from
+	// outside the process, which is the only answer that matters when a rollout is half finished.
+	Version string
 }
 
 // Deps are the constructed services the router needs.
@@ -117,9 +120,14 @@ func NewRouter(d Deps) http.Handler {
 
 	// Liveness: cheap, no dependencies. Readiness: real checks, used by the load balancer.
 	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "time": store.Now(), "driver": d.Store.Driver})
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"status": "ok", "time": store.Now(), "driver": d.Store.Driver,
+			// Liveness doubles as the identity readout: a probe from a rollout script can confirm which
+			// build a replica is running without a second endpoint to secure.
+			"version": releaseVersion(d.Config.Version),
+		})
 	})
-	r.Get("/readyz", readyzHandler(d.Store))
+	r.Get("/readyz", readyzHandler(d.Store, releaseVersion(d.Config.Version)))
 	// Scrape endpoint. Deliberately outside /v1: it is infrastructure, not part of the product contract,
 	// and it must not appear to clients as something they may call.
 	r.Get("/metrics", metricsHandler(platform, d.Config.MetricsToken, d.Config.BackupHeartbeat))

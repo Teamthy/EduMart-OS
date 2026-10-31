@@ -7,8 +7,9 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the deploy rehearsal: rollback is executed on every pull request instead of described in a
-document, and destructive migrations are refused. Before that, search closed the last "lists only" gap,
+Last updated with the rolling rollout: the API is a tested container image, and the swap that an orchestrator
+performs — surge, drain, then abort halfway — is executed under continuous traffic on every pull request, with
+two deliberately broken rollouts proving the gate still fails. Before that, search closed the last "lists only" gap,
 accessibility was measured rather than claimed, and the system was load-tested with its invariants proved to
 survive.
 
@@ -19,7 +20,7 @@ survive.
 | 1 | Product specification | Partial | PRD exists; no recorded sign-off, no owners |
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
-| 4 | Infrastructure and CI/CD | Partial | CI is real, **deploy and rollback are rehearsed on every PR**, and **six replicas start together in CI** with migrations applied exactly once (previously three of four died on boot). **No hosting target, no staging environment, no container image** |
+| 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
@@ -72,8 +73,9 @@ clean install on every push.
 | Migrate-then-serve | **New.** `edumart-api -migrate-only` applies pending migrations and exits, so a rollout migrates before any replica serves |
 | Concurrent boot | **New.** A session-level advisory lock (PostgreSQL) or an flock (SQLite) serialises migrations across processes; six replicas start together in CI and every migration is recorded exactly once. Before this, **three of four replicas exited with status 1** on a fresh database |
 | Rollback | **Rehearsed on every pull request.** Previous release built from git, migrated forward, then rolled back onto the newer schema and proved to read the newer release's data |
-| Environments | Development and CI are real. **Staging and production are still not provisioned**, and there is no orchestrator: the fleet check starts processes, not containers with a rolling update |
-| Container image | **Does not exist.** The rehearsal ships raw binaries, which is what has been tested |
+| Rolling rollout | **New.** `scripts/rollout-rehearsal.py` replaces a four-replica fleet under continuous traffic (surge, no-surge), **aborts the rollout halfway and recovers under traffic**, and fails deterministically when a replica joins the rotation before it is ready or a stopped replica is left in it. Both faults are injected in CI to prove the gate still fails |
+| Container image | **New.** `apps/api/Dockerfile` — cgo-capable Debian build, non-root `10001`, CA bundle, liveness healthcheck, build-stamped version. CI builds it, asserts the user is not root, runs it against PostgreSQL and waits for `/readyz`. **API only**: no web-app image, no registry, no signing |
+| Environments | Development and CI are real. **Staging and production are still not provisioned**, and there is no orchestrator: the rollout rehearsal performs the swap against processes, not a controller performing it against pods |
 
 **A second thing Phase 4 was hiding: a fleet could not start.** Six replicas launched within 20 ms of each
 other against an empty database left **three of them dead**, each with
@@ -92,6 +94,13 @@ previous one from a git ref, this one from the working tree), deploys the old on
 one still serves the migrated database, deploys the new one, writes an order with it, **rolls back**, and
 reads that order with the old code. Seven stages, both engines, in CI. See
 [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
+**A third thing: the rollout gate was passing when it should have failed.** The first version of the rolling
+rollout asserted only "no client request failed", and its deliberately broken rollout — a replica entering the
+rotation before its process was listening — *passed*. The window is tens of milliseconds; whether a client
+lands in it is luck. The gate now checks readiness **at the moment a replica is registered** and checks that
+every replica still in the rotation answers `/readyz`, so both injected faults fail with a named replica
+instead of depending on timing. A test that passes because the machine is fast is not a gate.
 
 Two things it found immediately, which is the point of running something rather than writing about it:
 

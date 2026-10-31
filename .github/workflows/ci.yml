@@ -47,11 +47,29 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test (SQLite — the default local/CI engine)
-        run: go test ./... -race -count=1
+        # A failing test has to be readable from the pull request, not only from a log somebody may not be
+        # able to download. On failure the failing blocks are re-emitted as check annotations.
+        run: |
+          set +e
+          go test ./... -race -count=1 2>&1 | tee /tmp/sqlite-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate.py /tmp/sqlite-test.log
+            exit "$status"
+          fi
       - name: Test (PostgreSQL — the production engine)
         env:
           EDUMART_TEST_POSTGRES_DSN: postgres://edumart:edumart@localhost:5432/edumart_test?sslmode=disable
-        run: go test ./... -race -count=1
+        run: |
+          set +e
+          go test ./... -race -count=1 2>&1 | tee /tmp/postgres-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 ../scripts/ci-annotate.py /tmp/postgres-test.log
+            exit "$status"
+          fi
       - name: Build
         run: go build -o /tmp/edumart-api ./cmd/api
 
@@ -466,3 +484,117 @@ jobs:
           EDUMART_API_BIN=/tmp/edumart-api python3 scripts/fleet-start.py \
             --dsn 'postgres://edumart:edumart@localhost:5432/edumart_fleet?sslmode=disable' \
             --replicas 6
+
+  rollout:
+    # "It starts" and "it can be replaced while running" are different claims. This job swaps a real fleet
+    # behind a real load balancer under continuous traffic, then aborts the rollout halfway and recovers —
+    # and injects a known-bad rollout first to prove the gate still fails when it should.
+    name: Rolling rollout
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: edumart_rollout
+          POSTGRES_USER: edumart
+          POSTGRES_PASSWORD: edumart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edumart -d edumart_rollout"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: apps/api/go.sum
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get update -qq && sudo apt-get install -yqq postgresql-client
+      - name: The gate must fail when a replica joins the rotation before it is ready
+        env:
+          PGBIN: /usr/lib/postgresql/17/bin
+        run: |
+          set +e
+          python3 scripts/rollout-rehearsal.py --fault early \
+            --dsn 'postgres://edumart:edumart@localhost:5432/edumart_rollout?sslmode=disable'
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "the rollout rehearsal passed with a broken rollout — the gate is not testing anything" >&2
+            exit 1
+          fi
+          echo "the gate refused a replica that was in rotation before it was ready"
+      - name: Replace, downgrade and abort a four-replica fleet under traffic
+        env:
+          PGBIN: /usr/lib/postgresql/17/bin
+        run: |
+          python3 scripts/rollout-rehearsal.py \
+            --dsn 'postgres://edumart:edumart@localhost:5432/edumart_rollout?sslmode=disable' \
+            --replicas 4
+
+  image:
+    # An untested Dockerfile is a deployment plan, not a deployment. This builds the image and runs the
+    # container against a real database, because the failures that matter here — a missing CA bundle, a
+    # cgo-linked SQLite without its loader, a process that cannot read its own data directory — only appear
+    # once something actually starts the image.
+    name: Container image
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: edumart
+          POSTGRES_USER: edumart
+          POSTGRES_PASSWORD: edumart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edumart -d edumart"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: |
+          docker build -f apps/api/Dockerfile \
+            --build-arg VERSION="sha-${GITHUB_SHA::7}" -t edumart-api:ci apps/api
+      - name: The image runs as a non-root user
+        run: |
+          user=$(docker image inspect edumart-api:ci --format '{{.Config.User}}')
+          echo "image user: ${user:-root}"
+          test "$user" != "" && test "$user" != "root" && test "$user" != "0"
+      - name: Start it against a real database and wait for readiness
+        run: |
+          # Host networking: the container reaches the job's PostgreSQL service on 127.0.0.1:5432 without
+          # a bridge address that differs between runners.
+          docker run -d --name edumart-api --network host \
+            -e EDUMART_DRIVER=postgres \
+            -e EDUMART_DSN='postgres://edumart:edumart@127.0.0.1:5432/edumart?sslmode=disable' \
+            -e EDUMART_ENV=production \
+            -e EDUMART_SEED=false \
+            -e EDUMART_NOTIFY=log \
+            -e EDUMART_VERIFICATION_SECRET=ci_only_verification_secret_value \
+            -e EDUMART_ALLOWED_ORIGINS=https://edumart.ng \
+            edumart-api:ci
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/readyz > /tmp/readyz.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/readyz.json
+          python3 - <<'PY'
+          import json
+          body = json.load(open("/tmp/readyz.json"))
+          assert body["status"] == "ok", body
+          assert body["version"].startswith("sha-"), body
+          assert {c["name"] for c in body["checks"]} >= {"database", "migrations"}, body
+          print("image is ready and identifies itself as", body["version"])
+          PY
+      - name: The container logs explain a failure instead of swallowing it
+        if: failure()
+        run: docker logs edumart-api || true

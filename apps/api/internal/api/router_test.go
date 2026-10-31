@@ -1047,6 +1047,42 @@ func TestReadinessChecksRealDependencies(t *testing.T) {
 	}
 }
 
+// TestTheProbesReportWhichBuildIsRunning is the smallest possible answer to "is the rollout finished?".
+//
+// A deploy script that believes it shipped build 42 has no way to check that from the outside unless a
+// replica will say so. Both probes report it, so the question can be answered by whatever the orchestrator
+// already polls — no extra endpoint, and nothing new to secure.
+func TestTheProbesReportWhichBuildIsRunning(t *testing.T) {
+	h := newHarnessWithConfig(t, func(config *api.Config) { config.Version = "2026.10.31-a1b2c3d" })
+
+	status, body := h.do("GET", "/healthz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("healthz: %d %v", status, body)
+	}
+	if body["version"] != "2026.10.31-a1b2c3d" {
+		t.Fatalf("healthz reported version %v, so a rollout cannot tell which build answered", body["version"])
+	}
+
+	status, body = h.do("GET", "/readyz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("readyz: %d %v", status, body)
+	}
+	if body["version"] != "2026.10.31-a1b2c3d" {
+		t.Fatalf("readyz reported version %v", body["version"])
+	}
+}
+
+// TestAnUnstampedBuildSaysDevNotNothing — `go run` and `go test` do not pass -ldflags, and a probe that
+// reports an empty string looks like a process that cannot identify itself rather than one without a stamp.
+func TestAnUnstampedBuildSaysDevNotNothing(t *testing.T) {
+	h := newHarness(t)
+
+	_, body := h.do("GET", "/healthz", "", nil)
+	if body["version"] != "dev" {
+		t.Fatalf("an unstamped build reported version %v, want \"dev\"", body["version"])
+	}
+}
+
 func TestSessionListAndRevocation(t *testing.T) {
 	h := newHarness(t)
 
