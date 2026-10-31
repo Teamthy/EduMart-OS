@@ -47,11 +47,29 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test (SQLite — the default local/CI engine)
-        run: go test ./... -race -count=1
+        # A failing test has to be readable from the pull request, not only from a log somebody may not be
+        # able to download. On failure the failing blocks are re-emitted as check annotations.
+        run: |
+          set +e
+          go test ./... -race -count=1 2>&1 | tee /tmp/sqlite-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate.py /tmp/sqlite-test.log
+            exit "$status"
+          fi
       - name: Test (PostgreSQL — the production engine)
         env:
           EDUMART_TEST_POSTGRES_DSN: postgres://edumart:edumart@localhost:5432/edumart_test?sslmode=disable
-        run: go test ./... -race -count=1
+        run: |
+          set +e
+          go test ./... -race -count=1 2>&1 | tee /tmp/postgres-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 ../scripts/ci-annotate.py /tmp/postgres-test.log
+            exit "$status"
+          fi
       - name: Build
         run: go build -o /tmp/edumart-api ./cmd/api
 
