@@ -29,6 +29,31 @@ var migrations embed.FS
 type Store struct {
 	DB     *sql.DB
 	Driver string
+	// path is the SQLite file, when the engine is SQLite. It is kept because the migration lock is an flock
+	// on this file, and because the normalised DSN is not the same string the caller passed.
+	path string
+
+	// migrateOnBoot is false for a replica that expects a separate migration job to have run. See Options.
+	migrateOnBoot bool
+	lockTimeout   time.Duration
+
+	// migrationWaitLogged records that this process had to wait for another one to finish migrating. It is
+	// reported in the readiness detail because "slow to start" and "blocked on a stuck migrator" look
+	// identical from outside.
+	migrationWaitLogged bool
+}
+
+// Options tune how the store opens. The zero value is the right behaviour for a developer, a test and a
+// single-instance deployment.
+type Options struct {
+	// MigrateOnBoot applies pending migrations when the database is opened. A fleet should set this false
+	// and run `api -migrate-only` before any replica starts: then migrations are applied once, deliberately,
+	// and every replica merely verifies checksums. The zero value (false) is *not* the default — see
+	// OpenWith, which treats a nil pointer as true, because silently not migrating would be a footgun in the
+	// other direction.
+	MigrateOnBoot *bool
+	// LockTimeout bounds how long to wait for another process to finish migrating. Zero means the default.
+	LockTimeout time.Duration
 }
 
 // ErrNotFound is returned by Collect helpers when a row does not exist.
@@ -39,12 +64,23 @@ var ErrNotFound = errors.New("not found")
 // system of record). Both run the same portable SQL; see pg.go for the placeholder translation that
 // makes that possible.
 func Open(driver, dsn string) (*Store, error) {
+	return OpenWith(driver, dsn, Options{})
+}
+
+// OpenWith is Open with explicit options. The migrate-on-boot decision is a pointer so that "unset" and
+// "deliberately false" cannot be confused: a nil field means migrate, and only an explicit false skips it.
+func OpenWith(driver, dsn string, opts Options) (*Store, error) {
 	if driver == "" {
 		driver = "sqlite3"
 	}
+	path := ""
 	if driver == "sqlite3" {
 		// Ensure the parent directory exists so a fresh checkout works without manual setup.
-		path := strings.TrimPrefix(dsn, "file:")
+		//
+		// Assignment, not declaration: `path :=` here shadowed the field this function fills, so the store
+		// was handed an empty path and the migration lock silently did nothing. The concurrent-open test
+		// caught it on its first run — which is the argument for testing the lock rather than trusting it.
+		path = strings.TrimPrefix(dsn, "file:")
 		if i := strings.Index(path, "?"); i >= 0 {
 			path = path[:i]
 		}
@@ -54,6 +90,8 @@ func Open(driver, dsn string) (*Store, error) {
 			}
 			dsn = "file:" + path + "?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL"
 		}
+	} else {
+		path = ""
 	}
 
 	// PostgreSQL goes through a connector that rewrites `?` placeholders to `$n`; SQLite speaks `?`.
@@ -92,12 +130,27 @@ func Open(driver, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	s := &Store{DB: db, Driver: driver}
+	migrateOnBoot := opts.MigrateOnBoot == nil || *opts.MigrateOnBoot
+	s := &Store{DB: db, Driver: driver, path: path, migrateOnBoot: migrateOnBoot, lockTimeout: opts.LockTimeout}
+
+	if !migrateOnBoot {
+		// A replica that is not allowed to migrate still has to refuse a database whose schema it does not
+		// recognise: serving traffic against the wrong schema produces 500s that look like application bugs.
+		// Pending migrations are caught by /readyz, but a *changed* applied migration is caught here, at boot,
+		// where the message can say exactly which file drifted.
+		if err := s.verifyApplied(); err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
+
+// MigrateOnBoot reports whether this process applies migrations when it starts.
+func (s *Store) MigrateOnBoot() bool { return s.migrateOnBoot }
 
 // applyPool wires the configured bounds onto a pool. It is separate from Open so it can be tested without a
 // database: the claim being made is about the pool's configuration, and proving it by connecting to

@@ -73,10 +73,22 @@ func (s *Store) migrationFiles() ([]fs.DirEntry, error) {
 //   - Each migration runs in its own transaction with its ledger row, so a failure leaves the
 //     database at a known version rather than half-way through a file.
 func (s *Store) migrate() error {
+	// The lock has to be taken *before* the ledger is created, not after: `CREATE TABLE IF NOT EXISTS` is not
+	// atomic against a concurrent creator, and the duplicate-type error it raises is exactly how three of
+	// four replicas died on their first boot. See migratelock.go.
+	unlock, err := s.lockMigrations(context.Background())
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	if _, err := s.DB.Exec(ledgerDDL); err != nil {
 		return fmt.Errorf("create migration ledger: %w", err)
 	}
 
+	// Re-read *after* acquiring the lock. A process that queued behind another has been staring at a stale
+	// list the whole time it waited; applying from that list would re-run every migration the winner just
+	// finished, which is the entire bug this lock exists to prevent.
 	applied, err := s.appliedMigrations(context.Background())
 	if err != nil {
 		return err
@@ -100,13 +112,54 @@ func (s *Store) migrate() error {
 				return fmt.Errorf(
 					"migration %s changed after it was applied (recorded %s, file %s): "+
 						"add a new migration instead of editing an applied one",
-					version, previous[:12], sum[:12])
+					version, short(previous), short(sum))
 			}
 			continue
 		}
 
 		if err := s.applyMigration(version, sum, raw); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// verifyApplied checks the ledger against the embedded files without changing anything.
+//
+// This is the replica's job when a separate migration job owns the schema: it must still refuse to serve a
+// database whose applied migrations have been edited, because that check is what keeps environments from
+// silently diverging.
+func (s *Store) verifyApplied() error {
+	applied, err := s.appliedMigrations(context.Background())
+	if err != nil {
+		// No ledger at all means nothing has migrated yet — which readiness reports as pending, and which
+		// this function must not treat as a hard failure, or a replica could never start to report why.
+		return nil
+	}
+	files, err := s.migrationFiles()
+	if err != nil {
+		return err
+	}
+	onDisk := map[string]string{}
+	for _, entry := range files {
+		version := strings.TrimSuffix(entry.Name(), ".sql")
+		raw, err := migrations.ReadFile(s.migrationDir() + "/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
+		}
+		onDisk[version] = checksum(raw)
+	}
+	for version, recorded := range applied {
+		current, ok := onDisk[version]
+		if !ok {
+			return fmt.Errorf(
+				"migration %s was applied but is no longer in this build: the database is ahead of the binary",
+				version)
+		}
+		if current != recorded {
+			return fmt.Errorf(
+				"migration %s changed after it was applied (recorded %s, file %s): add a new migration "+
+					"instead of editing an applied one", version, short(recorded), short(current))
 		}
 	}
 	return nil
@@ -154,9 +207,42 @@ func (s *Store) appliedMigrations(ctx context.Context) (map[string]string, error
 	return out, rows.Err()
 }
 
+// ledgerExists reports whether the ledger table itself is there.
+//
+// A missing ledger is not an error: it is the truthful statement "nothing has ever migrated". Reporting it as
+// a SQL error (`relation "schema_migrations" does not exist`) makes an operator read a readiness failure as a
+// broken database instead of "the migration job has not run", which are two very different incidents.
+func (s *Store) ledgerExists(ctx context.Context) (bool, error) {
+	if s.Driver == "postgres" || s.Driver == "pgx" {
+		var present bool
+		err := s.DB.QueryRowContext(ctx, `SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&present)
+		return present, err
+	}
+	var count int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&count)
+	return count > 0, err
+}
+
 // MigrationStatus reports applied and pending migrations for readiness.
 func (s *Store) MigrationStatus(ctx context.Context) (MigrationStatus, error) {
 	var status MigrationStatus
+
+	exists, err := s.ledgerExists(ctx)
+	if err != nil {
+		return status, fmt.Errorf("read migration ledger: %w", err)
+	}
+	if !exists {
+		// Everything is pending, and readiness says so by name rather than by SQL error.
+		files, err := s.migrationFiles()
+		if err != nil {
+			return status, err
+		}
+		for _, entry := range files {
+			status.Pending = append(status.Pending, strings.TrimSuffix(entry.Name(), ".sql"))
+		}
+		return status, nil
+	}
 
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version`)
@@ -191,6 +277,19 @@ func (s *Store) MigrationStatus(ctx context.Context) (MigrationStatus, error) {
 	}
 	status.UpToDate = len(status.Pending) == 0
 	return status, nil
+}
+
+// short abbreviates a checksum for an error message without assuming it is a full-length hex digest.
+//
+// The ledger is a file on disk that can be edited, truncated or restored from a partial backup; slicing the
+// first twelve characters of whatever is in it panicked the process on a short value, turning "your ledger is
+// corrupt" into a crash loop with no explanation. A message about a damaged ledger must not be the thing that
+// damages the process.
+func short(sum string) string {
+	if len(sum) <= 12 {
+		return sum
+	}
+	return sum[:12]
 }
 
 func checksum(raw []byte) string {

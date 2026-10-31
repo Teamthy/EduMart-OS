@@ -428,3 +428,41 @@ jobs:
             --engine postgres \
             --dsn 'postgres://edumart:edumart@localhost:5432/edumart_rehearsal?sslmode=disable' \
             --from origin/main
+
+  fleet:
+    # A single-process test suite cannot see a race between processes. This starts six real replicas against
+    # one fresh database and checks the three properties a rollout depends on: they all become ready, each
+    # migration is recorded exactly once, and a replica that may not migrate stays out of rotation instead of
+    # serving a schema it does not have.
+    name: Fleet start
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: edumart_fleet
+          POSTGRES_USER: edumart
+          POSTGRES_PASSWORD: edumart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edumart -d edumart_fleet"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: apps/api/go.sum
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get update -qq && sudo apt-get install -yqq postgresql-client
+      - name: Start six replicas and prove they all come up
+        env:
+          PGBIN: /usr/lib/postgresql/17/bin
+        run: |
+          cd apps/api && go build -o /tmp/edumart-api ./cmd/api && cd -
+          EDUMART_API_BIN=/tmp/edumart-api python3 scripts/fleet-start.py \
+            --dsn 'postgres://edumart:edumart@localhost:5432/edumart_fleet?sslmode=disable' \
+            --replicas 6

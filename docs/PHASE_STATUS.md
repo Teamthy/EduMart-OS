@@ -19,7 +19,7 @@ survive.
 | 1 | Product specification | Partial | PRD exists; no recorded sign-off, no owners |
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
-| 4 | Infrastructure and CI/CD | Partial | CI is real, and **deploy and rollback are now rehearsed on every PR** against PostgreSQL — previous release built from git, migrated forward, then rolled back and proved to read the newer release's data. **No hosting target, no staging environment, no container image** |
+| 4 | Infrastructure and CI/CD | Partial | CI is real, **deploy and rollback are rehearsed on every PR**, and **six replicas start together in CI** with migrations applied exactly once (previously three of four died on boot). **No hosting target, no staging environment, no container image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
@@ -70,9 +70,20 @@ clean install on every push.
 | Migration execution policy | `store/migrate.go`: checksummed, applied once, one transaction per migration, refuses an edited-after-apply file |
 | Migration safety | **New.** Destructive DDL (drop/rename) fails the build unless the file declares `-- rehearsal: destructive: <reason>` |
 | Migrate-then-serve | **New.** `edumart-api -migrate-only` applies pending migrations and exits, so a rollout migrates before any replica serves |
+| Concurrent boot | **New.** A session-level advisory lock (PostgreSQL) or an flock (SQLite) serialises migrations across processes; six replicas start together in CI and every migration is recorded exactly once. Before this, **three of four replicas exited with status 1** on a fresh database |
 | Rollback | **Rehearsed on every pull request.** Previous release built from git, migrated forward, then rolled back onto the newer schema and proved to read the newer release's data |
-| Environments | Development and CI are real. **Staging and production are still not provisioned** |
+| Environments | Development and CI are real. **Staging and production are still not provisioned**, and there is no orchestrator: the fleet check starts processes, not containers with a rolling update |
 | Container image | **Does not exist.** The rehearsal ships raw binaries, which is what has been tested |
+
+**A second thing Phase 4 was hiding: a fleet could not start.** Six replicas launched within 20 ms of each
+other against an empty database left **three of them dead**, each with
+`duplicate key value violates unique constraint "pg_type_typname_nsp_index"` — `CREATE TABLE IF NOT EXISTS` is
+not atomic against a concurrent creator, and the ledger is written *after* the DDL, so it could not arbitrate.
+A first deploy, a new environment or a rolling restart would have shipped with replicas crashlooping until
+their restart backoff happened to queue them behind the winner. Migrations now take a lock before their first
+statement (PostgreSQL advisory lock on a pinned connection; flock for SQLite) and re-read the ledger after
+acquiring it. `scripts/fleet-start.py` starts six real processes against one database in CI and checks all
+three properties — boots together, migrate-first, and fail-closed. See [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
 The gate that was missing is now executed rather than described. Phase 4's gap was never "we have no CI" —
 it was *deploy and rollback are unproven*, and a rollback plan nobody has run is a hypothesis that gets tested
