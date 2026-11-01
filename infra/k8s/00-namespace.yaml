@@ -1,0 +1,14 @@
+# Everything in this directory is applied into one namespace, and that namespace is the unit of blast radius:
+# the NetworkPolicies below are stated relative to it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edumart
+  labels:
+    name: edumart
+    # Pod Security Admission. `restricted` is the strictest built-in profile, and every workload here is
+    # written to satisfy it — non-root, no privilege escalation, all capabilities dropped, seccomp on. The
+    # label is what makes that a cluster-enforced rule instead of a convention in a YAML file.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

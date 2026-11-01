@@ -1,0 +1,29 @@
+# The only way in. TLS terminates here; the API is not routed, because there is exactly one origin in front
+# of a learner and it is the web app.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: edumart
+  namespace: edumart
+  annotations:
+    # Redirect HTTP to HTTPS rather than serving plaintext and hoping.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Security headers are set by the app (`apps/web/next.config.ts`), so the ingress does not add a second,
+    # drifting copy of them.
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - edumart.ng
+      secretName: edumart-tls
+  rules:
+    - host: edumart.ng
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: edumart-web
+                port:
+                  name: http

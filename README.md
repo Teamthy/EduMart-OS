@@ -192,7 +192,8 @@ make drill                  # destroy a database and prove the snapshot brings i
 make rollback               # refuse unsafe migrations, then deploy forward and roll back
 make fleet                  # start six replicas against one database and prove they all come up
 make rollout                # replace a fleet under live traffic, then abort the rollout and recover
-make image                  # build the API container image
+make image                  # build both container images (API + web)
+make manifests              # check the deployment manifests, then prove every check can fail
 npm run contract            # OpenAPI spec vs Go router, both directions
 npm run assets              # regenerate the app icons + splash
 ```
@@ -290,8 +291,12 @@ real event through the same code path, so the demo can never diverge from produc
 
 ## Deployment notes
 
-- The API is a single binary: `npm run build:api` → `dist/edumart-api`, and a container image:
-  `make image` (`apps/api/Dockerfile`), built and started against a real database in CI.
+- The API is a single binary: `npm run build:api` → `dist/edumart-api`. Both parts ship as container images
+  (`make image`: `apps/api/Dockerfile`, `apps/web/Dockerfile`), built and run as one stack against a real
+  database in CI.
+- `infra/k8s` is the deployment: namespace with restricted Pod Security, migration Job, rolling Deployments,
+  probes, PDBs, TLS Ingress, default-deny network policy. It is checked by `make manifests` and **has never
+  been applied to a cluster** — see `docs/DEPLOYMENT.md`.
 - The web app is a standard Next.js build (`npm run build`); it needs `EDUMART_API_URL` at runtime.
 - PostgreSQL is the production system of record. Apply `apps/api/internal/store/migrations/postgres`,
   then set `EDUMART_DRIVER=postgres` and `EDUMART_DSN`.

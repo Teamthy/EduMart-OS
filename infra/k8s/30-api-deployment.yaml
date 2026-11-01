@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edumart-api
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: edumart-api
+    app.kubernetes.io/part-of: edumart
+spec:
+  # Two is the floor, not the target: a rollout must be able to take one out without losing capacity.
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge first, then remove. `maxUnavailable: 0` means a rollout never reduces capacity, which is the
+      # shape `scripts/rollout-rehearsal.py` performs and proves under live traffic.
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: edumart-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: edumart-api
+        app.kubernetes.io/part-of: edumart
+    spec:
+      # Must exceed the API's own shutdown window (10s) plus the time a load balancer needs to stop routing
+      # to this pod. SIGTERM arrives, the server drains, and only then is it killed — a shorter grace period
+      # cuts in-flight requests.
+      terminationGracePeriodSeconds: 45
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas across nodes so losing one node is not losing the fleet. Preferred, not required:
+      # a single-node cluster should still schedule, it should just be told it is fragile.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: edumart-api
+      containers:
+        - name: api
+          image: ghcr.io/teamthy/edumart-api:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: edumart-config
+            - secretRef:
+                name: edumart-secrets
+          env:
+            # Stated here as well as in the ConfigMap, because this is the line that makes a fleet safe and
+            # a reviewer should be able to find it next to the replicas it applies to.
+            - name: EDUMART_MIGRATE_ON_BOOT
+              value: "false"
+          # A slow migration (or a cold database) must not be mistaken for a broken process. The startup
+          # probe gates the other two, so a pod gets 120s to come up and is never restarted for being slow.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 4
+            failureThreshold: 30
+          # Readiness is what takes a pod out of the Service: the database answers *and* the schema matches
+          # this binary.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          # Liveness is cheap and dependency-free on purpose: restarting a healthy process because the
+          # database blinked turns one outage into two.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The API writes nothing to disk — the database is external and fixtures go into it. Anything
+            # that tries to write is a bug, and this makes it a visible crash instead of a silent success.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # Measured, not guessed: docs/PERFORMANCE.md records 300 concurrent learners at 264 req/s and
+            # p95 8.5 ms on a single instance, so one pod's steady state is well inside these numbers and
+            # the limit is the point where it should be restarted rather than throttled.
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

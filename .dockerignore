@@ -1,0 +1,22 @@
+# The build contexts are the repository root (apps/web) and apps/api. Everything listed here is either
+# rebuildable inside the image or something that must never be baked into one.
+.git
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/*.tsbuildinfo
+data
+**/data
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+.env
+.env.*
+**/.env
+**/.env.*
+apps/mobile/.expo
+docs
+legacy
+edumart-prd

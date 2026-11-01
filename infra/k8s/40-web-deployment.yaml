@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edumart-web
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: edumart-web
+    app.kubernetes.io/part-of: edumart
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: edumart-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: edumart-web
+        app.kubernetes.io/part-of: edumart
+    spec:
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ghcr.io/teamthy/edumart-web:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Read per request by the `/v1` proxy and by server-rendered pages — one variable, one lifetime.
+            # (It used to be a build argument for the proxy and a runtime variable for the pages, which
+            # produced containers that half worked. See apps/web/lib/api-proxy.ts.)
+            - name: EDUMART_API_URL
+              value: http://edumart-api:8080
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: 0.0.0.0
+          # A static file, not a page and not the proxied /healthz. Probing something that renders against
+          # the API would take every web pod out of rotation during the API's bad minute, and take the whole
+          # site down with it.
+          readinessProbe:
+            httpGet:
+              path: /manifest.webmanifest
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /manifest.webmanifest
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /manifest.webmanifest
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            # Next writes its incremental cache here; with a read-only root filesystem that write must have
+            # somewhere to go or a cached page becomes a crash.
+            - name: next-cache
+              mountPath: /app/apps/web/.next/cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: next-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

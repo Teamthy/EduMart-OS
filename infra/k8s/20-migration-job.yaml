@@ -1,0 +1,63 @@
+# The deploy step, as a Job. It runs **before** the Deployment is updated: a rollout that migrates and then
+# serves, rather than one where every replica tries to migrate at once.
+#
+# `backoffLimit: 0` is deliberate. A migration that failed is not a transient error, and a Job that retries it
+# three times produces three identical failures and a slower incident. It exits, the deploy stops, and a human
+# looks at it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: edumart-migrate
+  namespace: edumart
+spec:
+  backoffLimit: 0
+  # A migration that hangs holds a lock and blocks every replica from starting. Fail at ten minutes and let
+  # the deploy be retried deliberately.
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: edumart-migrate
+        app.kubernetes.io/part-of: edumart
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/teamthy/edumart-api:v1.0.0
+          command: ["/usr/local/bin/api", "-migrate-only"]
+          envFrom:
+            - configMapRef:
+                name: edumart-config
+            - secretRef:
+                name: edumart-secrets
+          env:
+            # A migration job that also writes demo fixtures is a job that does two things, and the second
+            # one is not safe to run against production.
+            - name: EDUMART_SEED
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

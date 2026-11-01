@@ -77,10 +77,15 @@ rollout: ## Replace every replica under live traffic, then abort the rollout and
 rollout-fails: ## Prove the rollout gate still fails when a replica joins before it is ready
 	python3 scripts/rollout-rehearsal.py --fault early $(if $(DSN),--dsn $(DSN),--engine sqlite)
 
-image: ## Build the API container image (VERSION=… TAGS=…)
+image: ## Build both container images (VERSION=…)
 	docker build -f apps/api/Dockerfile \
 	  --build-arg VERSION=$(or $(VERSION),$(shell git rev-parse --short HEAD)) \
 	  -t $(or $(TAG),edumart-api:local) apps/api
+	docker build -f apps/web/Dockerfile -t edumart-web:local .
+
+manifests: ## Check the deployment manifests, then prove every check can fail
+	python3 scripts/check-manifests.py --verbose
+	python3 scripts/check-manifests.py --self-test
 
 assets: ## Regenerate the app icons and splash
 	python3 scripts/render-assets.py

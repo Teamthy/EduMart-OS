@@ -485,6 +485,36 @@ jobs:
             --dsn 'postgres://edumart:edumart@localhost:5432/edumart_fleet?sslmode=disable' \
             --replicas 6
 
+  manifests:
+    # The deployment manifests are code: they are checked against the application's own environment surface,
+    # and each check is shown a fault it must catch. An unchecked YAML file is a plan, not a deployment.
+    name: Deployment manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the YAML parser the checker uses
+        run: python3 -m pip install --quiet pyyaml
+      - name: Every check must be able to fail
+        run: python3 scripts/check-manifests.py --self-test
+      - name: Check the manifests against the application
+        run: python3 scripts/check-manifests.py --verbose
+      - name: Install kubectl
+        run: |
+          curl -sSfL -o /tmp/kubectl "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+      - name: Every object is one kubectl would accept
+        # `create --dry-run=client` builds the objects locally: no cluster, no credentials, no API server. It
+        # is a real check and not a formality — kubectl parses and decodes with the Kubernetes schema, so a
+        # field in the wrong place or a wrong type is caught here and not at 2am during a deploy.
+        run: |
+          /tmp/kubectl create --dry-run=client --validate=false -o name -f infra/k8s/ 2>&1 | tee /tmp/kubectl.out
+          count=$(grep -c . /tmp/kubectl.out)
+          echo "$count object(s) accepted"
+          test "$count" -ge 14 || (echo "expected every document to be accepted; got $count" >&2; exit 1)
+
   rollout:
     # "It starts" and "it can be replaced while running" are different claims. This job swaps a real fleet
     # behind a real load balancer under continuous traffic, then aborts the rollout halfway and recovers —
@@ -538,11 +568,11 @@ jobs:
             --replicas 4
 
   image:
-    # An untested Dockerfile is a deployment plan, not a deployment. This builds the image and runs the
-    # container against a real database, because the failures that matter here — a missing CA bundle, a
-    # cgo-linked SQLite without its loader, a process that cannot read its own data directory — only appear
-    # once something actually starts the image.
-    name: Container image
+    # An untested Dockerfile is a deployment plan, not a deployment. This builds both images and runs them
+    # **as one stack** against a real database, because the failures that matter here — a missing CA bundle,
+    # a cgo-linked SQLite without its loader, a proxy pointed at a build-time host, a container that cannot
+    # read its own files — only appear once something actually starts the image next to something else.
+    name: Container images
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -560,27 +590,40 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - name: Build the image
+      - name: Build the API image
         run: |
           docker build -f apps/api/Dockerfile \
             --build-arg VERSION="sha-${GITHUB_SHA::7}" -t edumart-api:ci apps/api
-      - name: The image runs as a non-root user
+      - name: The API image runs as a non-root user
         run: |
           user=$(docker image inspect edumart-api:ci --format '{{.Config.User}}')
           echo "image user: ${user:-root}"
           test "$user" != "" && test "$user" != "root" && test "$user" != "0"
-      - name: Start it against a real database and wait for readiness
+      - name: Build the web image, with no API address baked in
+        run: docker build -f apps/web/Dockerfile -t edumart-web:ci .
+      - name: The web image runs as a non-root user
         run: |
-          # Host networking: the container reaches the job's PostgreSQL service on 127.0.0.1:5432 without
-          # a bridge address that differs between runners.
-          docker run -d --name edumart-api --network host \
+          user=$(docker image inspect edumart-web:ci --format '{{.Config.User}}')
+          echo "image user: ${user:-root}"
+          test "$user" != "" && test "$user" != "root" && test "$user" != "0"
+      - name: Start the stack the way the manifests describe it
+        # One user-defined network with DNS, so the web container reaches the API by *name* — the same thing
+        # a Service does in-cluster. `host.docker.internal` is how the containers reach the job's PostgreSQL
+        # service, which listens on the runner's loopback.
+        run: |
+          docker network create edumart-ci
+          docker run -d --name edumart-api --network edumart-ci \
+            --add-host=host.docker.internal:host-gateway \
+            -p 8080:8080 \
             -e EDUMART_DRIVER=postgres \
-            -e EDUMART_DSN='postgres://edumart:edumart@127.0.0.1:5432/edumart?sslmode=disable' \
+            -e EDUMART_DSN='postgres://edumart:edumart@host.docker.internal:5432/edumart?sslmode=disable' \
             -e EDUMART_ENV=production \
-            -e EDUMART_SEED=false \
+            -e EDUMART_SEED=true \
+            -e EDUMART_SEED_DEMO_USERS=true \
             -e EDUMART_NOTIFY=log \
             -e EDUMART_VERIFICATION_SECRET=ci_only_verification_secret_value \
-            -e EDUMART_ALLOWED_ORIGINS=https://edumart.ng \
+            -e EDUMART_ALLOWED_ORIGINS=http://localhost:3000 \
+            -e EDUMART_TRUST_PROXY=true \
             edumart-api:ci
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8080/readyz > /tmp/readyz.json; then break; fi
@@ -593,8 +636,41 @@ jobs:
           assert body["status"] == "ok", body
           assert body["version"].startswith("sha-"), body
           assert {c["name"] for c in body["checks"]} >= {"database", "migrations"}, body
-          print("image is ready and identifies itself as", body["version"])
+          print("the API container is ready and identifies itself as", body["version"])
           PY
-      - name: The container logs explain a failure instead of swallowing it
+          docker run -d --name edumart-web --network edumart-ci \
+            -p 3000:3000 \
+            -e EDUMART_API_URL=http://edumart-api:8080 \
+            -e NODE_ENV=production \
+            edumart-web:ci
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/manifest.webmanifest > /dev/null; then break; fi
+            sleep 2
+          done
+      - name: The web container serves pages, proxies /v1, and passes a session through
+        run: |
+          echo "--- a server-rendered page:"
+          curl -fsS -o /dev/null -w "%{http_code} GET /\n" http://127.0.0.1:3000/
+          echo "--- through the proxy, which was pointed at the API at run time:"
+          curl -fsS http://127.0.0.1:3000/v1/subjects > /tmp/subjects.json
+          python3 - <<'PY'
+          import json
+          body = json.load(open("/tmp/subjects.json"))
+          assert body["subjects"], body
+          print(f"the proxy returned {len(body['subjects'])} subjects from the API container")
+          PY
+          echo "--- an authenticated route without a session still reaches the API:"
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/v1/me)
+          test "$code" = "401" || (echo "expected 401 from the API through the proxy, got $code" >&2; exit 1)
+          echo "--- and a login through the proxy sets the session cookie on the web origin:"
+          curl -s -D /tmp/login.headers -o /dev/null \
+            -X POST http://127.0.0.1:3000/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"student@edumart.ng","password":"Student123!"}'
+          grep -iq '^set-cookie: edumart_session=' /tmp/login.headers || \
+            (echo "no session cookie came back through the proxy" >&2; cat /tmp/login.headers; exit 1)
+          echo "session cookie passed through with its HttpOnly attributes:"
+          grep -i '^set-cookie:' /tmp/login.headers
+      - name: Both container logs on failure
         if: failure()
-        run: docker logs edumart-api || true
+        run: docker logs edumart-web || true; docker logs edumart-api || true
