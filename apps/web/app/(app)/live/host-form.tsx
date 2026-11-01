@@ -16,8 +16,11 @@ export function HostClassForm() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [creditsCost, setCreditsCost] = useState(0);
-  const [capacity, setCapacity] = useState(8);
-  const [durationMinutes, setDurationMinutes] = useState(60);
+  // The room carries fifty people; the input starts there because that is the number the forwarder is built for.
+  const [capacity, setCapacity] = useState(50);
+  // A free session is capped at 45 minutes by the server. The form follows the price so the limit is visible
+  // before the request rather than as a 400 after it.
+  const [durationMinutes, setDurationMinutes] = useState(45);
   const [startsAt, setStartsAt] = useState(() => new Date(Date.now() + 3_600_000).toISOString().slice(0, 16));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +52,7 @@ export function HostClassForm() {
         return;
       }
       setCreated({ slug: payload.class.slug, joinUrl: payload.class.joinUrl });
+      setDurationMinutes(45);
       setTitle("");
       setDescription("");
       router.refresh();
@@ -81,18 +85,22 @@ export function HostClassForm() {
         <Field id="startsAt" label="Starts">
           <Input id="startsAt" type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} required />
         </Field>
-        <Field id="durationMinutes" label="Minutes">
+        <Field
+          id="durationMinutes"
+          label="Minutes"
+          hint={creditsCost === 0 ? "A free session is capped at 45 minutes." : "Up to 480 minutes once it is priced."}
+        >
           <Input
             id="durationMinutes"
             type="number"
-            min={15}
-            max={480}
+            min={5}
+            max={creditsCost === 0 ? 45 : 480}
             value={durationMinutes}
             onChange={(event) => setDurationMinutes(Number(event.target.value))}
           />
         </Field>
-        <Field id="capacity" label="Seats" hint="0 means unlimited.">
-          <Input id="capacity" type="number" min={0} max={5000} value={capacity} onChange={(event) => setCapacity(Number(event.target.value))} />
+        <Field id="capacity" label="Seats" hint="Up to 50 — the room carries fifty connections.">
+          <Input id="capacity" type="number" min={2} max={50} value={capacity} onChange={(event) => setCapacity(Number(event.target.value))} />
         </Field>
       </div>
 
@@ -115,12 +123,17 @@ export function HostClassForm() {
         />
       </Field>
 
-      {capacity > 8 ? (
-        <Alert tone="warning" title="Rooms are mesh-connected">
-          Above about eight people, every participant&apos;s uplink carries a stream to everybody else. The room
-          will still open, but the video will degrade before the server notices.
+      {creditsCost === 0 && durationMinutes > 45 ? (
+        <Alert tone="warning" title="Free sessions stop at 45 minutes">
+          Set a credit price to run a longer session, or the API will refuse this one.
         </Alert>
       ) : null}
+
+      <p className="text-xs text-muted-foreground">
+        Fifty seats, six of them on stage: you plus five speakers you promote during the class. Everybody else
+        watches and chats. Media is forwarded by the media server, so a full room does not depend on every phone
+        uploading fifty streams.
+      </p>
 
       <Button type="submit" disabled={busy || title.trim().length < 3}>
         {busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : null}

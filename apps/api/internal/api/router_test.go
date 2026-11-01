@@ -23,8 +23,11 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/classroom"
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
+	"github.com/teamthy/edumart/apps/api/internal/consistency"
 	"github.com/teamthy/edumart/apps/api/internal/content"
+	"github.com/teamthy/edumart/apps/api/internal/exams"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
@@ -104,6 +107,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	clock := &testClock{at: time.Now().UTC()}
 	courier := notify.NewService(db, mail, logger).WithClock(clock.Now)
 	rewardsService := rewards.New(db)
+	engine := assessment.New(db)
 	shop := commerce.New(db, "sandbox", webhookSecret).WithNotifier(courier).WithLogger(logger)
 	config := api.Config{
 		AllowedOrigins:  []string{"http://localhost:3000"},
@@ -112,11 +116,16 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	if tweak != nil {
 		tweak(&config)
 	}
+	forwarder, forwarderErr := media.New(media.Config{})
+	if forwarderErr != nil {
+		t.Fatalf("media: %v", forwarderErr)
+	}
+	t.Cleanup(forwarder.Close)
 	router := api.NewRouter(api.Deps{
 		Store:    db,
 		Auth:     auth.New(db, auth.WithNotifier(courier), auth.WithLogger(logger)),
 		Items:    content.New(db),
-		Exams:    assessment.New(db),
+		Exams:    engine,
 		Classes:  classroom.New(db),
 		Shop:     shop,
 		Rewards:  rewardsService,
@@ -129,9 +138,14 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Live: virtualclass.New(db, virtualclass.Config{
 			WebURL:     "http://localhost:3000",
 			ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
-		}),
-		Logger: logger,
-		Config: config,
+		}).WithMedia(forwarder),
+		// The forwarder is real, not a stub: it opens no sockets until somebody negotiates, and a fake here
+		// would let a test pass against media behaviour the deployment does not have.
+		Media:    forwarder,
+		Sittings: exams.New(db, engine, exams.Config{WebURL: "http://localhost:3000"}),
+		Habit:    consistency.New(db),
+		Logger:   logger,
+		Config:   config,
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)

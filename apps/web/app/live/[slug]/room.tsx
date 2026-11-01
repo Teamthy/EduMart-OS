@@ -1,81 +1,39 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Copy,
-  Eraser,
-  Mic,
-  MicOff,
-  PenLine,
-  PhoneOff,
-  Radio,
-  Send,
-  Square,
-  Trash2,
-  Users,
-  Video,
-  VideoOff,
-} from "lucide-react";
+import { Copy, Mic, MicOff, PhoneOff, PenLine, Eraser, Radio, Send, Square, Trash2, Users, Video, VideoOff } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  createBoardKey,
-  exportBoardKey,
-  importBoardKey,
-  openBoardEvent,
-  sealBoardEvent,
-  type BoardKey,
-  type SealedBoardEvent,
-} from "@/lib/live-board";
+  LiveApiError,
+  appendBoard,
+  connectMedia,
+  createDiscountCode,
+  endLiveClass,
+  joinLiveClass,
+  liveAttendance,
+  liveBoard,
+  liveDiscountCodes,
+  liveIce,
+  liveRoster,
+  pollSignals,
+  postSignal,
+  leaveLiveClass,
+  setStage,
+  startLiveClass,
+  type AttendanceRow,
+  type BoardEventRow,
+  type LiveClass,
+  type StageSeat,
+} from "@/lib/live-api";
+import { createBoardKey, exportBoardKey, importBoardKey, openBoardEvent, sealBoardEvent, type BoardKey } from "@/lib/live-board";
 
-/** The server's view of a class, as this component needs it. */
-export interface RoomClass {
-  id: string;
-  slug: string;
-  title: string;
-  hostUserId: string;
-  hostName: string;
-  creditsCost: number;
-  status: string;
-  startsAt: string;
-  durationMinutes: number;
-  joinUrl: string;
-  role: string;
-}
-
-interface Attendee {
-  userId: string;
-  displayName: string;
-  avatar: { initials: string; color: string };
-  role: string;
-  present: boolean;
-}
-
-interface AttendanceRow {
-  userId: string;
-  displayName: string;
-  sessions: number;
-  minutes: number;
-  creditsPaid: number;
-}
-
-interface BoardEventRow extends SealedBoardEvent {
-  seq: number;
-  authorId: string;
-}
-
-interface SignalRow {
-  seq: number;
-  fromUserId: string;
-  toUserId: string | null;
-  kind: string;
-  payload: string;
-}
+/** Six seats on the stage: the host plus five speakers. The media forwarder is built around this number. */
+const STAGE_SLOTS = 6;
 
 type Stroke = {
   tool: "pen" | "eraser";
@@ -84,92 +42,181 @@ type Stroke = {
   points: { x: number; y: number }[];
 };
 
-/** Every API call in the room goes through here so an error envelope is never surfaced as "undefined". */
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/v1${path}`, {
-    ...init,
-    headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
-    cache: "no-store",
-  });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!response.ok) {
-    const message = payload?.error?.message ?? "Something went wrong.";
-    throw Object.assign(new Error(message), { status: response.status, code: payload?.error?.code });
-  }
-  return payload as T;
+type ChatMessage = { from: string; name: string; text: string; at: number };
+
+interface Props {
+  initial: LiveClass;
+  viewerId: string;
+  viewerName: string;
+  /** The board key from the link fragment, when this browser was given one. */
+  linkKey: string | null;
 }
 
-const POLL_WAIT = 5;
-const HEARTBEAT_MS = 20_000;
-const COLORS = ["#1d4ed8", "#b91c1c", "#047857", "#7c3aed", "#b45309"];
-
-export function LiveRoom({ room }: { room: RoomClass }) {
-  const isHost = room.role === "host";
-  const [me, setMe] = useState<{ id: string; displayName: string } | null>(null);
-  const [attendees, setAttendees] = useState<Attendee[]>([]);
-  const [status, setStatus] = useState(room.status);
+/**
+ * The room.
+ *
+ * Two transport decisions live here, and both are consequences of the 50-seat requirement:
+ *
+ * 1. **Media is forwarded, not meshed.** Every participant holds one peer connection to the media forwarder and
+ *    the server copies packets to the people who want them. The connection's shape is fixed — six stage slots —
+ *    so a promotion changes which publisher feeds a slot rather than renegotiating anybody mid-sentence.
+ * 2. **The whiteboard key travels in the link's fragment, not through the server.** A fragment is never sent to
+ *    a server, so the room key reaches participants without the API ever seeing it, and the board events the API
+ *    stores stay opaque. A visitor who opened `/live/SLUG` without the fragment can watch, hear and chat, but
+ *    the board is blank for them and the page says why.
+ *
+ * Chat and presence ride the signalling relay, which the API stores for ten minutes and then drops.
+ */
+export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
+  const [room, setRoom] = useState<LiveClass>(initial);
+  const [seats, setSeats] = useState<StageSeat[]>([]);
+  const [joined, setJoined] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-
-  const [joined, setJoined] = useState(false);
   const [discountCode, setDiscountCode] = useState("");
   const [joining, setJoining] = useState(false);
 
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [slotStreams, setSlotStreams] = useState<Record<number, MediaStream>>({});
+  const [mediaState, setMediaState] = useState<"idle" | "connecting" | "live" | "unavailable">("idle");
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remotes, setRemotes] = useState<{ userId: string; stream: MediaStream }[]>([]);
 
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
-  const [color, setColor] = useState(COLORS[0]!);
+  const [color, setColor] = useState("#1d4ed8");
   const [keyReady, setKeyReady] = useState(false);
+  const [boardNotice, setBoardNotice] = useState<string | null>(null);
 
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState("");
   const [attendance, setAttendance] = useState<AttendanceRow[] | null>(null);
   const [codes, setCodes] = useState<{ code: string; percentOff: number; uses: number; maxUses: number }[]>([]);
 
-  // Refs hold the machinery that must not re-render: sockets, polls, canvases and keys.
-  const boardKeyRef = useRef<BoardKey | null>(null);
-  const pendingBoardRef = useRef<BoardEventRow[]>([]);
-  const peersRef = useRef(new Map<string, RTCPeerConnection>());
-  const channelsRef = useRef(new Map<string, RTCDataChannel>());
+  const isHost = room.role === "host";
+  const mySeat = seats.find((seat) => seat.userId === viewerId);
+  const publishing = mySeat ? mySeat.stageRole !== "audience" : false;
+  const mySlot = mySeat?.stageSlot ?? -1;
+
+  const peerRef = useRef<RTCPeerConnection | null>(null);
   const localsRef = useRef<MediaStream | null>(null);
-  const cursorRef = useRef(0);
+  const closingRef = useRef(false);
+  const signalCursorRef = useRef(0);
   const boardSeqRef = useRef(0);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const boardKeyRef = useRef<BoardKey | null>(null);
+  const pendingStrokesRef = useRef<BoardEventRow[]>([]);
   const strokesRef = useRef<Stroke[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const iceRef = useRef<RTCIceServer[]>([]);
-  const stoppingRef = useRef(false);
-  const meRef = useRef<string>("");
+  const joinedRef = useRef(false);
+  const publishingRef = useRef(false);
+  const chatNamesRef = useRef(new Map<string, string>());
 
-  const initials = (name: string) =>
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() ?? "")
-      .join("") || "ED";
+  useEffect(() => {
+    joinedRef.current = joined;
+  }, [joined]);
+  useEffect(() => {
+    publishingRef.current = publishing;
+  }, [publishing]);
 
-  /** Redraws the whole board from the stroke list. Cheap at classroom sizes and impossible to get out of order. */
+  // ── the board key ─────────────────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    let alive = true;
+    // The fragment is read here rather than passed down, because a fragment is the one part of a URL a browser
+    // never sends to a server: the page cannot see it, only the client can.
+    const fromFragment = (() => {
+      if (linkKey) return linkKey;
+      if (typeof window === "undefined") return null;
+      const hash = window.location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      return params.get("k");
+    })();
+    (async () => {
+      if (fromFragment) {
+        try {
+          const key = await importBoardKey(fromFragment);
+          if (!alive) return;
+          boardKeyRef.current = key;
+          setKeyReady(true);
+          await drainPending(key);
+        } catch {
+          if (alive) setBoardNotice("The board key in this link is not usable. Ask the host for the board link.");
+        }
+        return;
+      }
+      if (!isHost) {
+        setBoardNotice("This link has no board key, so the board stays encrypted and blank here. Ask the host for the board link.");
+        return;
+      }
+      // The host owns the key. It goes into the URL fragment — which no browser sends to a server — so "copy
+      // link" hands it out without the API ever seeing it.
+      const key = await createBoardKey();
+      if (!alive) return;
+      boardKeyRef.current = key;
+      setKeyReady(true);
+      const url = new URL(window.location.href);
+      url.hash = `k=${exportBoardKey(key)}`;
+      window.history.replaceState(null, "", url.toString());
+      setBoardNotice("You hold this room's board key. Use “Copy link” so the people you invite can read the board.");
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, linkKey]);
+
+  const boardLink = useCallback(() => {
+    const key = boardKeyRef.current;
+    const base = room.joinUrl;
+    if (!key) return base;
+    return `${base}#k=${exportBoardKey(key)}`;
+  }, [room.joinUrl]);
+
+  // ── drawing ────────────────────────────────────────────────────────────────────────────────────
+
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
     for (const stroke of strokesRef.current) drawStroke(context, stroke);
   }, []);
 
+  const applyStroke = useCallback(
+    (stroke: Stroke) => {
+      if (stroke.tool === "eraser" && stroke.width > 1000) {
+        strokesRef.current = [];
+        redraw();
+        return;
+      }
+      strokesRef.current.push(stroke);
+      const context = canvasRef.current?.getContext("2d");
+      if (context) drawStroke(context, stroke);
+    },
+    [redraw],
+  );
+
+  async function drainPending(key: BoardKey) {
+    const pending = pendingStrokesRef.current.sort((a, b) => a.seq - b.seq);
+    pendingStrokesRef.current = [];
+    for (const event of pending) {
+      try {
+        applyStroke(await openBoardEvent<Stroke>(key, event));
+      } catch {
+        // Sealed under another room's key: skip rather than draw the wrong lesson.
+      }
+    }
+  }
+
   function drawStroke(context: CanvasRenderingContext2D, stroke: Stroke) {
     if (stroke.points.length === 0) return;
-    context.beginPath();
-    context.lineJoin = "round";
+    context.strokeStyle = stroke.color;
+    context.lineWidth = stroke.width;
     context.lineCap = "round";
-    context.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color;
-    context.lineWidth = stroke.width * (stroke.tool === "eraser" ? 4 : 1);
+    context.lineJoin = "round";
+    if (stroke.tool === "eraser") context.strokeStyle = "#ffffff";
+    context.beginPath();
     const [first, ...rest] = stroke.points;
     if (!first) return;
     context.moveTo(first.x, first.y);
@@ -177,31 +224,15 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     context.stroke();
   }
 
-  /**
-   * Applies a decrypted board event. Applied in the order the server assigned, so two clients that received the
-   * same strokes in a different network order still end up with the same picture.
-   */
-  const applyBoardEvent = useCallback(
-    (stroke: Stroke) => {
-      strokesRef.current.push(stroke);
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d");
-      if (context) drawStroke(context, stroke);
-    },
-    [],
-  );
-
-  // ── joining ────────────────────────────────────────────────────────────────────────────────────
+  // ── joining, roster and presence ──────────────────────────────────────────────────────────────
 
   const join = useCallback(
     async (code?: string) => {
       setJoining(true);
       setError(null);
       try {
-        await call(`/virtual-classes/${room.id}/join`, {
-          method: "POST",
-          body: JSON.stringify(code ? { discountCode: code } : {}),
-        });
+        const { class: joinedClass } = await joinLiveClass(room.id, code);
+        setRoom(joinedClass);
         setJoined(true);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not join.");
@@ -212,35 +243,22 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     [room.id],
   );
 
-  // ── identity, ICE and the roster ──────────────────────────────────────────────────────────────
-
+  // A host who created the class is already seated; everybody else takes a seat explicitly so the free window,
+  // the capacity and the price are all decided by the server before any media is negotiated.
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const [who, ice] = await Promise.all([
-          call<{ user: { id: string; displayName: string } }>("/me"),
-          call<{ iceServers: RTCIceServer[] }>(`/virtual-classes/${room.id}/ice`),
-        ]);
-        if (!alive) return;
-        setMe(who.user);
-        meRef.current = who.user.id;
-        iceRef.current = ice.iceServers;
-      } catch (caught) {
-        if (alive) setError(caught instanceof Error ? caught.message : "Could not load the room.");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [room.id]);
+    if (initial.role === "host") {
+      void join();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refreshRoster = useCallback(async () => {
     try {
-      const { attendees: roster } = await call<{ attendees: Attendee[] }>(`/virtual-classes/${room.id}/roster`);
-      setAttendees(roster);
+      const { attendees } = await liveRoster(room.id);
+      setSeats(attendees);
+      for (const seat of attendees) chatNamesRef.current.set(seat.userId, seat.displayName);
     } catch {
-      // A failed roster poll is not worth an error banner: the next tick will have it.
+      // A failed poll is not worth a banner; the next tick has it.
     }
   }, [room.id]);
 
@@ -248,313 +266,208 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     if (!joined) return;
     void refreshRoster();
     const timer = window.setInterval(() => void refreshRoster(), 10_000);
-    return () => window.clearInterval(timer);
-  }, [joined, refreshRoster]);
-
-  // ── the media mesh ────────────────────────────────────────────────────────────────────────────
-
-  const sendOverChannel = useCallback((userId: string, message: unknown) => {
-    const channel = channelsRef.current.get(userId);
-    if (channel && channel.readyState === "open") channel.send(JSON.stringify(message));
-  }, []);
-
-  const broadcastKey = useCallback(async () => {
-    const key = boardKeyRef.current;
-    if (!key) return;
-    const encoded = await exportBoardKey(key);
-    for (const userId of channelsRef.current.keys()) sendOverChannel(userId, { type: "key", key: encoded });
-  }, [sendOverChannel]);
-
-  /** Unseals everything buffered while the room key was still in flight. */
-  const drainPending = useCallback(
-    async (key: BoardKey) => {
-      const pending = pendingBoardRef.current.sort((a, b) => a.seq - b.seq);
-      pendingBoardRef.current = [];
-      for (const event of pending) {
-        try {
-          applyBoardEvent(await openBoardEvent<Stroke>(key, event));
-        } catch {
-          // Not our key. Skip rather than spam: a participant of another class's board cannot be decrypted,
-          // and pretending otherwise would silently draw the wrong lesson.
-        }
-      }
-    },
-    [applyBoardEvent],
-  );
-
-  const createPeer = useCallback(
-    (peerId: string) => {
-      const existing = peersRef.current.get(peerId);
-      if (existing) return existing;
-      const peer = new RTCPeerConnection({ iceServers: iceRef.current });
-
-      peer.onicecandidate = (event) => {
-        if (!event.candidate) return;
-        void call(`/virtual-classes/${room.id}/signal`, {
-          method: "POST",
-          body: JSON.stringify({ kind: "ice", toUserId: peerId, payload: event.candidate.toJSON().candidate }),
-        }).catch(() => undefined);
-      };
-      peer.ontrack = (event) => {
-        const [stream] = event.streams;
-        if (!stream) return;
-        setRemotes((current) =>
-          current.some((item) => item.userId === peerId && item.stream.id === stream.id)
-            ? current
-            : [...current.filter((item) => item.userId !== peerId), { userId: peerId, stream }],
-        );
-      };
-      peer.onconnectionstatechange = () => {
-        if (peer.connectionState === "failed" || peer.connectionState === "closed") {
-          setRemotes((current) => current.filter((item) => item.userId !== peerId));
-        }
-      };
-
-      // The whiteboard key and live strokes travel on this channel. It is also the reason the server never
-      // needs to relay board traffic: media and board both go peer to peer.
-      const channel = peer.createDataChannel("board");
-      channel.onopen = () => {
-        channelsRef.current.set(peerId, channel);
-        // Whoever holds the key hands it to the newcomer, so a late joiner can replay the stored board.
-        void broadcastKey();
-        void flushBoard(peerId);
-      };
-      channel.onclose = () => channelsRef.current.delete(peerId);
-      channel.onmessage = async (event) => {
-        const message = JSON.parse(String(event.data)) as { type: string; key?: string; stroke?: Stroke; payload?: SealedBoardEvent };
-        if (message.type === "key" && message.key) {
-          if (boardKeyRef.current) return;
-          const key = await importBoardKey(message.key);
-          boardKeyRef.current = key;
-          setKeyReady(true);
-          await drainPending(key);
-          return;
-        }
-        if (message.type === "stroke" && message.payload) {
-          const key = boardKeyRef.current;
-          if (!key) {
-            pendingBoardRef.current.push({ ...message.payload, seq: pendingBoardRef.current.length + 1, authorId: peerId });
-            return;
-          }
-          try {
-            applyBoardEvent(await openBoardEvent<Stroke>(key, message.payload));
-          } catch {
-            // Ignore undecryptable traffic.
-          }
-        }
-      };
-
-      peersRef.current.set(peerId, peer);
-      return peer;
-    },
-    // flushBoard is defined below and stable through useRef-free closure; see note there.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [room.id, broadcastKey, applyBoardEvent, drainPending],
-  );
-
-  const flushBoard = useCallback(
-    (peerId: string) => {
-      // Re-sends the strokes we already drew to a peer that just connected, so a joiner who arrives mid-lesson
-      // does not wait for the next stroke to see anything.
-      void (async () => {
-        const key = boardKeyRef.current;
-        if (!key) return;
-        for (const stroke of strokesRef.current.slice(-200)) {
-          const sealed = await sealBoardEvent(key, stroke);
-          sendOverChannel(peerId, { type: "stroke", payload: sealed });
-        }
-      })();
-    },
-    [sendOverChannel],
-  );
-
-  const attachLocals = useCallback(
-    (peer: RTCPeerConnection, stream: MediaStream) => {
-      for (const track of stream.getTracks()) peer.addTrack(track, stream);
-    },
-    [],
-  );
-
-  const fetchSignals = useCallback(async () => {
-    const { signals } = await call<{ signals: SignalRow[] }>(
-      `/virtual-classes/${room.id}/signal?since=${cursorRef.current}&wait=${POLL_WAIT}`,
-    );
-    for (const signal of signals) {
-      cursorRef.current = Math.max(cursorRef.current, signal.seq);
-      if (signal.fromUserId === meRef.current) continue;
-      const stream = localsRef.current;
-      try {
-        if (signal.kind === "offer") {
-          const peer = createPeer(signal.fromUserId);
-          if (stream) attachLocals(peer, stream);
-          await peer.setRemoteDescription({ type: "offer", sdp: signal.payload });
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          await call(`/virtual-classes/${room.id}/signal`, {
-            method: "POST",
-            body: JSON.stringify({ kind: "answer", toUserId: signal.fromUserId, payload: answer.sdp }),
-          });
-        } else if (signal.kind === "answer") {
-          const peer = peersRef.current.get(signal.fromUserId);
-          if (peer && peer.signalingState === "have-local-offer") {
-            await peer.setRemoteDescription({ type: "answer", sdp: signal.payload });
-          }
-        } else if (signal.kind === "ice") {
-          const peer = peersRef.current.get(signal.fromUserId);
-          if (peer) await peer.addIceCandidate({ candidate: signal.payload, sdpMid: "0" });
-        } else if (signal.kind === "leave") {
-          peersRef.current.get(signal.fromUserId)?.close();
-          peersRef.current.delete(signal.fromUserId);
-          setRemotes((current) => current.filter((item) => item.userId !== signal.fromUserId));
-        }
-      } catch {
-        // A failed negotiation retries on the next roster change; a broken one must not stop the poll loop.
-      }
-    }
-  }, [room.id, createPeer, attachLocals]);
-
-  const startMedia = useCallback(async () => {
-    if (localsRef.current) return localsRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      // 720p: the resolution that survives a Nigerian mobile uplink and still looks like a person.
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    localsRef.current = stream;
-    setLocalStream(stream);
-    // Every peer already open gets the new tracks without waiting for a renegotiation round trip.
-    for (const peer of peersRef.current.values()) {
-      attachLocals(peer, stream);
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      const target = [...peersRef.current.entries()].find(([, value]) => value === peer)?.[0];
-      if (target) {
-        await call(`/virtual-classes/${room.id}/signal`, {
-          method: "POST",
-          body: JSON.stringify({ kind: "offer", toUserId: target, payload: offer.sdp }),
-        }).catch(() => undefined);
-      }
-    }
-    return stream;
-  }, [room.id, attachLocals]);
-
-  /** The peer with the lower id offers, so two participants cannot glare at each other with simultaneous offers. */
-  const offerTo = useCallback(
-    async (peerId: string) => {
-      if (!localsRef.current) return;
-      if (meRef.current && meRef.current > peerId) return;
-      const peer = createPeer(peerId);
-      attachLocals(peer, localsRef.current);
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await call(`/virtual-classes/${room.id}/signal`, {
-        method: "POST",
-        body: JSON.stringify({ kind: "offer", toUserId: peerId, payload: offer.sdp }),
-      });
-    },
-    [room.id, createPeer, attachLocals],
-  );
-
-  // Poll the relay for as long as the room is open. The poll doubles as the presence heartbeat.
-  useEffect(() => {
-    if (!joined) return;
-    let running = true;
-    (async () => {
-      while (running) {
-        try {
-          await fetchSignals();
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-      }
-    })();
-    // A heartbeat with no media yet still keeps this participant out of the "gone quiet" list.
     const heartbeat = window.setInterval(() => {
-      void call(`/virtual-classes/${room.id}/signal`, {
-        method: "POST",
-        body: JSON.stringify({ kind: "presence", payload: "e30" }),
-      }).catch(() => undefined);
-    }, HEARTBEAT_MS);
+      void postSignal(room.id, { kind: "presence", payload: "e30" }).catch(() => undefined);
+    }, 20_000);
     return () => {
-      running = false;
+      window.clearInterval(timer);
       window.clearInterval(heartbeat);
     };
-  }, [joined, fetchSignals, room.id]);
+  }, [joined, refreshRoster, room.id]);
 
-  // Opening a connection to everybody else in the room, once, when they appear.
-  useEffect(() => {
-    if (!joined || !me || !localStream) return;
-    for (const attendee of attendees) {
-      if (attendee.userId === me.id || attendee.role === "host" && !attendee.present) continue;
-      if (!peersRef.current.has(attendee.userId)) void offerTo(attendee.userId).catch(() => undefined);
-    }
-  }, [attendees, joined, me, localStream, offerTo]);
+  // ── the board relay ──────────────────────────────────────────────────────────────────────────
 
-  // ── the board ─────────────────────────────────────────────────────────────────────────────────
-
-  const sealAndPublish = useCallback(
-    async (stroke: Stroke) => {
-      const key = boardKeyRef.current;
-      if (!key) return;
-      const sealed = await sealBoardEvent(key, stroke);
-      sendAll(sealed);
-      await call(`/virtual-classes/${room.id}/board`, {
-        method: "POST",
-        body: JSON.stringify(sealed),
-      }).catch(() => undefined);
+  const flushRemoteBoard = useCallback(
+    async (since: number) => {
+      const { events } = await liveBoard(room.id, since);
+      for (const event of events) {
+        boardSeqRef.current = Math.max(boardSeqRef.current, event.seq);
+        if (event.authorId === viewerId) continue;
+        const key = boardKeyRef.current;
+        if (!key) {
+          pendingStrokesRef.current.push(event);
+          continue;
+        }
+        try {
+          applyStroke(await openBoardEvent<Stroke>(key, event));
+        } catch {
+          // Undecryptable: another room's key, or a stroke sealed before the key rotated.
+        }
+      }
     },
-    [room.id],
+    [applyStroke, room.id, viewerId],
   );
 
-  const sendAll = useCallback(
-    (sealed: SealedBoardEvent) => {
-      for (const userId of channelsRef.current.keys()) sendOverChannel(userId, { type: "stroke", payload: sealed });
-    },
-    [sendOverChannel],
-  );
-
-  // The host owns the key; everybody else waits for it over the data channel.
-  useEffect(() => {
-    if (!joined || !isHost || boardKeyRef.current) return;
-    void (async () => {
-      boardKeyRef.current = await createBoardKey();
-      setKeyReady(true);
-      await broadcastKey();
-    })();
-  }, [joined, isHost, broadcastKey]);
-
-  // Replay what is already on the board, before drawing anything new.
   useEffect(() => {
     if (!joined) return;
     let alive = true;
     (async () => {
-      try {
-        const { events } = await call<{ events: BoardEventRow[] }>(`/virtual-classes/${room.id}/board?since=0`);
-        if (!alive) return;
-        boardSeqRef.current = events.reduce((max, event) => Math.max(max, event.seq), 0);
-        const key = boardKeyRef.current;
-        if (!key) {
-          pendingBoardRef.current.push(...events);
-          return;
-        }
-        for (const event of events) {
-          try {
-            applyBoardEvent(await openBoardEvent<Stroke>(key, event));
-          } catch {
-            // Another room's key, or a stroke sealed before a rotation. Skip it.
+      await flushRemoteBoard(0).catch(() => undefined);
+    })();
+    const timer = window.setInterval(() => {
+      if (!alive) return;
+      void flushRemoteBoard(boardSeqRef.current).catch(() => undefined);
+    }, 2_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [joined, flushRemoteBoard]);
+
+  // ── signalling: chat and presence ────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!joined) return;
+    let running = true;
+    (async () => {
+      while (running && !closingRef.current) {
+        try {
+          const { signals } = await pollSignals(room.id, signalCursorRef.current, 20);
+          for (const signal of signals) {
+            signalCursorRef.current = Math.max(signalCursorRef.current, signal.seq);
+            if (signal.fromUserId === viewerId) continue;
+            if (signal.kind === "chat") {
+              try {
+                const payload = JSON.parse(signal.payload) as { text?: string };
+                const text = payload.text;
+                if (!text) continue;
+                setChat((current) => [
+                  ...current.slice(-99),
+                  {
+                    from: signal.fromUserId,
+                    name: chatNamesRef.current.get(signal.fromUserId) ?? "Someone",
+                    text: text.slice(0, 500),
+                    at: Date.now(),
+                  },
+                ]);
+              } catch {
+                // A malformed chat payload is dropped, not rendered.
+              }
+            }
           }
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
         }
-      } catch {
-        // An empty board is not an error.
       }
     })();
     return () => {
-      alive = false;
+      running = false;
     };
-  }, [joined, room.id, applyBoardEvent]);
+  }, [joined, room.id, viewerId]);
+
+  // ── media: one connection to the forwarder ───────────────────────────────────────────────────
+
+  const teardownMedia = useCallback(() => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    setSlotStreams({});
+    localsRef.current?.getTracks().forEach((track) => track.stop());
+    localsRef.current = null;
+    setLocalStream(null);
+    setMediaState("idle");
+  }, []);
+
+  /**
+   * The offer this browser makes.
+   *
+   * The m-line order is the forwarder's fixed layout: for a publisher, one audio and one video m-line to send on,
+   * then six video+audio pairs to receive the stage. An audience member offers only the receive pairs. The
+   * server's answer lines up one for one — which is why nothing here ever needs to be renegotiated.
+   */
+  const connect = useCallback(async () => {
+    if (closingRef.current) return;
+    teardownMedia();
+    setMediaState("connecting");
+    try {
+      const { iceServers } = await liveIce(room.id);
+      iceRef.current = iceServers;
+      const peer = new RTCPeerConnection({ iceServers });
+      peerRef.current = peer;
+
+      const canPublish = publishingRef.current;
+      if (canPublish) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          localsRef.current = stream;
+          setLocalStream(stream);
+          for (const track of stream.getTracks()) {
+            peer.addTransceiver(track, { direction: "sendonly", streams: [stream] });
+          }
+        } catch {
+          // No camera or microphone: still connect as a publisher so the stage keeps its shape, and say why the
+          // tile is black rather than pretending the device works.
+          setNotice("Camera and microphone permission was not granted. You are on stage without sending media.");
+          peer.addTransceiver("audio", { direction: "sendonly" });
+          peer.addTransceiver("video", { direction: "sendonly" });
+        }
+      }
+
+      for (let slot = 0; slot < STAGE_SLOTS; slot += 1) {
+        peer.addTransceiver("video", { direction: "recvonly" });
+        peer.addTransceiver("audio", { direction: "recvonly" });
+      }
+
+      peer.ontrack = (event) => {
+        const mid = event.transceiver.mid;
+        if (mid === null) return;
+        const index = Number(mid);
+        if (Number.isNaN(index)) return;
+        const base = canPublish ? 2 : 0;
+        const offset = index - base;
+        if (offset < 0) return; // one of our own sending m-lines
+        const slot = Math.floor(offset / 2);
+        const isVideo = offset % 2 === 0;
+        if (!isVideo) {
+          if (slot === mySlot) return; // never play our own audio back at us
+          const audio = new Audio();
+          audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+          audio.autoplay = true;
+          void audio.play().catch(() => undefined);
+          return;
+        }
+        const stream = event.streams[0] ?? new MediaStream([event.track]);
+        setSlotStreams((current) => ({ ...current, [slot]: stream }));
+      };
+
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "failed") {
+          setNotice("The media connection dropped. Reconnecting…");
+          void connect().catch(() => undefined);
+        }
+      };
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      // Non-trickle on the server side: the answer already contains the forwarder's candidates.
+      const answer = await connectMedia(room.id, offer.sdp ?? "");
+      await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+      setMediaState("live");
+    } catch (caught) {
+      teardownMedia();
+      setMediaState("unavailable");
+      setError(
+        caught instanceof LiveApiError
+          ? caught.message
+          : "The media server could not be reached. The board, roster and chat still work.",
+      );
+    }
+  }, [mySlot, room.id, teardownMedia]);
+
+  // Connect once the room knows the caller's seat: the seat decides whether they publish, and the answer's shape
+  // depends on that.
+  useEffect(() => {
+    if (!joined || !mySeat) return;
+    if (room.status === "ended") return;
+    void connect();
+    return () => teardownMedia();
+    // Reconnects when the stage role or slot changes, which is exactly when the answer must be rebuilt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joined, mySeat?.stageRole, mySeat?.stageSlot, room.status]);
 
   useEffect(() => {
-    // Keeps the drawing surface in step with its CSS box, so a stroke lands where the finger is.
     const canvas = canvasRef.current;
     if (!canvas) return;
     const resize = () => {
@@ -563,13 +476,33 @@ export function LiveRoom({ room }: { room: RoomClass }) {
       canvas.width = Math.round(rect.width * ratio);
       canvas.height = Math.round(rect.height * ratio);
       const context = canvas.getContext("2d");
-      if (context) context.scale(ratio, ratio);
+      if (context) context.setTransform(ratio, 0, 0, ratio, 0, 0);
       redraw();
     };
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
   }, [redraw, joined]);
+
+  // ── publishing a stroke ───────────────────────────────────────────────────────────────────────
+
+  const publishStroke = useCallback(
+    async (stroke: Stroke) => {
+      const key = boardKeyRef.current;
+      if (!key) {
+        setBoardNotice("You can see the class, but you have no board key, so your strokes would be unreadable.");
+        return;
+      }
+      try {
+        const sealed = await sealBoardEvent(key, stroke);
+        const { seq } = await appendBoard(room.id, sealed);
+        boardSeqRef.current = Math.max(boardSeqRef.current, seq);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Could not save that stroke.");
+      }
+    },
+    [room.id],
+  );
 
   function pointerPosition(event: React.PointerEvent<HTMLCanvasElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -579,12 +512,7 @@ export function LiveRoom({ room }: { room: RoomClass }) {
   function startStroke(event: React.PointerEvent<HTMLCanvasElement>) {
     if (!joined) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    currentStrokeRef.current = {
-      tool,
-      color,
-      width: 3,
-      points: [pointerPosition(event)],
-    };
+    currentStrokeRef.current = { tool, color, width: tool === "eraser" ? 16 : 3, points: [pointerPosition(event)] };
   }
 
   function extendStroke(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -592,53 +520,38 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     if (!stroke) return;
     stroke.points.push(pointerPosition(event));
     const context = canvasRef.current?.getContext("2d");
-    if (context) {
-      const points = stroke.points.slice(-2);
-      drawStroke(context, { ...stroke, points });
-    }
+    if (context) drawStroke(context, { ...stroke, points: stroke.points.slice(-2) });
   }
 
   function endStroke() {
     const stroke = currentStrokeRef.current;
     currentStrokeRef.current = null;
     if (!stroke || stroke.points.length === 0) return;
-    strokesRef.current.push(stroke);
-    void sealAndPublish(stroke);
+    applyStroke(stroke);
+    void publishStroke(stroke);
   }
 
   function clearBoard() {
-    // Clearing is itself a stroke-shaped event, so a late joiner replays the clear instead of a board that
-    // no longer matches the room.
+    // A clear is itself a stroke-shaped event, so a late joiner replays the clear instead of a board that no
+    // longer matches the room.
     const wipe: Stroke = { tool: "eraser", color: "#ffffff", width: 4000, points: [{ x: 0, y: 0 }] };
     strokesRef.current = [];
     redraw();
-    void sealAndPublish(wipe);
+    void publishStroke(wipe);
   }
 
-  // ── leaving, hanging up ───────────────────────────────────────────────────────────────────────
+  // ── leaving and host controls ────────────────────────────────────────────────────────────────
 
   const hangUp = useCallback(
     async (leavingPage: boolean) => {
-      if (stoppingRef.current) return;
-      stoppingRef.current = true;
-      for (const [userId, peer] of peersRef.current) {
-        peer.close();
-        if (!leavingPage) {
-          await call(`/virtual-classes/${room.id}/signal`, {
-            method: "POST",
-            body: JSON.stringify({ kind: "leave", toUserId: userId, payload: "e30" }),
-          }).catch(() => undefined);
-        }
-      }
-      peersRef.current.clear();
-      channelsRef.current.clear();
-      localsRef.current?.getTracks().forEach((track) => track.stop());
-      localsRef.current = null;
+      if (closingRef.current) return;
+      closingRef.current = true;
+      teardownMedia();
       if (!leavingPage) {
-        await call(`/virtual-classes/${room.id}/leave`, { method: "POST" }).catch(() => undefined);
+        await leaveLiveClass(room.id).catch(() => undefined);
       }
     },
-    [room.id],
+    [room.id, teardownMedia],
   );
 
   useEffect(() => {
@@ -647,22 +560,20 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     };
   }, [hangUp]);
 
-  // ── host controls ────────────────────────────────────────────────────────────────────────────
-
   async function startSession() {
     try {
-      await call(`/virtual-classes/${room.id}/start`, { method: "POST" });
-      setStatus("live");
-      setNotice("Your class is live. The room is open to anyone with the link.");
+      const { class: started } = await startLiveClass(room.id);
+      setRoom(started);
+      setNotice("Your class is live. Everybody with the link can take a seat.");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not start.");
+      setError(caught instanceof Error ? caught.message : "Could not start the class.");
     }
   }
 
   async function endSession() {
     try {
-      await call(`/virtual-classes/${room.id}/end`, { method: "POST" });
-      setStatus("ended");
+      const { class: ended } = await endLiveClass(room.id);
+      setRoom(ended);
       await hangUp(false);
       setJoined(false);
       setNotice("Class ended. The attendance report is below.");
@@ -674,31 +585,37 @@ export function LiveRoom({ room }: { room: RoomClass }) {
 
   async function loadAttendance() {
     try {
-      const { attendance: rows } = await call<{ attendance: AttendanceRow[] }>(`/virtual-classes/${room.id}/attendance`);
+      const { attendance: rows } = await liveAttendance(room.id);
       setAttendance(rows);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not load attendance.");
+      setError(caught instanceof Error ? caught.message : "Could not load the attendance report.");
     }
   }
 
   async function loadCodes() {
     try {
-      const { discountCodes } = await call<{ discountCodes: typeof codes }>(`/virtual-classes/${room.id}/discount-codes`);
+      const { discountCodes } = await liveDiscountCodes(room.id);
       setCodes(discountCodes);
     } catch {
-      // Host-only; a learner never sees this panel.
+      // Host-only panel.
     }
   }
 
-  async function createCode(percent: number, maxUses: number) {
+  async function makeCode(percent: number, maxUses: number) {
     try {
-      await call(`/virtual-classes/${room.id}/discount-codes`, {
-        method: "POST",
-        body: JSON.stringify({ percentOff: percent, maxUses }),
-      });
+      await createDiscountCode(room.id, percent, maxUses);
       await loadCodes();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create the code.");
+    }
+  }
+
+  async function promote(userId: string, role: "speaker" | "audience") {
+    try {
+      const { attendees } = await setStage(room.id, userId, role);
+      setSeats(attendees);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not change the stage.");
     }
   }
 
@@ -708,11 +625,27 @@ export function LiveRoom({ room }: { room: RoomClass }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost]);
 
+  function sendChat() {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    void postSignal(room.id, { kind: "chat", payload: JSON.stringify({ text }) }).catch(() =>
+      setError("That message did not send."),
+    );
+  }
+
   const remaining = useMemo(() => {
     const endsAt = new Date(room.startsAt).getTime() + room.durationMinutes * 60_000;
-    const minutes = Math.max(0, Math.round((endsAt - Date.now()) / 60_000));
-    return minutes;
+    return Math.max(0, Math.round((endsAt - Date.now()) / 60_000));
   }, [room.startsAt, room.durationMinutes]);
+
+  const stageTiles = useMemo(() => {
+    const bySlot = new Map<number, StageSeat>();
+    for (const seat of seats) {
+      if (seat.stageSlot >= 0) bySlot.set(seat.stageSlot, seat);
+    }
+    return Array.from({ length: STAGE_SLOTS }, (_, slot) => ({ slot, seat: bySlot.get(slot) ?? null }));
+  }, [seats]);
 
   // ── render ───────────────────────────────────────────────────────────────────────────────────
 
@@ -723,13 +656,23 @@ export function LiveRoom({ room }: { room: RoomClass }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-xl">{room.title}</h1>
-              <Badge variant={status === "live" ? "success" : status === "ended" ? "outline" : "default"}>
-                {status}
+              <Badge variant={room.status === "live" ? "success" : room.status === "ended" ? "outline" : "default"}>
+                {room.status}
               </Badge>
-              {room.creditsCost > 0 ? <Badge variant="outline">{room.creditsCost} credits</Badge> : <Badge variant="outline">free</Badge>}
+              {room.creditsCost > 0 ? (
+                <Badge variant="outline">{room.creditsCost} credits</Badge>
+              ) : (
+                <Badge variant="outline">free · 45 min</Badge>
+              )}
+              <Badge variant="outline">
+                {seats.length}/{room.capacity} seats
+              </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
-              Hosted by {room.hostName} · {remaining > 0 ? `${remaining} min left of the booking` : "booking window over"}
+              Hosted by {room.hostName} ·{" "}
+              {room.creditsCost > 0
+                ? `${remaining} min left of the booking`
+                : `free sessions close 45 minutes after they start`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -738,20 +681,24 @@ export function LiveRoom({ room }: { room: RoomClass }) {
               variant="outline"
               size="sm"
               onClick={() => {
-                void navigator.clipboard?.writeText(room.joinUrl);
-                setNotice("Join link copied.");
+                void navigator.clipboard?.writeText(boardLink());
+                setNotice(
+                  keyReady
+                    ? "Join link copied, with the board key in its fragment."
+                    : "Join link copied. It carries no board key, so the board will stay blank for whoever opens it.",
+                );
               }}
             >
               <Copy aria-hidden="true" className="size-4" />
               Copy link
             </Button>
-            {isHost && status !== "live" && status !== "ended" ? (
+            {isHost && room.status !== "live" && room.status !== "ended" ? (
               <Button type="button" size="sm" onClick={() => void startSession()}>
                 <Radio aria-hidden="true" className="size-4" />
                 Go live
               </Button>
             ) : null}
-            {isHost && status !== "ended" ? (
+            {isHost && room.status !== "ended" ? (
               <Button type="button" size="sm" variant="outline" onClick={() => void endSession()}>
                 <Square aria-hidden="true" className="size-4" />
                 End class
@@ -772,233 +719,283 @@ export function LiveRoom({ room }: { room: RoomClass }) {
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
               {room.creditsCost > 0
-                ? `This class costs ${room.creditsCost} credits. Have a discount code? Enter it here.`
-                : "This class is free."}
+                ? `This class costs ${room.creditsCost} credits. A discount code goes here.`
+                : "This class is free, and closes 45 minutes after it starts."}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {room.capacity} seats, six of them on stage. You can watch, listen and chat from any seat; the host
+              promotes speakers.
             </p>
             {room.creditsCost > 0 ? (
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-48 flex-1">
-                  <Label htmlFor="discount">Discount code (optional)</Label>
-                  <Input
-                    id="discount"
-                    value={discountCode}
-                    onChange={(event) => setDiscountCode(event.target.value.toUpperCase())}
-                    className="font-mono uppercase tracking-widest"
-                    placeholder="HALF-OFF"
-                  />
-                </div>
-              </div>
+              <Input
+                value={discountCode}
+                onChange={(event) => setDiscountCode(event.target.value.toUpperCase())}
+                className="max-w-56 font-mono uppercase tracking-widest"
+                placeholder="DISCOUNT CODE"
+                aria-label="Discount code"
+              />
             ) : null}
-            <Button type="button" disabled={joining || status === "ended"} onClick={() => void join(discountCode || undefined)}>
-              {joining ? "Joining…" : status === "ended" ? "This class has ended" : "Join class"}
+            <Button
+              type="button"
+              disabled={joining || room.status === "ended"}
+              onClick={() => void join(discountCode || undefined)}
+            >
+              {joining ? "Joining…" : room.status === "ended" ? "This class has ended" : "Join class"}
             </Button>
           </CardContent>
         </Card>
       ) : (
-        <>
-          <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
-            <div className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="relative overflow-hidden rounded-xl border border-border bg-black">
-                  {localStream ? (
-                    <VideoTile stream={localStream} muted label={`${me?.displayName ?? "You"} (you)`} />
-                  ) : (
-                    <div className="flex aspect-video items-center justify-center p-4 text-center text-sm text-white/70">
-                      Your camera is off. Turn it on to be seen.
-                    </div>
-                  )}
-                </div>
-                {remotes.map((remote) => (
-                  <div key={remote.userId} className="relative overflow-hidden rounded-xl border border-border bg-black">
-                    <VideoTile
-                      stream={remote.stream}
-                      label={attendees.find((item) => item.userId === remote.userId)?.displayName ?? "Participant"}
-                    />
+        <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
+          <div className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-3">
+              {stageTiles.map(({ slot, seat }) => {
+                const isMe = seat?.userId === viewerId;
+                const stream = isMe ? localStream : slotStreams[slot];
+                return (
+                  <div key={slot} className="relative overflow-hidden rounded-xl border border-border bg-black">
+                    {stream ? (
+                      <VideoTile stream={stream} muted={isMe} label={seat?.displayName ?? "Seat"} />
+                    ) : (
+                      <div className="flex aspect-video items-center justify-center p-2 text-center text-xs text-white/60">
+                        {seat ? `${seat.displayName} is on stage` : slot === 0 ? "Host seat" : "Empty seat"}
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {!localStream ? (
-                  <Button type="button" size="sm" onClick={() => void startMedia().catch(() => setError("Camera and microphone permission is needed."))}>
-                    <Video aria-hidden="true" className="size-4" />
-                    Turn on camera
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        const stream = localsRef.current;
-                        if (!stream) return;
-                        stream.getAudioTracks().forEach((track) => (track.enabled = !micOn));
-                        setMicOn(!micOn);
-                      }}
-                    >
-                      {micOn ? <Mic aria-hidden="true" className="size-4" /> : <MicOff aria-hidden="true" className="size-4" />}
-                      {micOn ? "Mute" : "Unmute"}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        const stream = localsRef.current;
-                        if (!stream) return;
-                        stream.getVideoTracks().forEach((track) => (track.enabled = !cameraOn));
-                        setCameraOn(!cameraOn);
-                      }}
-                    >
-                      {cameraOn ? <Video aria-hidden="true" className="size-4" /> : <VideoOff aria-hidden="true" className="size-4" />}
-                      {cameraOn ? "Camera off" : "Camera on"}
-                    </Button>
-                  </>
-                )}
-                <Button type="button" size="sm" variant="outline" onClick={() => void hangUp(false)}>
-                  <PhoneOff aria-hidden="true" className="size-4" />
-                  Leave
-                </Button>
-              </div>
-
-              <Card>
-                <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <CardTitle className="text-base">Whiteboard</CardTitle>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <Button type="button" size="sm" variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
-                      <PenLine aria-hidden="true" className="size-4" />
-                      Pen
-                    </Button>
-                    <Button type="button" size="sm" variant={tool === "eraser" ? "default" : "outline"} onClick={() => setTool("eraser")}>
-                      <Eraser aria-hidden="true" className="size-4" />
-                      Eraser
-                    </Button>
-                    {COLORS.map((swatch) => (
-                      <button
-                        key={swatch}
-                        type="button"
-                        aria-label={`Use ${swatch}`}
-                        aria-pressed={color === swatch}
-                        onClick={() => {
-                          setColor(swatch);
-                          setTool("pen");
-                        }}
-                        className="size-6 rounded-full border border-border"
-                        style={{ backgroundColor: swatch, outline: color === swatch ? "2px solid var(--foreground)" : "none" }}
-                      />
-                    ))}
-                    <Button type="button" size="sm" variant="outline" onClick={clearBoard}>
-                      <Trash2 aria-hidden="true" className="size-4" />
-                      Clear
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <canvas
-                    ref={canvasRef}
-                    onPointerDown={startStroke}
-                    onPointerMove={extendStroke}
-                    onPointerUp={endStroke}
-                    onPointerLeave={endStroke}
-                    className="aspect-video w-full cursor-crosshair touch-none rounded-lg border border-border bg-white"
-                    aria-label="Shared whiteboard. Strokes are encrypted before they leave this browser."
-                  />
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {keyReady
-                      ? "Encrypted in this browser. The server stores ciphertext and cannot read the board."
-                      : "Waiting for the room key from the host…"}
-                  </p>
-                </CardContent>
-              </Card>
+                );
+              })}
             </div>
 
-            <aside className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">
+                {mediaState === "live"
+                  ? publishing
+                    ? "On stage"
+                    : "Watching the stage"
+                  : mediaState === "connecting"
+                    ? "Connecting media…"
+                    : mediaState === "unavailable"
+                      ? "Media unavailable"
+                      : "Not connected"}
+              </Badge>
+              {localStream ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const stream = localsRef.current;
+                      if (!stream) return;
+                      stream.getAudioTracks().forEach((track) => (track.enabled = !micOn));
+                      setMicOn(!micOn);
+                    }}
+                  >
+                    {micOn ? <Mic aria-hidden="true" className="size-4" /> : <MicOff aria-hidden="true" className="size-4" />}
+                    {micOn ? "Mute" : "Unmute"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const stream = localsRef.current;
+                      if (!stream) return;
+                      stream.getVideoTracks().forEach((track) => (track.enabled = !cameraOn));
+                      setCameraOn(!cameraOn);
+                    }}
+                  >
+                    {cameraOn ? <Video aria-hidden="true" className="size-4" /> : <VideoOff aria-hidden="true" className="size-4" />}
+                    {cameraOn ? "Camera off" : "Camera on"}
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void hangUp(false);
+                  setJoined(false);
+                }}
+              >
+                <PhoneOff aria-hidden="true" className="size-4" />
+                Leave
+              </Button>
+            </div>
+
+            <Card>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-base">Whiteboard</CardTitle>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button type="button" size="sm" variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
+                    <PenLine aria-hidden="true" className="size-4" />
+                    Pen
+                  </Button>
+                  <Button type="button" size="sm" variant={tool === "eraser" ? "default" : "outline"} onClick={() => setTool("eraser")}>
+                    <Eraser aria-hidden="true" className="size-4" />
+                    Eraser
+                  </Button>
+                  {["#1d4ed8", "#b91c1c", "#047857", "#7c3aed", "#b45309"].map((swatch) => (
+                    <button
+                      key={swatch}
+                      type="button"
+                      aria-label={`Use ${swatch}`}
+                      aria-pressed={color === swatch}
+                      onClick={() => {
+                        setColor(swatch);
+                        setTool("pen");
+                      }}
+                      className="size-6 rounded-full border border-border"
+                      style={{ backgroundColor: swatch, outline: color === swatch ? "2px solid var(--foreground)" : "none" }}
+                    />
+                  ))}
+                  <Button type="button" size="sm" variant="outline" onClick={clearBoard}>
+                    <Trash2 aria-hidden="true" className="size-4" />
+                    Clear
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <canvas
+                  ref={canvasRef}
+                  onPointerDown={startStroke}
+                  onPointerMove={extendStroke}
+                  onPointerUp={endStroke}
+                  onPointerLeave={endStroke}
+                  className="aspect-video w-full cursor-crosshair touch-none rounded-lg border border-border bg-white"
+                  aria-label="Shared whiteboard. Strokes are encrypted in this browser before they leave it."
+                />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {keyReady
+                    ? "Strokes are encrypted in this browser. The server stores ciphertext and cannot read the board."
+                    : boardNotice ?? "No board key in this link, so the board stays blank here."}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <aside className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Users aria-hidden="true" className="size-4" />
+                  In the room ({seats.filter((seat) => seat.present).length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2">
+                  {seats.map((seat) => (
+                    <li key={seat.userId} className="flex items-center gap-2">
+                      <span
+                        className={`size-2 shrink-0 rounded-full ${seat.present ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
+                        title={seat.present ? "In the room" : "No heartbeat in the last 75 seconds"}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm">{seat.displayName}</span>
+                      {seat.stageRole !== "audience" ? <Badge variant="outline">{seat.stageRole}</Badge> : null}
+                      {isHost && seat.userId !== viewerId ? (
+                        <button
+                          type="button"
+                          className="text-xs text-primary underline-offset-2 hover:underline"
+                          onClick={() => void promote(seat.userId, seat.stageRole === "audience" ? "speaker" : "audience")}
+                        >
+                          {seat.stageRole === "audience" ? "Bring on stage" : "Remove"}
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                  {seats.length === 0 ? <li className="text-xs text-muted-foreground">Nobody yet.</li> : null}
+                </ul>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Chat</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <ul className="max-h-56 space-y-1 overflow-y-auto text-xs">
+                  {chat.map((message, index) => (
+                    <li key={`${message.at}-${index}`}>
+                      <span className="font-medium">{message.name === viewerName ? "You" : message.name}: </span>
+                      {message.text}
+                    </li>
+                  ))}
+                  {chat.length === 0 ? <li className="text-muted-foreground">No messages yet.</li> : null}
+                </ul>
+                <form
+                  className="flex items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    sendChat();
+                  }}
+                >
+                  <Input
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder="Message the room"
+                    aria-label="Chat message"
+                  />
+                  <Button type="submit" size="sm" variant="outline">
+                    <Send aria-hidden="true" className="size-4" />
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
+            {isHost ? (
               <Card>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Users aria-hidden="true" className="size-4" />
-                    In the room ({attendees.filter((item) => item.present).length})
-                  </CardTitle>
+                  <CardTitle className="text-base">Discount codes</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <ul className="space-y-2">
-                    {attendees.map((attendee) => (
-                      <li key={attendee.userId} className="flex items-center gap-2">
-                        <span
-                          className="flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
-                          style={{ backgroundColor: attendee.avatar.color }}
-                          aria-hidden="true"
-                        >
-                          {attendee.avatar.initials}
+                <CardContent className="space-y-3">
+                  <DiscountForm onCreate={makeCode} />
+                  <ul className="space-y-1 text-xs">
+                    {codes.map((code) => (
+                      <li key={code.code} className="flex items-center justify-between gap-2 font-mono">
+                        <span>{code.code}</span>
+                        <span className="text-muted-foreground">
+                          {code.percentOff}% · {code.uses}/{code.maxUses === 0 ? "∞" : code.maxUses}
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-sm">{attendee.displayName}</span>
-                        {attendee.role === "host" ? <Badge variant="outline">host</Badge> : null}
-                        <span
-                          className={`size-2 rounded-full ${attendee.present ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
-                          title={attendee.present ? "In the room" : "No heartbeat in the last 75 seconds"}
-                        />
                       </li>
                     ))}
+                    {codes.length === 0 ? <li className="text-muted-foreground">No codes yet.</li> : null}
                   </ul>
                 </CardContent>
               </Card>
+            ) : null}
 
-              {isHost ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Discount codes</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <DiscountForm onCreate={createCode} />
+            {isHost ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Attendance</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => void loadAttendance()}>
+                    <Send aria-hidden="true" className="size-4" />
+                    Refresh report
+                  </Button>
+                  {attendance ? (
                     <ul className="space-y-1 text-xs">
-                      {codes.map((code) => (
-                        <li key={code.code} className="flex items-center justify-between gap-2 font-mono">
-                          <span>{code.code}</span>
+                      {attendance.map((row) => (
+                        <li key={row.userId} className="flex items-center justify-between gap-2">
+                          <span className="truncate">{row.displayName}</span>
                           <span className="text-muted-foreground">
-                            {code.percentOff}% · {code.uses}/{code.maxUses === 0 ? "∞" : code.maxUses}
+                            {row.minutes} min · {row.creditsPaid} credits
                           </span>
                         </li>
                       ))}
-                      {codes.length === 0 ? <li className="text-muted-foreground">No codes yet.</li> : null}
+                      {attendance.length === 0 ? <li className="text-muted-foreground">Nobody yet.</li> : null}
                     </ul>
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {isHost ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Attendance</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    <Button type="button" size="sm" variant="outline" onClick={() => void loadAttendance()}>
-                      <Send aria-hidden="true" className="size-4" />
-                      Refresh report
-                    </Button>
-                    {attendance ? (
-                      <ul className="space-y-1 text-xs">
-                        {attendance.map((row) => (
-                          <li key={row.userId} className="flex items-center justify-between gap-2">
-                            <span className="truncate">{row.displayName}</span>
-                            <span className="text-muted-foreground">
-                              {row.minutes} min · {row.creditsPaid} credits
-                            </span>
-                          </li>
-                        ))}
-                        {attendance.length === 0 ? <li className="text-muted-foreground">Nobody yet.</li> : null}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Minutes are measured from heartbeats, not asserted by the client.
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              ) : null}
-            </aside>
-          </div>
-        </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Minutes are measured from heartbeats the server records, not asserted by the client.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+          </aside>
+        </div>
       )}
     </div>
   );
@@ -1022,27 +1019,27 @@ function DiscountForm({ onCreate }: { onCreate: (percent: number, maxUses: numbe
   const [maxUses, setMaxUses] = useState(10);
   return (
     <div className="flex flex-wrap items-end gap-2">
-      <div className="w-20">
-        <Label htmlFor="percent">%</Label>
+      <label className="text-xs">
+        <span className="block text-muted-foreground">Percent off</span>
         <Input
-          id="percent"
           type="number"
           min={1}
           max={100}
           value={percent}
           onChange={(event) => setPercent(Number(event.target.value))}
+          className="w-20"
         />
-      </div>
-      <div className="w-24">
-        <Label htmlFor="maxUses">Uses</Label>
+      </label>
+      <label className="text-xs">
+        <span className="block text-muted-foreground">Uses</span>
         <Input
-          id="maxUses"
           type="number"
           min={0}
           value={maxUses}
           onChange={(event) => setMaxUses(Number(event.target.value))}
+          className="w-24"
         />
-      </div>
+      </label>
       <Button type="button" size="sm" onClick={() => void onCreate(percent, maxUses)}>
         Create
       </Button>

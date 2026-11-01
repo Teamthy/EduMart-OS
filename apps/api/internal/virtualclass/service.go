@@ -1,15 +1,18 @@
-// Package virtualclass owns live classes: the room, who paid what to be in it, the whiteboard, and the
-// signalling relay that lets two browsers find each other.
+// Package virtualclass owns live classes: the room, who paid what to be in it, the whiteboard, and the stage.
 //
 // What this package deliberately does not do:
 //
-//   - **carry media.** Audio and video never reach this server. Peers connect to each other with WebRTC, whose
-//     media is mandatorily encrypted (DTLS-SRTP); the API only relays the SDP and ICE candidates that let them
-//     negotiate. That is what makes the "end-to-end encrypted" claim true rather than aspirational.
-//   - **read the whiteboard.** Board events are opaque ciphertext with a client-held room key. The server
-//     stores and orders them so a late joiner can replay the board, and cannot decrypt a stroke.
+//   - **read the whiteboard.** Board events are opaque ciphertext with a client-held room key that travels in
+//     the join link's URL fragment — a part of a URL no browser sends to a server. The API stores and orders
+//     strokes so a late joiner can replay the board, and cannot decrypt one.
+//   - **decide who is on stage.** It records the host's decision (`stage_role`, `stage_slot`); the media
+//     forwarder in internal/media only enforces that one slot has one publisher.
 //   - **record the session.** There is no recording, no transcription and no server-side mixing. A recording is
 //     a custody decision about other people's voices, and it should not arrive as a side effect of a feature.
+//
+// Media is forwarded rather than meshed. A mesh is cheap for two people and impossible for fifty: each
+// participant would upload one stream per peer. The forwarder in internal/media gives every participant one
+// connection to one server that copies packets to the people who want them, so the room holds 50 seats.
 package virtualclass
 
 import (
@@ -24,8 +27,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/pion/webrtc/v4"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
+	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
 
@@ -67,6 +72,12 @@ type Attendee struct {
 	// Present is true when the attendee has been seen within the presence window. A browser that crashes
 	// never sends a leave, so presence is a heartbeat, not a flag.
 	Present bool `json:"present"`
+	// StageRole is "host", "speaker" or "audience". Only host and speaker publish audio and video; everybody
+	// else is in the room, watching the stage and raising a hand.
+	StageRole string `json:"stageRole"`
+	// StageSlot is the stage position the attendee publishes into, or -1. It is server-assigned: a client
+	// asking for slot 3 is asking.
+	StageSlot int `json:"stageSlot"`
 }
 
 // Avatar is what the room draws for someone who has no photograph: initials and a stable colour, both derived
@@ -120,9 +131,12 @@ type DiscountCode struct {
 type Config struct {
 	// WebURL is the origin a join link points at. Links are sent to other people, so they must be absolute.
 	WebURL string
-	// ICEServers is the JSON list handed to browsers so they can negotiate NAT traversal. Without a TURN
-	// server, peers behind symmetric NAT cannot connect — see docs/VIRTUAL_CLASSES.md.
+	// ICEServers is the JSON list handed to browsers so they can negotiate NAT traversal. The room still needs
+	// a TURN relay for participants behind symmetric NAT — see docs/VIRTUAL_CLASSES.md.
 	ICEServers []map[string]any
+	// Media is the forwarding unit that carries the audio and video. It is optional so that a test can build
+	// the service without one and get a clear refusal instead of a nil panic.
+	Media *media.Service
 }
 
 // Service implements the use cases.
@@ -130,6 +144,13 @@ type Service struct {
 	db     *store.Store
 	config Config
 	now    func() time.Time
+}
+
+// WithMedia attaches the forwarding unit. It is separate from New so that the media server can be built by the
+// process that also owns the API, in one place, and closed on shutdown.
+func (s *Service) WithMedia(forwarder *media.Service) *Service {
+	s.config.Media = forwarder
+	return s
 }
 
 // New builds the service.
@@ -142,6 +163,17 @@ const (
 	StatusLive      = "live"
 	StatusEnded     = "ended"
 	StatusCancelled = "cancelled"
+)
+
+const (
+	// MaxCapacity is how many people one class holds. It is a hard ceiling, not a suggestion: the forwarder is
+	// built and load-tested for fifty connections, and a room that admits the fifty-first would fail in the
+	// middle of a lesson rather than at the door.
+	MaxCapacity = 50
+	// FreeSessionMinutes is the length of a free class. A free room is the on-ramp; an all-day free room is a
+	// way to run a paid service without paying for it, and it also means a host can leave a room "open"
+	// forever and let attendance decay into noise. Paid classes set their own length.
+	FreeSessionMinutes = 45
 )
 
 // presenceWindow is how recently an attendee must have been seen to count as in the room.
@@ -192,14 +224,30 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput) (*C
 	if in.CreditsCost < 0 || in.CreditsCost > 10000 {
 		fields = append(fields, httpx.FieldError{Field: "creditsCost", Message: "A price is between 0 and 10000 credits."})
 	}
-	if in.Capacity < 0 || in.Capacity > 5000 {
-		fields = append(fields, httpx.FieldError{Field: "capacity", Message: "Capacity is between 0 (unlimited) and 5000."})
+	if in.Capacity == 0 {
+		in.Capacity = MaxCapacity
+	}
+	if in.Capacity < 2 || in.Capacity > MaxCapacity {
+		fields = append(fields, httpx.FieldError{Field: "capacity",
+			Message: fmt.Sprintf("A room holds between 2 and %d people.", MaxCapacity)})
 	}
 	if in.DurationMinutes == 0 {
-		in.DurationMinutes = 60
+		// The default follows the price: an hour is the usual lecture, and a free session cannot be an hour.
+		if in.CreditsCost == 0 {
+			in.DurationMinutes = FreeSessionMinutes
+		} else {
+			in.DurationMinutes = 60
+		}
 	}
 	if in.DurationMinutes < 5 || in.DurationMinutes > 480 {
 		fields = append(fields, httpx.FieldError{Field: "durationMinutes", Message: "A class lasts between 5 and 480 minutes."})
+	}
+	// The free limit is enforced here, in the one place a class is created, and again at the door (a session
+	// that outlives its booking is closed by requireOpen). A rule that lives only in a form is a rule a script
+	// does not follow.
+	if in.CreditsCost == 0 && in.DurationMinutes > FreeSessionMinutes {
+		fields = append(fields, httpx.FieldError{Field: "durationMinutes",
+			Message: fmt.Sprintf("A free class runs for at most %d minutes. Set a credit price to run longer.", FreeSessionMinutes)})
 	}
 	starts, err := time.Parse(time.RFC3339, strings.TrimSpace(in.StartsAt))
 	if err != nil {
@@ -344,7 +392,10 @@ func (s *Service) List(ctx context.Context, viewerID, scope string) ([]Class, er
 		class.Role = role
 		out = append(out, *class)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Service) joinURL(slug string) string {
@@ -382,6 +433,9 @@ type JoinResult struct {
 //   - a double-submit: the attendee row is unique per (class, user) and the ledger entry is idempotent, so a
 //     retried request charges nothing the second time.
 func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput) (*JoinResult, error) {
+	if err := s.requireOpen(ctx, classID); err != nil {
+		return nil, err
+	}
 	var result JoinResult
 	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
 		// Lock the class row: on PostgreSQL this serialises joins for one class; SQLite serialises writers
@@ -416,6 +470,11 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 			return err
 		}
 
+		// A room never admits more people than the forwarder can carry, however the row was written. 0 used to
+		// mean "unlimited"; it now means "the fifty the room is built for".
+		if capacity <= 0 || capacity > MaxCapacity {
+			capacity = MaxCapacity
+		}
 		if capacity > 0 {
 			var seated int
 			if err := tx.QueryRowContext(ctx,
@@ -513,17 +572,23 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 		}
 
 		role := "attendee"
+		stageRole := "audience"
+		stageSlot := -1
 		if hostID == userID {
+			// The host is always on stage, in slot 0. It is reserved rather than allocated, so the host can
+			// rejoin a room they were dropped from and still be the person talking.
 			role = "host"
+			stageRole = "host"
+			stageSlot = 0
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO virtual_class_attendees
 			(id, class_id, user_id, role, session_id, payment_method, credits_paid, discount_code,
-			 joined_at, last_seen_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)
+			 joined_at, last_seen_at, stage_role, stage_slot)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT (class_id, user_id) DO NOTHING`,
 			store.NewID(), classID, userID, role, sessionID, method, paid,
 			nullIfEmpty(strings.ToUpper(strings.TrimSpace(in.DiscountCode))),
-			store.Now(), store.Now()); err != nil {
+			store.Now(), store.Now(), stageRole, stageSlot); err != nil {
 			return err
 		}
 		result.CreditsSpent = paid
@@ -654,6 +719,72 @@ func (s *Service) End(ctx context.Context, classID, userID string) (*Class, erro
 	return s.Get(ctx, classID, userID)
 }
 
+// requireOpen refuses a room whose free window has run out, and closes it while it is at it.
+//
+// The rule is "a free session is 45 minutes". Enforcing it only when the class is created would leave the door
+// open for a host who started a free class and simply never ended it, which is exactly the shape the rule
+// exists to stop. So the check happens at the door — joining, publishing, drawing — and it *closes* the class
+// rather than refusing one caller: seats and stage slots should not stay open past the booking.
+func (s *Service) requireOpen(ctx context.Context, classID string) error {
+	var cost int
+	var status string
+	err := s.db.DB.QueryRowContext(ctx, `SELECT credits_cost, status FROM virtual_classes WHERE id = ?`,
+		classID).Scan(&cost, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return httpx.NewError(httpx.CodeNotFound, "That class does not exist.")
+	}
+	if err != nil {
+		return err
+	}
+	if status == StatusEnded || status == StatusCancelled {
+		return httpx.NewError(httpx.CodeConflict, "That class has already finished.")
+	}
+	if cost > 0 {
+		// A paid class runs for the length its host booked. That length was on the listing, so nobody can be
+		// surprised by it.
+		return nil
+	}
+	var startedAt sql.NullString
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT started_at FROM virtual_class_sessions
+		WHERE class_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`, classID).
+		Scan(&startedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if !startedAt.Valid || startedAt.String == "" {
+		return nil
+	}
+	start, err := store.ParseTS(startedAt.String)
+	if err != nil {
+		return nil
+	}
+	if s.now().Before(start.Add(FreeSessionMinutes * time.Minute)) {
+		return nil
+	}
+
+	now := store.Now()
+	if _, err := s.db.DB.ExecContext(ctx, `UPDATE virtual_classes SET status = ?, ended_at = ?, updated_at = ?
+		WHERE id = ? AND status <> ?`, StatusEnded, now, now, classID, StatusEnded); err != nil {
+		return err
+	}
+	if _, err := s.db.DB.ExecContext(ctx, `UPDATE virtual_class_sessions SET ended_at = ?
+		WHERE class_id = ? AND ended_at IS NULL`, now, classID); err != nil {
+		return err
+	}
+	if _, err := s.db.DB.ExecContext(ctx, `UPDATE virtual_class_attendees SET left_at = ?
+		WHERE class_id = ? AND left_at IS NULL`, now, classID); err != nil {
+		return err
+	}
+	if s.config.Media != nil {
+		s.config.Media.CloseRoom(classID)
+	}
+	return httpx.NewError(httpx.CodeConflict,
+		fmt.Sprintf("A free class closes %d minutes after it starts. Start a new one, or price it next time.",
+			FreeSessionMinutes))
+}
+
 func (s *Service) requireHost(ctx context.Context, classID, userID string) error {
 	var hostID string
 	err := s.db.DB.QueryRowContext(ctx, `SELECT host_user_id FROM virtual_classes WHERE id = ?`,
@@ -687,7 +818,7 @@ func (s *Service) Roster(ctx context.Context, classID, userID string) ([]Attende
 	}
 	rows, err := s.db.DB.QueryContext(ctx, `
 		SELECT a.user_id, COALESCE(u.display_name, 'Learner'), a.role, a.payment_method, a.credits_paid,
-		       a.joined_at, a.left_at, a.last_seen_at
+		       a.joined_at, a.left_at, a.last_seen_at, a.stage_role, a.stage_slot
 		  FROM virtual_class_attendees a LEFT JOIN users u ON u.id = a.user_id
 		 WHERE a.class_id = ?
 		 ORDER BY CASE a.role WHEN 'host' THEN 0 ELSE 1 END, a.joined_at ASC`, classID)
@@ -702,7 +833,8 @@ func (s *Service) Roster(ctx context.Context, classID, userID string) ([]Attende
 		var leftAt sql.NullString
 		var lastSeen string
 		if err := rows.Scan(&attendee.UserID, &attendee.DisplayName, &attendee.Role, &attendee.Payment,
-			&attendee.CreditsPaid, &attendee.JoinedAt, &leftAt, &lastSeen); err != nil {
+			&attendee.CreditsPaid, &attendee.JoinedAt, &leftAt, &lastSeen, &attendee.StageRole,
+			&attendee.StageSlot); err != nil {
 			return nil, err
 		}
 		if leftAt.Valid && leftAt.String != "" {
@@ -771,6 +903,164 @@ func (s *Service) ICEConfig(ctx context.Context, classID, userID string) ([]map[
 		return []map[string]any{{"urls": []string{"stun:stun.l.google.com:19302"}}}, nil
 	}
 	return s.config.ICEServers, nil
+}
+
+// ── media and the stage ─────────────────────────────────────────────────────────────────────────────
+
+// MediaAnswer is what a browser needs to start publishing: the forwarder's answer, and the stage slot it owns
+// (or -1 when it is only watching).
+type MediaAnswer struct {
+	SDP       string `json:"sdp"`
+	StageRole string `json:"stageRole"`
+	StageSlot int    `json:"stageSlot"`
+}
+
+// ConnectMedia performs the single negotiation a participant needs.
+//
+// One request, one response, no renegotiation later: the answer has the same shape whether the caller is
+// publishing or watching, and a promotion takes effect the next time they connect. That is the trade that makes
+// a fifty-seat room possible — a connection whose shape can change mid-call has to be renegotiated for every
+// speaker swap, and every renegotiation is a chance for somebody's video to stop.
+func (s *Service) ConnectMedia(ctx context.Context, classID, userID, offerSDP string) (*MediaAnswer, error) {
+	if err := s.requireMember(ctx, classID, userID); err != nil {
+		return nil, err
+	}
+	if err := s.requireOpen(ctx, classID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(offerSDP) == "" || len(offerSDP) > 65536 {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "sdp", Message: "Send the browser's SDP offer."}})
+	}
+	var stageRole string
+	var stageSlot int
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT stage_role, stage_slot FROM virtual_class_attendees
+		WHERE class_id = ? AND user_id = ? AND left_at IS NULL`, classID, userID).
+		Scan(&stageRole, &stageSlot); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, httpx.NewError(httpx.CodeForbidden, "Join the class before connecting to it.")
+		}
+		return nil, err
+	}
+	if s.config.Media == nil {
+		return nil, httpx.NewError(httpx.CodeConflict, "The media server is not running on this deployment.")
+	}
+
+	publishing := stageRole == "host" || stageRole == "speaker"
+	if !publishing {
+		stageSlot = -1
+	}
+	answer, err := s.config.Media.Offer(classID, userID, store.NewID(), stageSlot, publishing,
+		webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP})
+	if err != nil {
+		// A slot taken by a reconnecting tab is a normal race, not a server fault: the caller retries and the
+		// forwarder has already evicted the ghost.
+		return nil, httpx.NewError(httpx.CodeConflict, "Could not open the media connection. Try again.")
+	}
+	return &MediaAnswer{SDP: answer.SDP, StageRole: stageRole, StageSlot: stageSlot}, nil
+}
+
+// StageUpdate is one host decision about who is on stage.
+type StageUpdate struct {
+	UserID string `json:"userId"`
+	// Role is "speaker" or "audience".
+	Role string `json:"role"`
+}
+
+// SetStage promotes a participant to a speaker slot or returns them to the audience.
+//
+// Slots are allocated by the server from the lowest free one, and a host can never be demoted by this call. The
+// stage holds media.StageSlots people including the host, which is a limit of the forwarder's fan-out and of
+// what a viewer's downlink can carry, not an arbitrary number.
+func (s *Service) SetStage(ctx context.Context, classID, hostID string, in StageUpdate) ([]Attendee, error) {
+	if err := s.requireHost(ctx, classID, hostID); err != nil {
+		return nil, err
+	}
+	if in.Role != "speaker" && in.Role != "audience" {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "role",
+			Message: "A stage role is speaker or audience."}})
+	}
+	if in.UserID == "" {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "userId", Message: "Choose somebody in the room."}})
+	}
+
+	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		var (
+			currentRole string
+			currentSlot int
+			attendeeID  string
+		)
+		err := tx.QueryRowContext(ctx, `SELECT id, stage_role, stage_slot FROM virtual_class_attendees
+			WHERE class_id = ? AND user_id = ?`, classID, in.UserID).
+			Scan(&attendeeID, &currentRole, &currentSlot)
+		if errors.Is(err, sql.ErrNoRows) {
+			return httpx.NewError(httpx.CodeNotFound, "That person is not in this class.")
+		}
+		if err != nil {
+			return err
+		}
+		if currentRole == "host" {
+			return httpx.NewError(httpx.CodeConflict, "The host is always on stage.")
+		}
+		if in.Role == "audience" {
+			if _, err := tx.ExecContext(ctx, `UPDATE virtual_class_attendees
+				SET stage_role = 'audience', stage_slot = -1 WHERE id = ?`, attendeeID); err != nil {
+				return err
+			}
+			// Demotion has to stop the stream, not just relabel it: the forwarder would otherwise keep
+			// copying a demoted speaker's camera to the room.
+			if s.config.Media != nil {
+				s.config.Media.LeaveUser(classID, in.UserID)
+			}
+			return nil
+		}
+		if currentSlot > 0 {
+			return nil // already on stage; promoting twice is not an error
+		}
+		// Lowest free slot, host's slot 0 excluded.
+		var taken []int
+		rows, err := tx.QueryContext(ctx, `SELECT stage_slot FROM virtual_class_attendees
+			WHERE class_id = ? AND stage_role = 'speaker' AND stage_slot > 0`, classID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var slot int
+			if err := rows.Scan(&slot); err != nil {
+				rows.Close()
+				return err
+			}
+			taken = append(taken, slot)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		free := 0
+		for candidate := 1; candidate < media.StageSlots; candidate++ {
+			used := false
+			for _, slot := range taken {
+				if slot == candidate {
+					used = true
+					break
+				}
+			}
+			if !used {
+				free = candidate
+				break
+			}
+		}
+		if free == 0 {
+			return httpx.NewError(httpx.CodeConflict,
+				fmt.Sprintf("The stage is full: %d speakers plus the host.", media.StageSlots-1))
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE virtual_class_attendees
+			SET stage_role = 'speaker', stage_slot = ? WHERE id = ?`, free, attendeeID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Roster(ctx, classID, hostID)
 }
 
 // ── the whiteboard ──────────────────────────────────────────────────────────────────────────────────
@@ -1325,6 +1615,44 @@ func (h *Handlers) DiscountCodes(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// Media handles POST /v1/virtual-classes/{id}/media: the one negotiation a participant needs.
+func (h *Handlers) Media(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		SDP string `json:"sdp"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	answer, err := h.svc.ConnectMedia(r.Context(), classID(r), user.ID, in.SDP)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, answer)
+	return nil
+}
+
+// Stage handles POST /v1/virtual-classes/{id}/stage: the host moving somebody onto or off the stage.
+func (h *Handlers) Stage(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in StageUpdate
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	roster, err := h.svc.SetStage(r.Context(), classID(r), user.ID, in)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"attendees": roster})
+	return nil
+}
+
 // Resolve handles GET /v1/join/{slug}: the invite link a host sends to someone.
 //
 // It answers what the class is and what it costs before the visitor signs in, because a link that demands an
@@ -1336,19 +1664,22 @@ func (h *Handlers) Resolve(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	type invite struct {
-		ID          string `json:"id"`
-		Slug        string `json:"slug"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		HostName    string `json:"hostName"`
-		StartsAt    string `json:"startsAt"`
-		CreditsCost int    `json:"creditsCost"`
-		Status      string `json:"status"`
-		JoinURL     string `json:"joinUrl"`
+		ID              string `json:"id"`
+		Slug            string `json:"slug"`
+		Title           string `json:"title"`
+		Description     string `json:"description"`
+		HostName        string `json:"hostName"`
+		StartsAt        string `json:"startsAt"`
+		CreditsCost     int    `json:"creditsCost"`
+		Capacity        int    `json:"capacity"`
+		DurationMinutes int    `json:"durationMinutes"`
+		Status          string `json:"status"`
+		JoinURL         string `json:"joinUrl"`
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"class": invite{
 		ID: class.ID, Slug: class.Slug, Title: class.Title, Description: class.Description,
 		HostName: class.HostName, StartsAt: class.StartsAt, CreditsCost: class.CreditsCost,
+		Capacity: class.Capacity, DurationMinutes: class.DurationMinutes,
 		Status: class.Status, JoinURL: class.JoinURL,
 	}})
 	return nil

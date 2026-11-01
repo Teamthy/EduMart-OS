@@ -167,6 +167,80 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | `GET` | `/classes/{id}/roster` | Teacher-only, includes attempts and averages |
 | `GET` | `/classes/{id}/assignments` | Published assessments with submission counts |
 
+## Live classes
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/virtual-classes?scope=mine\|past\|all` | Classes the caller hosts or attends, each with the caller's `role` (`host`, `attendee`, or empty for a public listing) |
+| `POST` | `/virtual-classes` | `{title, startsAt, creditsCost, durationMinutes, capacity}`. `capacity` defaults to 50 and is refused outside 2–50, `creditsCost: 0` is capped at 45 minutes |
+| `GET` | `/virtual-classes/{id}` | One class, its attendees and the caller's role in it |
+| `GET` | `/join/{slug}` | **Anonymous.** What an invite link says before it asks for an account: title, host, time, price, capacity, status |
+| `POST` | `/virtual-classes/{id}/join` | Seat, then attendance row. Paid classes charge credits in the same transaction |
+| `POST` | `/virtual-classes/{id}/leave` | Closes the attendance row; presence is a heartbeat, not a flag |
+| `POST` | `/virtual-classes/{id}/start` | Host only. `scheduled → live` |
+| `POST` | `/virtual-classes/{id}/end` | Host only. `live → ended` |
+| `GET` | `/virtual-classes/{id}/roster` | Attendees with `avatar`, `stageRole`, `stageSlot`, `present`, and join/leave timestamps |
+| `GET` | `/virtual-classes/{id}/attendance` | The recorded session timeline, not a client-side counter |
+| `GET` | `/virtual-classes/{id}/ice` | STUN/TURN configuration for the browser |
+| `GET`/`POST` | `/virtual-classes/{id}/board` | The whiteboard payload, versioned so concurrent strokes do not overwrite each other |
+| `GET`/`POST` | `/virtual-classes/{id}/signal` | SDP/ICE exchange for the board's end-to-end-encrypted channel |
+| `GET`/`POST` | `/virtual-classes/{id}/discount-codes` | Host-issued codes that reduce the credit price |
+| `POST` | `/virtual-classes/{id}/media` | One negotiation per participant: the browser posts an SDP offer, the server's forwarder answers |
+| `POST` | `/virtual-classes/{id}/stage` | Host only. `{userId, role}` where `role` is `speaker` or `audience`; slots are assigned by the server from the lowest free one, and a host cannot be demoted |
+
+A room holds **50 people**; the **six-seat stage** (host slot 0 plus five speaker slots) is what the media server
+forwards, so fifty people in a room never means fifty simultaneous video streams from one laptop. Audio and video
+travel hop by hop — browser → server → browser — so the honest claim is *encrypted in transit and forwarded by an
+SFU we run*, not end to end. Only the whiteboard is end-to-end encrypted.
+
+Free classes are capped at **45 minutes server-side**, enforced twice: at creation, and again at the door by
+`join`, `start` and `/media`, so a clock cannot be talked past. A paid class keeps its own `durationMinutes`.
+See [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
+
+## Synchronised exams
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/exams` | Exams the caller hosts, has sat, or that are open now |
+| `POST` | `/exams` | `{title, startsAt, endsAt, durationMinutes, questionVersionIds \| questionCount, shuffle}`. Any signed-in account may host a sitting; the paper is drawn from approved questions, which is what makes two candidates comparable |
+| `GET` | `/exams/link/{slug}` | **Anonymous.** Invite payload for a shared URL; never includes questions or answers |
+| `GET` | `/exams/{id}` | The sitting as the caller may see it: the paper only while open, and the caller's own attempt |
+| `POST` | `/exams/{id}/start` | Opens the caller's attempt inside the window and returns it as an assessment session — questions, deadline, no answer keys. Hosts cannot sit their own sitting |
+| `GET` | `/exams/{id}/results` | Host-only, end to end: per candidate status, start, submit, deadline, score, and seconds still accepted |
+
+`{id}` accepts either the exam id or its slug, so a shared link resolves without a lookup first. Answering and
+submitting deliberately reuse the assessment engine rather than growing a second one: candidates write responses
+with `PUT /assessment-sessions/{id}/responses/{qvId}` and finish with
+`POST /assessment-sessions/{id}/submit`, which is where the deadline, the one-attempt rule and the answer-key
+withholding are already enforced. `/exams/{id}/start` is the door; the engine is the room.
+
+Everyone sits the **same paper in the same window for the same duration**; the order of questions and options is
+permuted per candidate from a seed derived from `(examId, userId)`, so two neighbours cannot read answers off each
+other's screen while the content stays identical. The deadline is `min(startedAt + duration, endsAt)`, set by the
+server when the attempt opens — a late join gets the time that is left, not a fresh window. Answers stay hidden
+until submit, one attempt per candidate, and the paper is auto-submitted at its deadline. See
+[`EXAMS.md`](./EXAMS.md).
+
+## Consistency
+
+```
+GET /v1/consistency?days=30
+→ 200 { "consistency": {
+    "currentStreak": 4, "longestStreak": 11, "activeDays": 9, "windowDays": 30,
+    "totalActiveDays": 43, "todayActive": false, "streakAtRisk": true, "timeZone": "UTC",
+    "kindLabels": { "practice": "Practice", "class": "Live class", "credits": "Credits earned" },
+    "days": [{ "date": "2026-10-31", "active": true, "kinds": ["class", "practice"],
+               "isToday": false, "inStreak": true }, …] } }
+```
+
+The streak is **derived** from activity the system already records — an assessment session, a live class
+attended, credits earned — not from a counter a client increments, so a client that never opens the page still
+accrues one and a client that forges a day is ignored. `days` is the strip a UI draws; `kinds` means it can say
+"class and practice" instead of a bare dot; `streakAtRisk` is the one field a reminder needs (today not done,
+yesterday done). A day is a UTC day and the response says so rather than leaving a client to guess. The `days`
+parameter is clamped to 1–180 and defaults to 30; an out-of-range value is clamped rather than refused, because a
+strip size is a display choice and not a rule. See [`PHASE_STATUS.md`](./PHASE_STATUS.md).
+
 ## Discovery
 
 | Method | Path | Notes |

@@ -604,16 +604,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build the API image
+        # Captured and re-emitted as an annotation on failure. A build log is the only place a broken Dockerfile
+        # explains itself, and workflow logs are not always obtainable through the API — the annotation is.
         run: |
+          set +e
           docker build -f apps/api/Dockerfile \
-            --build-arg VERSION="sha-${GITHUB_SHA::7}" -t edumart-api:ci apps/api
+            --build-arg VERSION="sha-${GITHUB_SHA::7}" -t edumart-api:ci apps/api 2>&1 | tee /tmp/api-build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate.py /tmp/api-build.log || true
+            exit "$status"
+          fi
       - name: The API image runs as a non-root user
         run: |
           user=$(docker image inspect edumart-api:ci --format '{{.Config.User}}')
           echo "image user: ${user:-root}"
           test "$user" != "" && test "$user" != "root" && test "$user" != "0"
       - name: Build the web image, with no API address baked in
-        run: docker build -f apps/web/Dockerfile -t edumart-web:ci .
+        run: |
+          set +e
+          docker build -f apps/web/Dockerfile -t edumart-web:ci . 2>&1 | tee /tmp/web-build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate.py /tmp/web-build.log || true
+            exit "$status"
+          fi
       - name: The web image runs as a non-root user
         run: |
           user=$(docker image inspect edumart-web:ci --format '{{.Config.User}}')

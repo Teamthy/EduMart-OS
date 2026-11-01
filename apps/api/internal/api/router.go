@@ -14,9 +14,12 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/classroom"
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
+	"github.com/teamthy/edumart/apps/api/internal/consistency"
 	"github.com/teamthy/edumart/apps/api/internal/content"
+	"github.com/teamthy/edumart/apps/api/internal/exams"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/metrics"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
@@ -62,6 +65,11 @@ type Deps struct {
 	Notifier *notify.Service
 	Finder   *search.Service
 	Live     *virtualclass.Service
+	// Sittings is the synchronised-exam layer over the assessment engine; Habit is the derived
+	// consistency read model. Both are optional in tests that do not touch them.
+	Sittings *exams.Service
+	Habit    *consistency.Service
+	Media    *media.Service
 	Logger   *slog.Logger
 	Config   Config
 }
@@ -90,6 +98,13 @@ func NewRouter(d Deps) http.Handler {
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 	searchHandlers := search.NewHandlers(d.Finder, d.Logger)
 	liveHandlers := virtualclass.NewHandlers(d.Live)
+	// The room forwards media instead of meshing it. Attaching the forwarder here keeps one process owning
+	// both the room's rules and the connections it admits.
+	if d.Media != nil && d.Live != nil {
+		d.Live.WithMedia(d.Media)
+	}
+	examHandlers := exams.NewHandlers(d.Sittings)
+	habitHandlers := consistency.NewHandlers(d.Habit)
 
 	// Forwarded headers are believed only when an operator has said a proxy is in front of us. Without
 	// this, a caller rotating X-Forwarded-For bypasses every rate limit in the system.
@@ -282,6 +297,37 @@ func NewRouter(d Deps) http.Handler {
 			g.Get("/virtual-classes/{id}/discount-codes", wrap(liveHandlers.DiscountCodes))
 			g.Post("/virtual-classes/{id}/discount-codes", wrap(liveHandlers.DiscountCodes))
 		})
+
+		// ── the stage ────────────────────────────────────────────────────
+		// One negotiation per participant: the browser sends an offer shaped for its role and gets the
+		// forwarder's answer back. Nothing here decides who may speak — the attendee row does, and only
+		// the host can change it.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("virtual-class-stage", 120, time.Minute))
+			g.Post("/virtual-classes/{id}/media", wrap(liveHandlers.Media))
+			g.Post("/virtual-classes/{id}/stage", wrap(liveHandlers.Stage))
+		})
+
+		// ── synchronised exams ───────────────────────────────────────────
+		// Any signed-in account can host a sitting. The invite link is anonymous for the same reason a
+		// class link is: a shared URL has to say what it is before it asks for an account.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("exam-invite", 120, time.Minute))
+			g.Get("/exams/link/{slug}", wrap(examHandlers.Invite))
+		})
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("exams", 120, time.Minute))
+			g.Get("/exams", wrap(examHandlers.List))
+			g.Post("/exams", wrap(examHandlers.Create))
+			g.Get("/exams/{id}", wrap(examHandlers.Get))
+			g.Post("/exams/{id}/start", wrap(examHandlers.Start))
+			g.Get("/exams/{id}/results", wrap(examHandlers.Results))
+		})
+
+		// ── consistency ──────────────────────────────────────────────────
+		// Derived from activity the system already records; the endpoint exists so a client never has to
+		// invent a streak of its own from a list of attempts.
+		v1.Get("/consistency", wrap(habitHandlers.Summary))
 
 		// ── rewards ──────────────────────────────────────────────────────
 		v1.Get("/rewards", wrap(rewardsHandlers.Summary))
