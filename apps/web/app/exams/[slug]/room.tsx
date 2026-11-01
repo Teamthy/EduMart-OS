@@ -279,6 +279,14 @@ export function ExamResults({ exam }: Props) {
                     : candidate.remainingSeconds > 0
                       ? ` · ${Math.ceil(candidate.remainingSeconds / 60)} min left`
                       : ""}
+                  {candidate.integrity && candidate.integrity.signals > 0 ? (
+                    // A clean score with six lost-tab events beside it is a different result from a clean score
+                    // with none, and the host is the person who should decide what that means.
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-900">
+                      {candidate.integrity.signals} signal{candidate.integrity.signals === 1 ? "" : "s"}
+                      {candidate.integrity.focusLost > 0 ? ` · left ${candidate.integrity.focusLost}x` : ""}
+                    </span>
+                  ) : null}
                 </span>
               </li>
             ))}

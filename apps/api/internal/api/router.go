@@ -212,6 +212,9 @@ func NewRouter(d Deps) http.Handler {
 			g.Put("/assessment-sessions/{id}/corrections/{qvId}", wrap(assessmentHandlers.EditResponse))
 			g.Post("/assessment-sessions/{id}/submit", wrap(assessmentHandlers.Submit))
 			g.Post("/assessment-sessions/{id}/cancel", wrap(assessmentHandlers.Cancel))
+			// Integrity signals are the candidate's own browser reporting on itself. Recording is scoped to
+			// the caller's in-progress attempt; the host reads the tallies in the exam report.
+			g.Post("/assessment-sessions/{id}/integrity", wrap(assessmentHandlers.RecordIntegrity))
 		})
 
 		// ── institutions ─────────────────────────────────────────────────
@@ -277,6 +280,9 @@ func NewRouter(d Deps) http.Handler {
 		v1.Group(func(g chi.Router) {
 			g.Use(limiter.Limit("webhook", 600, time.Minute))
 			g.Post("/webhooks/payments/{provider}", wrap(commerceHandlers.Webhook))
+			// Wallet settlements arrive the same way — signed, unsigned callers refused — and are a separate
+			// path because a recharge is not an order: one credits a balance, the other grants an entitlement.
+			g.Post("/webhooks/wallet/{provider}", wrap(walletHandlers.Webhook))
 		})
 
 		// ── live classes ─────────────────────────────────────────────────

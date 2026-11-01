@@ -279,6 +279,17 @@ export class ApiClient {
   /** `amountMinor` is kobo and is the only amount field: one unit means no 100x mistake. Minimum 20000. */
   startTopup = (amountMinor: number) =>
     this.post<{ topup: Topup }>("/v1/wallet/topups", { amountMinor });
+  /**
+   * Record one integrity signal against the caller's own in-progress attempt.
+   *
+   * The vocabulary is closed server-side (`focus_lost`, `focus_back`, `fullscreen_exit`, `paste`, `copy`,
+   * `offline`, `back_online`); this is the browser reporting on itself, not a proctor's observation.
+   */
+  recordIntegrity = (sessionId: string, kind: string, detail?: string) =>
+    this.post<{ integrity: { sessionId: string; total: number; counts: Record<string, number> } }>(
+      `/v1/assessment-sessions/${encodeURIComponent(sessionId)}/integrity`,
+      { kind, detail },
+    );
   /** Sandbox settle path; 403 where the deployment does not allow self-confirmed payments. */
   confirmTopup = (id: string) =>
     this.post<{ topup: Topup; wallet: Wallet }>(`/v1/wallet/topups/${id}/confirm`);

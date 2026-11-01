@@ -17,6 +17,9 @@ interface Topup {
   points: number;
   nairaPerPoint: number;
   status: "pending" | "paid" | "failed";
+  provider: string;
+  /** Where to send the browser to pay. Absent for a sandbox top-up, which settles in-app. */
+  checkoutUrl?: string;
   createdAt: string;
   paidAt: string | null;
 }
@@ -170,7 +173,19 @@ export default async function WalletPage() {
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{topup.reference}</span>
                   </span>
-                  <Badge variant={topup.status === "paid" ? "default" : "outline"}>{topup.status}</Badge>
+                  <span className="flex shrink-0 items-center gap-2">
+                    {/* A pending top-up with a checkout URL is one the payer abandoned or has not reached yet.
+                        The link is the provider's own page, so re-opening it resumes the same charge. */}
+                    {topup.status === "pending" && topup.checkoutUrl ? (
+                      <a
+                        href={topup.checkoutUrl}
+                        className="text-xs font-semibold text-primary underline-offset-2 hover:underline"
+                      >
+                        Pay now
+                      </a>
+                    ) : null}
+                    <Badge variant={topup.status === "paid" ? "default" : "outline"}>{topup.status}</Badge>
+                  </span>
                 </li>
               ))}
             </ul>

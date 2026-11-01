@@ -97,6 +97,18 @@ func newHarness(t *testing.T) *harness {
 // decision can be tested as the deployment would exercise it rather than as a stub would.
 func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	t.Helper()
+	return newHarnessFull(t, tweak, nil)
+}
+
+// newHarnessWithWallet builds the router with a chosen recharge provider, so a test can exercise a signed
+// webhook from a live adapter rather than the sandbox route, which is a different path with different trust.
+func newHarnessWithWallet(t *testing.T, provider wallet.ChargeProvider) *harness {
+	t.Helper()
+	return newHarnessFull(t, nil, provider)
+}
+
+func newHarnessFull(t *testing.T, tweak func(*api.Config), chargeProvider wallet.ChargeProvider) *harness {
+	t.Helper()
 	db := openTestStore(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -140,7 +152,12 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		t.Fatalf("relay: %v", relayErr)
 	}
 	t.Cleanup(func() { _ = relayService.Close() })
-	walletService := wallet.New(db, wallet.Config{Sandbox: true, Logger: logger})
+	walletService := wallet.New(db, wallet.Config{
+		Sandbox:     true,
+		Provider:    chargeProvider,
+		CallbackURL: "http://localhost:3000/wallet",
+		Logger:      logger,
+	})
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL:     "http://localhost:3000",
 		ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},

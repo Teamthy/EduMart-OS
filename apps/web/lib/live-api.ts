@@ -286,6 +286,17 @@ export interface ExamCandidate {
   scoreRaw: number | null;
   scoreMax: number | null;
   remainingSeconds: number;
+  /**
+   * What the candidate's own browser reported about attention. It is evidence of distraction, not of identity:
+   * nothing here proves who was at the keyboard.
+   */
+  integrity?: {
+    signals: number;
+    focusLost: number;
+    pasted: number;
+    copied: number;
+    lastAt: string | null;
+  };
 }
 
 export interface AttemptView {

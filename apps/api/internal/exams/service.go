@@ -123,6 +123,21 @@ type Candidate struct {
 	ScoreMax    *int    `json:"scoreMax"`
 	// RemainingSeconds is what the server would still accept an answer for. Computed, never asserted.
 	RemainingSeconds int `json:"remainingSeconds"`
+	// Integrity is what the candidate's own browser reported about attention during the sitting. It is
+	// evidence of distraction, not of identity: nothing here proves who was at the keyboard.
+	Integrity Integrity `json:"integrity"`
+}
+
+// Integrity is the tally a host sees next to a candidate's score.
+type Integrity struct {
+	Signals int `json:"signals"`
+	// FocusLost is called out separately because it is the signal that correlates with leaving the paper.
+	FocusLost int `json:"focusLost"`
+	Pasted    int `json:"pasted"`
+	Copied    int `json:"copied"`
+	// LastAt is when the most recent signal arrived, so a host can see whether it was one interruption at the
+	// start or a pattern throughout.
+	LastAt *string `json:"lastAt"`
 }
 
 // Service implements exams.
@@ -512,6 +527,68 @@ func (s *Service) Results(ctx context.Context, viewerID, idOrSlug string) ([]Can
 			}
 		}
 		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Closed before the tallies query runs: SQLite is served by one connection in this build, so a second
+	// query issued while the first cursor is open waits for a connection that will never be returned.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	// One grouped query rather than one per candidate: a fifty-seat sitting would otherwise run fifty extra
+	// queries to render one table.
+	integrity, err := s.integrityByCandidate(ctx, exam.ID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range out {
+		if tally, ok := integrity[out[index].UserID]; ok {
+			out[index].Integrity = tally
+		}
+	}
+	return out, nil
+}
+
+// integrityByCandidate tallies reported signals per candidate for one sitting.
+func (s *Service) integrityByCandidate(ctx context.Context, definitionID string) (map[string]Integrity, error) {
+	rows, err := s.db.DB.QueryContext(ctx, `
+		SELECT user_id, kind, COUNT(*), MAX(received_at)
+		  FROM exam_integrity_events
+		 WHERE definition_id = ?
+		 GROUP BY user_id, kind`, definitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]Integrity{}
+	for rows.Next() {
+		var (
+			userID string
+			kind   string
+			count  int
+			last   sql.NullString
+		)
+		if err := rows.Scan(&userID, &kind, &count, &last); err != nil {
+			return nil, err
+		}
+		tally := out[userID]
+		tally.Signals += count
+		switch kind {
+		case "focus_lost":
+			tally.FocusLost += count
+		case "paste":
+			tally.Pasted += count
+		case "copy":
+			tally.Copied += count
+		}
+		if last.Valid && (tally.LastAt == nil || last.String > *tally.LastAt) {
+			value := last.String
+			tally.LastAt = &value
+		}
+		out[userID] = tally
 	}
 	return out, rows.Err()
 }

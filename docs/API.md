@@ -112,6 +112,7 @@ Draft steps: `pathway → subjects → schedule → account → confirm`.
 | `PUT` | `/assessment-sessions/{id}/responses/{qvId}` | Answer write (below) |
 | `POST` | `/assessment-sessions/{id}/submit` | Idempotent finalisation |
 | `POST` | `/assessment-sessions/{id}/cancel` | Only while `in_progress` |
+| `POST` | `/assessment-sessions/{id}/integrity` | The candidate's own browser reporting on itself: `focus_lost`, `focus_back`, `fullscreen_exit`, `paste`, `copy`, `offline`, `back_online`. Refused for somebody else's attempt (403), a closed attempt (409), or an unknown kind (400). The host's exam report shows the tally beside the score |
 | `PUT` | `/assessment-sessions/{id}/corrections/{qvId}` | Post-submission correction (practice only) |
 | `GET` | `/me/sessions` | Active devices for the caller |
 | `DELETE` | `/me/sessions/{id}` | Revoke one device (scoped to the caller) |
@@ -302,6 +303,7 @@ visibility. See [`SEARCH.md`](./SEARCH.md).
 | `GET` | `/library` | Entitlements, not a client-side purchase flag |
 | `POST` | `/orders/{id}/simulate-payment` | Development only; signs a real webhook |
 | `POST` | `/webhooks/payments/{provider}` | `x-edumart-signature` = HMAC-SHA256 hex of the raw body |
+| `POST` | `/webhooks/wallet/{provider}` | The provider's own signature (`x-paystack-signature` = HMAC-SHA512 hex of the raw body). The only path that can mark a top-up paid when a live provider is configured: signature → event type → reference → amount, and each failure moves nothing |
 
 Webhook behaviour: verify signature → record event (unique per `provider`+`event_id`) → match order by
 reference → verify amount and currency → ignore non-`succeeded` statuses → mark paid, grant
@@ -312,7 +314,7 @@ entitlements, audit. Replays return `{received: true, duplicate: true}`.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/wallet` | Balance (summed from the ledger, never stored), `earned`/`spent`, the terms (`minTopupMinor`, `nairaPerPoint`), the last ten top-ups and the last ten ledger rows |
-| `POST` | `/wallet/topups` | `{amountMinor}` in **kobo**. Minimum **₦200 (20000)**; at most ₦1,000,000. Creates a `pending` top-up and credits nothing |
+| `POST` | `/wallet/topups` | `{amountMinor}` in **kobo**. Minimum **₦200 (20000)**; at most ₦1,000,000. Creates a `pending` top-up and credits nothing. With a live provider the response also carries `checkoutUrl` — send the browser there; credits appear when the signed webhook settles |
 | `POST` | `/wallet/topups/{id}/confirm` | **Sandbox only** (registered only when `EDUMART_ALLOW_SANDBOX_PAYMENTS` is on). Marks the top-up paid and credits the points once |
 
 A top-up is **not** an order: an order buys a product and grants an entitlement, a top-up changes a balance at a
@@ -328,6 +330,22 @@ fixed rate. Three consequences are contractual:
 
 Points land in the same append-only ledger that referrals and rewards write to (`entry_type = 'topup'`,
 `source_type = 'wallet_topup'`), so a live class charges topped-up and earned credits identically.
+
+**With a live provider** (`EDUMART_PAYMENT_PROVIDER=paystack` plus `EDUMART_PAYSTACK_SECRET_KEY`) the top-up is
+started by writing the row **first**, so a webhook that arrives before the checkout response still matches a
+reference the ledger knows, and then the host is sent to Paystack's page. Only `POST /webhooks/wallet/paystack`
+marks it paid:
+
+| Check, in order | Failure |
+| --- | --- |
+| HMAC-SHA512 of the raw body in `x-paystack-signature` | `403`, nothing recorded |
+| the event is `charge.success` or `charge.failed` | `200 {ignored: true}` — a transfer is not a top-up |
+| the reference names a top-up | `404`, and an error log: money arrived for a reference we never issued |
+| amount **and** currency equal the row's | `409`, nothing credited, logged for a person to resolve |
+
+A retry of the same event hits the ledger's `topup:<id>` idempotency key and answers `credited: false`. The
+browser returning from the checkout is not evidence of payment: the wallet re-reads the balance, and the
+callback URL can be typed by anybody.
 
 ### Refunds
 

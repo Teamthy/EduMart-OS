@@ -868,6 +868,56 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
+  /v1/assessment-sessions/{id}/integrity:
+    post:
+      tags: [assessment]
+      summary: Record one integrity signal against the caller's own attempt
+      description: |
+        The candidate's browser reporting on itself: the tab lost focus, fullscreen was left, text was pasted or
+        copied, the network dropped. The server stores the signal against the attempt and the host's exam report
+        shows the tally beside the score.
+
+        What it is not: video proctoring. It proves nothing about who was at the keyboard, and a client that
+        lies leaves no trace here — so it is evidence for a host to weigh, not a verdict. Recording is refused
+        for an attempt that belongs to someone else (`403`), for an attempt that is no longer in progress
+        (`409`), and for a kind outside the closed vocabulary (`400`), because the value is rendered to a host.
+
+        `occurredAt` is the client's claim; it is stored beside the server's own receipt time rather than
+        replacing it.
+      operationId: recordIntegritySignal
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  type: string
+                  enum: [focus_lost, focus_back, fullscreen_exit, paste, copy, offline, back_online]
+                detail: { type: string, maxLength: 200 }
+                occurredAt: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Recorded, with the attempt's tally so far
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  integrity:
+                    type: object
+                    properties:
+                      sessionId: { type: string }
+                      total: { type: integer }
+                      counts: { type: object, additionalProperties: { type: integer } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /v1/organizations:
     get:
       tags: [institutions]
@@ -1621,6 +1671,66 @@ paths:
       responses:
         "200": { description: Webhook accepted }
         "404": { description: Disabled in this environment }
+
+  /v1/webhooks/wallet/{provider}:
+    post:
+      tags: [wallet]
+      summary: Recharge settlement from the payment provider
+      description: |
+        The only unsigned-session path that can mark a top-up paid: authenticated by the provider's own
+        signature over the **raw** body — HMAC-SHA512 in `x-paystack-signature`, keyed with the secret key —
+        never by a cookie. A browser returning from the checkout page cannot settle anything, because a return
+        URL is something a payer can type.
+
+        Four checks run in order and each moves nothing on failure: the signature, the event type, the top-up
+        reference, and the amount. A signed event that quotes an amount or currency different from the row is a
+        `409` and a support ticket, not a credit — crediting either figure would be wrong. A provider retry is a
+        no-op: the ledger row's idempotency key is derived from the top-up id.
+
+        A valid event this service does not act on (a transfer, a subscription) answers `200 { ignored: true }`
+        rather than an error, because a provider retries errors and retrying an event nobody handles is noise.
+      operationId: walletWebhook
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [paystack] }
+        - name: x-paystack-signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event, data]
+              properties:
+                event: { type: string, example: charge.success }
+                data:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    reference: { type: string }
+                    amount: { type: integer, description: Amount in kobo. }
+                    currency: { type: string }
+                    status: { type: string }
+      responses:
+        "200":
+          description: Settled, already settled, or a verified event that is not a settlement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  topup: { $ref: "#/components/schemas/Topup" }
+                  credited: { type: boolean, description: False when an earlier call already credited this top-up. }
+                  ignored: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /v1/webhooks/payments/{provider}:
     post:
@@ -3731,6 +3841,14 @@ components:
             change must not rewrite an earlier receipt.
         status: { type: string, enum: [pending, paid, failed] }
         provider: { type: string }
+        checkoutUrl:
+          type: string
+          description: |
+            Where to send the browser to pay. Absent when the deployment runs the sandbox adapter, which has no
+            hosted page and settles through the authenticated confirm route instead.
+        providerReference:
+          type: string
+          description: The provider's own id for this charge, kept for support and reconciliation.
         createdAt: { type: string, format: date-time }
         paidAt: { type: [string, "null"], format: date-time }
 
