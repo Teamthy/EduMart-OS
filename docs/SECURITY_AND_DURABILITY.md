@@ -200,9 +200,13 @@ read nor inject into a room's signalling channel** (`TestSignallingRelayIsTarget
 endpoint refuses anything that is not base64 ciphertext, because a server that can store plaintext can also be
 compelled to hand it over.
 
-The remaining honest gap: there is **no TURN relay deployed**, so two peers behind symmetric NAT cannot connect,
-and **no SFU**, so a room is 6–8 people. Neither is a security hole; both are limits that a client is told about
-rather than left to discover.
+The remaining honest gap: there is **no TURN relay deployed**, so a participant behind symmetric NAT may not
+reach the media server. The room now holds **50 people** because media is forwarded by an in-process media
+server rather than meshed — which changes what "encrypted" means for audio and video: DTLS-SRTP protects each
+leg, but the server terminates both, so media is **hop-by-hop** encrypted. The forwarder records nothing and has
+no write path, and the whiteboard and chat keep their end-to-end property (the board key travels in the link's
+URL fragment, which is never sent to a server). Neither limit is a security hole, and both are stated in the UI
+and in [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) rather than left for a client to discover.
 
 ### Referral commission across levels
 

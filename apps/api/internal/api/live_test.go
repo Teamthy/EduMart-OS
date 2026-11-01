@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -214,20 +215,27 @@ func TestLiveClassDiscountCodeIsSingleUse(t *testing.T) {
 	}
 }
 
-// TestLiveClassCapacityIsAFact pushes past the seat limit from two accounts: exactly one gets in.
+// TestLiveClassCapacityIsAFact pushes past a small seat limit: exactly one gets in.
+//
+// The room now carries fifty people, so the limit under test is a two-seat room rather than a one-seat room —
+// one is below the floor the API accepts, which is the point of a floor.
 func TestLiveClassCapacityIsAFact(t *testing.T) {
 	h := newHarness(t)
 	host := h.registerAndVerify("host-full@example.com")
 	first := h.registerAndVerify("seat-one@example.com")
 	second := h.registerAndVerify("seat-two@example.com")
+	third := h.registerAndVerify("seat-three@example.com")
 
-	class := h.createLiveClass(t, host, map[string]any{"title": "One Seat Only", "capacity": 1})
+	class := h.createLiveClass(t, host, map[string]any{"title": "Two Seats Only", "capacity": 2})
 	classID := class["id"].(string)
 
 	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", first, map[string]any{}); status != http.StatusOK {
 		t.Fatalf("first seat: %d %v", status, body)
 	}
-	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", second, map[string]any{}); status != http.StatusConflict {
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", second, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("the second seat: %d %v", status, body)
+	}
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", third, map[string]any{}); status != http.StatusConflict {
 		t.Fatalf("a full class must refuse the next learner, got %d %v", status, body)
 	}
 }
@@ -516,4 +524,260 @@ func itoa(value int) string {
 		value /= 10
 	}
 	return digits
+}
+
+// TestFreeClassIsCappedAtFortyFiveMinutes is the server-side half of "just 45 minutes per free session".
+//
+// A form that offers the limit is not the rule; the rule is that the API refuses to create a free class longer
+// than 45 minutes, and that the default length of a free class is 45 rather than an hour.
+func TestFreeClassIsCappedAtFortyFiveMinutes(t *testing.T) {
+	h := newHarness(t)
+	host := h.registerAndVerify("free-host@example.com")
+
+	status, body := h.do("POST", "/v1/virtual-classes", host, map[string]any{
+		"title": "All day free revision", "creditsCost": 0, "durationMinutes": 46,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("a 46-minute free class must be refused, got %d %v", status, body)
+	}
+	fields := body["error"].(map[string]any)["details"].([]any)
+	found := false
+	for _, field := range fields {
+		if field.(map[string]any)["field"] == "durationMinutes" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the refusal must name the field, got %v", fields)
+	}
+
+	// Exactly 45 is allowed, and a free class with no explicit length defaults to the cap.
+	class := h.createLiveClass(t, host, map[string]any{"title": "Forty five minute clinic", "creditsCost": 0,
+		"durationMinutes": 45})
+	if class["durationMinutes"].(float64) != 45 {
+		t.Fatalf("45 minutes must be accepted, got %v", class["durationMinutes"])
+	}
+	defaulted := h.createLiveClass(t, host, map[string]any{"title": "Default free length", "creditsCost": 0})
+	if defaulted["durationMinutes"].(float64) != 45 {
+		t.Fatalf("a free class must default to 45 minutes, got %v", defaulted["durationMinutes"])
+	}
+
+	// A paid class is not bound by the free limit; the limit is about the free on-ramp, not about teaching.
+	paid := h.createLiveClass(t, host, map[string]any{"title": "Paid masterclass", "creditsCost": 25,
+		"durationMinutes": 120})
+	if paid["durationMinutes"].(float64) != 120 {
+		t.Fatalf("a paid class must keep its booked length, got %v", paid["durationMinutes"])
+	}
+
+	// And the window is enforced at the door, not only at creation: a free class whose session started more
+	// than 45 minutes ago closes itself when somebody tries to enter.
+	if status, body := h.do("POST", "/v1/virtual-classes/"+class["id"].(string)+"/start", host, nil); status != http.StatusOK {
+		t.Fatalf("start: %d %v", status, body)
+	}
+	if _, err := h.store.DB.Exec(`UPDATE virtual_class_sessions SET started_at = ?
+		WHERE class_id = ?`, store.TS(time.Now().Add(-50*time.Minute)), class["id"].(string)); err != nil {
+		t.Fatalf("age the session: %v", err)
+	}
+	learner := h.registerAndVerify("late-learner@example.com")
+	status, body = h.do("POST", "/v1/virtual-classes/"+class["id"].(string)+"/join", learner, map[string]any{})
+	if status != http.StatusConflict {
+		t.Fatalf("joining a free class past its window must be refused, got %d %v", status, body)
+	}
+	status, body = h.do("GET", "/v1/virtual-classes/"+class["id"].(string), host, nil)
+	if status != http.StatusOK || body["class"].(map[string]any)["status"] != "ended" {
+		t.Fatalf("the closed room must be marked ended, got %d %v", status, body)
+	}
+}
+
+// TestRoomHoldsFiftyPeople proves the capacity claim at the database it writes to: fifty seats are admitted,
+// the fifty-first is refused, and a class created without a capacity gets the fifty it can actually carry
+// rather than the old "unlimited".
+func TestRoomHoldsFiftyPeople(t *testing.T) {
+	h := newHarness(t)
+	host := h.registerAndVerify("capacity-host@example.com")
+	class := h.createLiveClass(t, host, map[string]any{"title": "Fifty seat lecture", "creditsCost": 0})
+	classID := class["id"].(string)
+	if capacity := class["capacity"].(float64); capacity != 50 {
+		t.Fatalf("a class with no stated capacity must default to the 50 seats the room carries, got %v", capacity)
+	}
+
+	// The host takes the first seat by joining, then the remaining 49 are filled directly: registering 49
+	// accounts through the password hasher would dominate the suite's runtime and test nothing about capacity.
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", host, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("host join: %d %v", status, body)
+	}
+	now := store.Now()
+	for index := 0; index < 49; index++ {
+		userID := store.NewID()
+		if _, err := h.store.DB.Exec(`INSERT INTO users
+			(id, email_normalized, display_name, password_hash, created_at, updated_at)
+			VALUES (?,?,?,'x',?,?)`,
+			userID, "seat"+store.NewID()[:10]+"@example.com", "Seat holder", now, now); err != nil {
+			t.Fatalf("insert seat holder: %v", err)
+		}
+		if _, err := h.store.DB.Exec(`INSERT INTO virtual_class_attendees
+			(id, class_id, user_id, role, payment_method, credits_paid, joined_at, last_seen_at, stage_role, stage_slot)
+			VALUES (?,?,?,'attendee','free',0,?,?,'audience',-1)`,
+			store.NewID(), classID, userID, now, now); err != nil {
+			t.Fatalf("seat attendee: %v", err)
+		}
+	}
+
+	overflow := h.registerAndVerify("overflow@example.com")
+	status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", overflow, map[string]any{})
+	if status != http.StatusConflict {
+		t.Fatalf("the fifty-first person must be refused, got %d %v", status, body)
+	}
+
+	// A capacity above what the forwarder carries is refused rather than accepted and then failing live.
+	status, body = h.do("POST", "/v1/virtual-classes", host, map[string]any{
+		"title": "Impossible room", "creditsCost": 5, "capacity": 500,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("a 500-seat room must be refused, got %d %v", status, body)
+	}
+}
+
+// TestStageGrantsTheSlotAndTheMediaServerAgrees covers the path that makes a fifty-person room real: the host
+// assigns stage slots, and the media negotiation hands back the slot the server decided on.
+func TestStageGrantsTheSlotAndTheMediaServerAgrees(t *testing.T) {
+	h := newHarness(t)
+	host := h.registerAndVerify("stage-host@example.com")
+	speaker := h.registerAndVerify("stage-speaker@example.com")
+	watcher := h.registerAndVerify("stage-watcher@example.com")
+	class := h.createLiveClass(t, host, map[string]any{"title": "Stage test", "creditsCost": 0})
+	classID := class["id"].(string)
+
+	for _, token := range []string{host, speaker, watcher} {
+		if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", token, map[string]any{}); status != http.StatusOK {
+			t.Fatalf("join: %d %v", status, body)
+		}
+	}
+
+	status, body := h.do("GET", "/v1/virtual-classes/"+classID+"/roster", host, nil)
+	if status != http.StatusOK {
+		t.Fatalf("roster: %d %v", status, body)
+	}
+	slots := map[string]float64{}
+	for _, row := range body["attendees"].([]any) {
+		attendee := row.(map[string]any)
+		slots[attendee["displayName"].(string)] = attendee["stageSlot"].(float64)
+	}
+
+	speakerID := h.userIDFor(t, speaker)
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/stage", speaker,
+		map[string]any{"userId": speakerID, "role": "speaker"}); status != http.StatusForbidden {
+		t.Fatalf("only the host promotes a speaker, got %d %v", status, body)
+	}
+	status, body = h.do("POST", "/v1/virtual-classes/"+classID+"/stage", host,
+		map[string]any{"userId": speakerID, "role": "speaker"})
+	if status != http.StatusOK {
+		t.Fatalf("promote: %d %v", status, body)
+	}
+	stageSlot := -1
+	stageRole := ""
+	for _, row := range body["attendees"].([]any) {
+		attendee := row.(map[string]any)
+		if attendee["userId"] == speakerID {
+			stageSlot = int(attendee["stageSlot"].(float64))
+			stageRole = attendee["stageRole"].(string)
+		}
+	}
+	if stageRole != "speaker" || stageSlot <= 0 {
+		t.Fatalf("a promoted speaker must get a stage slot above the host's, got %q slot %d", stageRole, stageSlot)
+	}
+
+	// The media endpoint answers an SDP offer shaped for the caller's role and reports the slot back. A caller
+	// who is merely in the room is not on stage, whatever it asks for.
+	offer := testOfferSDP(t)
+	status, body = h.do("POST", "/v1/virtual-classes/"+classID+"/media", speaker, map[string]any{"sdp": offer})
+	if status != http.StatusOK {
+		t.Fatalf("media negotiation: %d %v", status, body)
+	}
+	if int(body["stageSlot"].(float64)) != stageSlot {
+		t.Fatalf("the media answer must report the assigned slot, got %v", body)
+	}
+	if !strings.Contains(body["sdp"].(string), "a=sendonly") {
+		t.Fatalf("a publisher's answer must forward the stage back to it, got %q", body["sdp"])
+	}
+	status, body = h.do("POST", "/v1/virtual-classes/"+classID+"/media", watcher, map[string]any{"sdp": offer})
+	if status != http.StatusOK {
+		t.Fatalf("audience media negotiation: %d %v", status, body)
+	}
+	if int(body["stageSlot"].(float64)) != -1 || body["stageRole"].(string) != "audience" {
+		t.Fatalf("an audience member must not be given a stage slot, got %v", body)
+	}
+
+	// Somebody who never joined is not in the room, so they cannot negotiate media at all.
+	stranger := h.registerAndVerify("stage-stranger@example.com")
+	if status, _ := h.do("POST", "/v1/virtual-classes/"+classID+"/media", stranger,
+		map[string]any{"sdp": offer}); status != http.StatusForbidden {
+		t.Fatalf("a non-member must not reach the media server, got %d", status)
+	}
+
+	// Demotion takes the slot away, so a second speaker can take it.
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/stage", host,
+		map[string]any{"userId": speakerID, "role": "audience"}); status != http.StatusOK {
+		t.Fatalf("demote: %d %v", status, body)
+	}
+	for _, row := range mustRoster(t, h, classID, host) {
+		if row["userId"] == speakerID && row["stageSlot"].(float64) != -1 {
+			t.Fatalf("a demoted speaker must lose the slot, got %v", row)
+		}
+	}
+}
+
+func mustRoster(t *testing.T, h *harness, classID, token string) []map[string]any {
+	t.Helper()
+	status, body := h.do("GET", "/v1/virtual-classes/"+classID+"/roster", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("roster: %d %v", status, body)
+	}
+	out := []map[string]any{}
+	for _, row := range body["attendees"].([]any) {
+		out = append(out, row.(map[string]any))
+	}
+	return out
+}
+
+// testOfferSDP is the offer a browser makes to the media forwarder: one sendonly audio and video m-line when
+// publishing, followed by the stage's six video+audio receive slots.
+func testOfferSDP(t *testing.T) string {
+	t.Helper()
+	var builder strings.Builder
+	builder.WriteString("v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n")
+	builder.WriteString("a=group:BUNDLE 0 1 2 3 4 5 6 7 8 9 10 11 12 13\r\n")
+	builder.WriteString("a=extmap-allow-mixed\r\na=msid-semantic: WMS\r\n")
+	for mid := 0; mid < 2; mid++ {
+		kind := "audio"
+		if mid == 1 {
+			kind = "video"
+		}
+		payload := "111"
+		codec := "opus/48000/2"
+		if kind == "video" {
+			payload = "96"
+			codec = "VP8/90000"
+		}
+		builder.WriteString("m=" + kind + " 9 UDP/TLS/RTP/SAVPF " + payload + "\r\n")
+		builder.WriteString("c=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:test\r\na=ice-pwd:testtesttesttesttesttest\r\n")
+		builder.WriteString("a=ice-options:trickle\r\na=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n")
+		builder.WriteString("a=setup:actpass\r\na=mid:" + strconv.Itoa(mid) + "\r\na=sendonly\r\n")
+		builder.WriteString("a=rtcp-mux\r\na=rtpmap:" + payload + " " + codec + "\r\n")
+		if kind == "video" {
+			builder.WriteString("a=rtcp-fb:" + payload + " nack\r\na=rtcp-fb:" + payload + " nack pli\r\n")
+		}
+	}
+	for slot := 0; slot < 6; slot++ {
+		mid := 2 + slot*2
+		builder.WriteString("m=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\n")
+		builder.WriteString("a=ice-ufrag:test\r\na=ice-pwd:testtesttesttesttesttest\r\na=ice-options:trickle\r\n")
+		builder.WriteString("a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n")
+		builder.WriteString("a=setup:actpass\r\na=mid:" + strconv.Itoa(mid) + "\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\n")
+		builder.WriteString("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\n")
+		builder.WriteString("a=ice-ufrag:test\r\na=ice-pwd:testtesttesttesttesttest\r\na=ice-options:trickle\r\n")
+		builder.WriteString("a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n")
+		builder.WriteString("a=setup:actpass\r\na=mid:" + strconv.Itoa(mid+1) + "\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n")
+	}
+	return builder.String()
 }

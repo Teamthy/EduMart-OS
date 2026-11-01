@@ -7,10 +7,12 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with live classes and multi-level referrals: a scheduled room that learners enter with credits or a
-discount code, peer-to-peer encrypted audio/video and whiteboard, presence by heartbeat, avatars, attendance by
-measurement and a shareable link; and commission that walks the referral chain for students, tutors and
-institutions alike. Before that, session rotation: the browser and the native app now rotate refresh tokens, so an hour-long
+Last updated with fifty-seat rooms, synchronised exams and consistency: media is now forwarded by an in-process
+media server instead of meshed, so a room holds 50 people (six on stage) and a free class is capped at 45
+minutes on the server; exams are sittings with one paper, one window, a per-candidate permutation and a
+server-recorded start, submit and score; and a learner's streak is derived from activity rather than counted.
+Before that, live classes with a shareable link, an encrypted whiteboard and attendance by measurement; and
+commission that walks the referral chain for students, tutors and institutions alike. Before that, session rotation: the browser and the native app now rotate refresh tokens, so an hour-long
 access token is a real bound rather than a number nothing enforced. Before that, the rolling rollout: the API is a tested container image, and the swap that an orchestrator
 performs — surge, drain, then abort halfway — is executed under continuous traffic on every pull request, with
 two deliberately broken rollouts proving the gate still fails. Before that, search closed the last "lists only" gap,
@@ -52,11 +54,16 @@ survive.
 | 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors), seven invariants proved to hold afterwards in CI, and accessibility now gated on contrast and structure; **no device matrix, no screen-reader or keyboard-only pass, no production-sized dataset, no soak run** |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
-Live classes are new and start **Partial**: scheduling, credits-or-discount joining, capacity, presence, roster with
-avatars, an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report and a
-shareable link all work and are covered by tests on both database engines — but with no TURN relay and no SFU the
-room is honest at 6–8 participants, and the mobile app opens the invite rather than hosting the room. See
+Live classes are **Partial**: scheduling, credits-or-discount joining, capacity, presence, roster with avatars,
+an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report, a shareable link
+and a **fifty-seat room with a six-seat stage** all work and are covered by tests on both database engines — but
+no TURN relay is deployed, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app
+opens the invite rather than hosting the room. Free sessions are capped at 45 minutes on the server. See
 [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
+
+Synchronised exams are **Partial**: one paper, one window, the same duration for everybody, a per-candidate
+permutation, and a server-recorded start, submission and score — but there is no proctoring and no scheduled
+result release. See [`EXAMS.md`](./EXAMS.md).
 
 **Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
 been measured under load and its invariants proved to survive it. The remaining work is real, not polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do
@@ -310,11 +317,35 @@ surface that lists pending organisations, organisation-level billing, and SSO.
 | Signalling relay | `…/signal`, members only | `TestSignallingRelayIsTargetedAndMemberOnly` |
 | Shareable link | `GET /v1/join/{slug}` | `TestInviteLinkResolvesWithoutAnAccount` |
 | Session tracking | `…/attendance` | `TestAttendanceRecordsTheSession` |
+| Fifty seats, really | `apps/api/internal/media` (forwarder), capacity clamped at the door | `TestRoomHoldsFiftyPeople` |
+| Six-seat stage, server-assigned | `…/stage`, `…/media` | `TestStageGrantsTheSlotAndTheMediaServerAgrees` |
+| A free class is 45 minutes | create-time rule **and** `requireOpen` at the door | `TestFreeClassIsCappedAtFortyFiveMinutes` |
+| Consistency without a counter | `GET /v1/consistency`, derived from activity rows | `TestConsistencyIsDerivedFromActivity` |
 
-The two refusals are the point: **no media through the server** (WebRTC mesh under DTLS-SRTP, so the API cannot
-record) and **no whiteboard plaintext** (opaque ciphertext under a room key the server never receives). Both are
-what make the encryption claim true rather than aspirational, and both are the reason an SFU or cloud recording
-would be a re-architecture rather than a feature.
+**What changed about the encryption claim, and why it had to.** A mesh cannot hold fifty people: every
+participant uploads one stream per peer. Media is now forwarded by an in-process media server
+(`pion/webrtc`), which means DTLS-SRTP protects each leg but the server is in the path — **hop by hop, not end to
+end**. The forwarder has no recording, no disk write and no egress, but that is a promise kept by the code rather
+than a property of the design, and [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) says so on the page its readers
+will look at. The whiteboard keeps its end-to-end property: its key travels in the join link's URL fragment,
+which no browser sends to a server, so it is *stronger* than the data-channel hand-off it replaced.
+
+### Synchronised exams
+
+An exam is a sitting: one paper, one window, the same duration for everybody, and a per-candidate permutation so
+two neighbours see the same questions in different orders. It is a thin layer over the existing assessment
+engine, which already owns the immutable snapshot, the deadline, the scoring policy and the single finalisation
+path — see [`EXAMS.md`](./EXAMS.md).
+
+| Rule | Where it lives | Test |
+| --- | --- | --- |
+| Same paper, different order per candidate | `shuffle_questions` + seeded permutation in `StartDefinition` | `TestExamIsOnePaperForEverybodyInADifferentOrder` |
+| The window wins over the duration | deadline clamp at `availability_end` | `TestExamDeadlineNeverOutlivesItsWindow` |
+| Outside the window means refused | `POST /v1/exams/{id}/start` | `TestExamRefusesCandidatesOutsideTheWindow` |
+| A result belongs to its owner | attempt scoping and host-only report | same two tests (`403` / not `200`) |
+| The host does not sit their own paper | start path | `TestExamIsOnePaperForEverybodyInADifferentOrder` |
+
+Not built: proctoring, and a scheduled result release (the schema supports it; there is no UI).
 
 ### Phase 19 — Classrooms and assignments · Partial
 

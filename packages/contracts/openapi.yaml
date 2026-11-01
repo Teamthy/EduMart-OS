@@ -464,6 +464,12 @@ paths:
         Revoking the current session is allowed and ends it.
       operationId: revokeSession
       parameters:
+    ExamId:
+      name: id
+      in: path
+      required: true
+      description: The exam id or its 16-character code.
+      schema: { type: string }
         - name: id
           in: path
           required: true
@@ -2604,6 +2610,323 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  # ── the stage: one negotiation per participant ────────────────────────────────────────────────
+  #
+  # Media is forwarded, not meshed. A fifty-seat room cannot be a mesh — each participant would upload one
+  # stream per peer — so every participant holds one connection to the media forwarder and the forwarder copies
+  # packets to the people who want them. Media stays DTLS-SRTP encrypted on both hops, but the server is in the
+  # path: that is hop-by-hop rather than end-to-end, and docs/VIRTUAL_CLASSES.md says so plainly.
+  #
+  # The negotiation is a single request/response, and its shape is fixed by the stage's six slots (host plus five
+  # speakers). Promoting somebody changes which publisher feeds a slot, never the shape of anybody's connection,
+  # so nobody is renegotiated mid-sentence.
+  /v1/virtual-classes/{id}/media:
+    post:
+      tags: [live]
+      summary: Exchange an SDP offer for the media forwarder's answer
+      description: |
+        The caller sends the offer its browser built for its role — a publisher offers one audio and one video
+        m-line followed by the stage's receive slots; an audience member offers only the receive slots — and
+        receives the forwarder's answer plus the stage slot the server assigned.
+
+        The stage slot is a request, not an authorisation: the server uses the value recorded on the caller's
+        attendance row, so a client cannot promote itself by asking.
+      operationId: connectVirtualClassMedia
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sdp]
+              properties:
+                sdp:
+                  type: string
+                  description: The browser's SDP offer, at most 64 KiB.
+      responses:
+        "200":
+          description: The forwarder's answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sdp: { type: string }
+                  stageRole: { type: string, enum: [host, speaker, audience] }
+                  stageSlot:
+                    type: integer
+                    description: The stage position the caller publishes into, or -1 for the audience.
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/virtual-classes/{id}/stage:
+    post:
+      tags: [live]
+      summary: Move somebody onto or off the stage (host only)
+      description: |
+        The stage holds six people including the host. Slots are allocated by the server from the lowest free
+        one, and a demotion closes the person's media session so their camera stops being forwarded immediately
+        rather than when the connection times out.
+      operationId: setVirtualClassStage
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, role]
+              properties:
+                userId: { type: string }
+                role: { type: string, enum: [speaker, audience] }
+      responses:
+        "200":
+          description: The updated roster
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attendees:
+                    type: array
+                    items: { $ref: "#/components/schemas/StageSeat" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  # ── synchronised exams ────────────────────────────────────────────────────────────────────────
+  #
+  # An exam is an assessment definition with a window. Everyone starts inside the same window, gets the same
+  # duration, and the window wins when they collide: an attempt that starts late ends when the window closes,
+  # and the deadline stored on the attempt says so. The paper is one immutable snapshot per candidate, taken at
+  # start, so the question set is identical for everybody; when the exam asks for a shuffle the snapshot is
+  # permuted with a seed of (exam, candidate), which gives a different order on every screen and the same order
+  # on the same screen after a reload. Answer keys never appear in a response before the release policy allows.
+  /v1/exams:
+    get:
+      tags: [exams]
+      summary: List sittings the caller can see
+      description: Their own exams, the ones they have sat, and those open now.
+      operationId: listExams
+      responses:
+        "200":
+          description: Sittings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exams:
+                    type: array
+                    items: { $ref: "#/components/schemas/Exam" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    post:
+      tags: [exams]
+      summary: Publish a synchronised exam
+      description: |
+        Supplies the paper either by naming question versions (reproducible) or by asking for a draw from a
+        subject (convenient). Every question must already be approved and published. The response carries the
+        unique 16-character code that makes the sitting reachable as a link.
+      operationId: createExam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, startsAt]
+              properties:
+                title: { type: string, minLength: 3, maxLength: 140 }
+                subjectId:
+                  type: string
+                  description: Subject to draw questions from when questionVersionIds is empty.
+                durationMinutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 300
+                  default: 45
+                startsAt: { type: string, format: date-time }
+                endsAt:
+                  type: string
+                  format: date-time
+                  description: End of the window. Defaults to startsAt + durationMinutes.
+                shuffle:
+                  type: boolean
+                  description: Give every candidate the same questions in a different order.
+                questionVersionIds:
+                  type: array
+                  maxItems: 200
+                  items: { type: string }
+                questionCount:
+                  type: integer
+                  description: How many questions to draw when questionVersionIds is empty.
+      responses:
+        "201":
+          description: The published sitting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exam: { $ref: "#/components/schemas/Exam" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /v1/exams/link/{slug}:
+    get:
+      tags: [exams]
+      summary: What a shared exam link says before sign-in
+      description: |
+        The anonymous preview of a sitting: what it is, when its window opens and closes, and how long it lasts.
+        It deliberately says nothing about the paper's contents — a public endpoint that leaks questions is a
+        revision aid for exactly the wrong person.
+      operationId: resolveExamLink
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 16 }
+      responses:
+        "200":
+          description: The sitting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exam: { $ref: "#/components/schemas/Exam" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/exams/{id}:
+    get:
+      tags: [exams]
+      summary: One sitting, and the caller's own attempt at it
+      description: |
+        `myAttempt` is what lets the page offer "continue" instead of a second start the attempt limit would
+        refuse, and it is scoped to the caller: no candidate ever sees another's attempt.
+      operationId: getExam
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      responses:
+        "200":
+          description: The sitting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exam: { $ref: "#/components/schemas/Exam" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/exams/{id}/start:
+    post:
+      tags: [exams]
+      summary: Begin a candidate's attempt
+      description: |
+        Refused outside the window, after the attempt limit, and for the host (a host sitting their own paper
+        makes the report meaningless). The response is the immutable snapshot for this candidate, in their
+        permutation, with no answer key.
+      operationId: startExam
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      responses:
+        "201":
+          description: The attempt
+          content:
+            application/json:
+              schema:
+                type: object
+                description: The assessment view (see /v1/assessment-sessions/{id}), including the questions,
+                  the server-set deadline and the remaining seconds.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/exams/{id}/results:
+    get:
+      tags: [exams]
+      summary: The host's end-to-end sitting report
+      description: |
+        Every candidate, when the server saw them start, when they submitted, what they scored, and how long the
+        server would still accept an answer for. Candidate-only access is a 403: a result belongs to the person
+        who sat the paper.
+      operationId: examResults
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      responses:
+        "200":
+          description: Candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items: { $ref: "#/components/schemas/ExamCandidate" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── consistency ──────────────────────────────────────────────────────────────────────────────
+  #
+  # A streak is derived, never counted. It is computed from the activity the rest of the system already records
+  # — attempts started, live classes attended, credits earned — so it cannot drift from what happened. Opening
+  # the app is deliberately not activity: a streak that counts page views measures the notification system.
+  /v1/consistency:
+    get:
+      tags: [insights]
+      summary: Consistency streak and recent activity strip
+      description: |
+        Current streak, longest streak, and a per-day strip covering the requested window (default 30 days).
+        Days are UTC days, and the payload says so. `streakAtRisk` is the one piece of state a reminder needs:
+        the run is alive but today is still empty.
+      operationId: getConsistency
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 180, default: 30 }
+      responses:
+        "200":
+          description: Consistency
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consistency: { $ref: "#/components/schemas/Consistency" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
 components:
   securitySchemes:
     sessionCookie:
@@ -3129,6 +3452,77 @@ components:
         payload: { type: string }
         createdAt: { type: string, format: date-time }
 
+    Exam:
+      type: object
+      description: A scheduled sitting. The window state is computed server-side so a phone with a wrong clock
+        cannot decide whether the exam is open.
+      properties:
+        id: { type: string }
+        slug: { type: string, minLength: 16, maxLength: 16 }
+        title: { type: string }
+        hostName: { type: string }
+        durationMinutes: { type: integer }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        shuffled: { type: boolean }
+        attemptLimit: { type: integer }
+        status: { type: string }
+        questionCount: { type: integer }
+        candidates: { type: integer }
+        url: { type: string, description: The unique shareable address of the sitting. }
+        role: { type: string, enum: [host, candidate] }
+        open: { type: boolean }
+        secondsUntilStart: { type: integer }
+        secondsUntilClose: { type: integer }
+        myAttempt:
+          type: object
+          nullable: true
+          properties:
+            sessionId: { type: string }
+            status: { type: string }
+            startedAt: { type: string }
+            deadlineAt: { type: string }
+            submittedAt: { type: string, nullable: true }
+            scorePercent: { type: integer, nullable: true }
+            remainingSeconds: { type: integer }
+    ExamCandidate:
+      type: object
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+        status: { type: string }
+        startedAt: { type: string }
+        submittedAt: { type: string, nullable: true }
+        deadlineAt: { type: string }
+        scoreRaw: { type: integer, nullable: true }
+        scoreMax: { type: integer, nullable: true }
+        remainingSeconds: { type: integer }
+    Consistency:
+      type: object
+      properties:
+        currentStreak: { type: integer }
+        longestStreak: { type: integer }
+        activeDays: { type: integer }
+        windowDays: { type: integer }
+        totalActiveDays: { type: integer }
+        todayActive: { type: boolean }
+        streakAtRisk: { type: boolean }
+        timeZone: { type: string, description: What a "day" means here. UTC, because the data is. }
+        days:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string }
+              active: { type: boolean }
+              kinds:
+                type: array
+                items: { type: string, enum: [class, practice, credits] }
+              isToday: { type: boolean }
+              inStreak: { type: boolean }
+        kindLabels:
+          type: object
+          additionalProperties: { type: string }
     AttendanceRow:
       type: object
       properties:

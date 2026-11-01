@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ServerApiError, serverFetch } from "@/lib/server-api";
 import { getCurrentUser } from "@/lib/session";
-import { LiveRoom, type RoomClass } from "./room";
+import { LiveRoom } from "./room";
+import type { LiveClass } from "@/lib/live-api";
 
 export const metadata: Metadata = { title: "Live class" };
 export const dynamic = "force-dynamic";
@@ -23,6 +24,8 @@ interface Invite {
   hostName: string;
   startsAt: string;
   creditsCost: number;
+  capacity: number;
+  durationMinutes: number;
   status: string;
   joinUrl: string;
 }
@@ -60,11 +63,11 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
   }
 
   const user = await getCurrentUser();
-  let room: RoomClass | null = null;
+  let room: LiveClass | null = null;
   if (user) {
     try {
       // Signed-in visitors get the full record, which is what tells the room whether they are the host.
-      ({ class: room } = await serverFetch<{ class: RoomClass }>(`/v1/virtual-classes/${invite.id}`));
+      ({ class: room } = await serverFetch<{ class: LiveClass }>(`/v1/virtual-classes/${invite.id}`));
     } catch {
       room = null;
     }
@@ -78,8 +81,10 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
           <Badge variant="outline">{invite.creditsCost > 0 ? `${invite.creditsCost} credits` : "free"}</Badge>
           <Badge variant="outline">
             <Lock aria-hidden="true" className="mr-1 size-3" />
-            end-to-end encrypted
+            encrypted whiteboard
           </Badge>
+          <Badge variant="outline">{invite.capacity} seats</Badge>
+          {invite.creditsCost === 0 ? <Badge variant="outline">45 minutes</Badge> : null}
         </div>
         <h1 className="text-2xl">{invite.title}</h1>
         <p className="text-sm text-muted-foreground">
@@ -89,7 +94,12 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
       </header>
 
       {room ? (
-        <LiveRoom room={room} />
+        <LiveRoom
+          initial={room}
+          viewerId={user?.id ?? ""}
+          viewerName={user?.displayName ?? ""}
+          linkKey={null}
+        />
       ) : (
         <Card>
           <CardHeader>
@@ -119,7 +129,8 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <CalendarClock aria-hidden="true" className="size-3" />
-        Audio and video travel directly between participants. The server relays introductions, not media.
+        Audio and video are forwarded by the class's media server — encrypted hop by hop, so a fifty-seat room
+        works. Whiteboard strokes are encrypted in the browser end to end.
       </p>
     </main>
   );

@@ -26,8 +26,11 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/classroom"
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
+	"github.com/teamthy/edumart/apps/api/internal/consistency"
 	"github.com/teamthy/edumart/apps/api/internal/content"
+	"github.com/teamthy/edumart/apps/api/internal/exams"
 	"github.com/teamthy/edumart/apps/api/internal/insights"
+	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
@@ -148,12 +151,26 @@ func main() {
 	// Links in invitations point at the web app, which is a different origin from the API.
 	webURL := env("EDUMART_WEB_URL", "http://localhost:3000")
 	institutions := orgs.New(db).WithNotifier(notifier, webURL)
+	appEngine := assessment.New(db)
+
+	// The media forwarder. It is built here, before the router, because it owns sockets rather than state:
+	// an operator pins the UDP range the deployment forwards, and the process that closes everything on
+	// shutdown is the same one that opened it.
+	forwarder, mediaErr := media.New(media.Config{
+		UDPMin: uint16(number(env("EDUMART_MEDIA_UDP_MIN", "0"))),
+		UDPMax: uint16(number(env("EDUMART_MEDIA_UDP_MAX", "0"))),
+	})
+	if mediaErr != nil {
+		logger.Error("media forwarder unavailable", "error", mediaErr.Error())
+		os.Exit(1)
+	}
+	defer forwarder.Close()
 
 	router := api.NewRouter(api.Deps{
 		Store:   db,
 		Auth:    authService,
 		Items:   content.New(db),
-		Exams:   assessment.New(db),
+		Exams:   appEngine,
 		Classes: classroom.New(db),
 		Shop:    shop,
 		Rewards: rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
@@ -165,6 +182,11 @@ func main() {
 			ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
 		}),
 		Insights: insights.New(db),
+		// A sitting is an exam-shaped assessment definition, so the exam layer sits on the engine rather
+		// than beside it: one scorer, one deadline rule, one snapshot.
+		Sittings: exams.New(db, appEngine, exams.Config{WebURL: webURL}),
+		Habit:    consistency.New(db),
+		Media:    forwarder,
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
 		Orgs:     institutions,
@@ -187,8 +209,7 @@ func main() {
 		},
 	})
 
-	exams := assessment.New(db)
-	stopExpiry := startExpiryWorker(logger, exams)
+	stopExpiry := startExpiryWorker(logger, appEngine)
 	defer stopExpiry()
 
 	// The retry sweep: whatever failed to send is attempted again on its backoff schedule, across
@@ -312,6 +333,16 @@ func startExpiryWorker(logger *slog.Logger, exams *assessment.Service) func() {
 		}
 	}()
 	return func() { close(done) }
+}
+
+// number parses an integer environment variable, falling back to 0. It exists so a bad value fails at the point
+// of use with the variable named, rather than silently becoming a zero somewhere else.
+func number(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func env(key, fallback string) string {

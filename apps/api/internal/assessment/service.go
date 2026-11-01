@@ -164,13 +164,14 @@ func (s *Service) StartPractice(ctx context.Context, userID, subjectID string, t
 func (s *Service) StartDefinition(ctx context.Context, userID string, roles []string, definitionID string) (*Session, error) {
 	var (
 		classID, availabilityStart, availabilityEnd, policyJSON, defType, status string
-		duration, attemptLimit                                                   int
+		duration, attemptLimit, shuffle                                          int
 	)
 	err := s.DB.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(class_id,''), COALESCE(availability_start,''), COALESCE(availability_end,''),
-		       scoring_policy_json, type, duration_seconds, attempt_limit, status
+		       scoring_policy_json, type, duration_seconds, attempt_limit, status, shuffle_questions
 		  FROM assessment_definitions WHERE id = ?`, definitionID).
-		Scan(&classID, &availabilityStart, &availabilityEnd, &policyJSON, &defType, &duration, &attemptLimit, &status)
+		Scan(&classID, &availabilityStart, &availabilityEnd, &policyJSON, &defType, &duration, &attemptLimit,
+			&status, &shuffle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httpx.NewError(httpx.CodeNotFound, "That assessment could not be found.")
 	}
@@ -252,8 +253,33 @@ func (s *Service) StartDefinition(ctx context.Context, userID string, roles []st
 		return nil, httpx.NewError(httpx.CodeConflict, "This assessment has no approved questions yet.")
 	}
 
+	// A sitting has a shape: the same questions, the same duration, and an end that is the end for everybody.
+	//
+	// The permutation is seeded by (definition, user), so two candidates never see the same order — a glance at
+	// a neighbour's screen gives an answer to a question that is not where they are — while one candidate who
+	// reloads gets *their* order back rather than a fresh shuffle that invalidates answers already given. The
+	// answer key stays on the server either way: the snapshot is where it lives, and it is never served before
+	// the release policy allows.
+	if shuffle != 0 {
+		seed := definitionID + ":" + userID
+		questions = domain.SeededShuffle(questions, seed)
+		for index := range questions {
+			questions[index].Options = domain.SeededShuffle(questions[index].Options,
+				seed+":"+questions[index].QvID)
+			questions[index].Position = index + 1
+		}
+	}
+
 	started := time.Now().UTC()
 	deadline := domain.DeadlineAt(started, duration)
+	// The window closes for everyone at availability_end. A candidate who starts twenty minutes before the end
+	// gets twenty minutes, not the full duration with a deadline nobody can honour — a deadline the server will
+	// not accept an answer past is worse than an honest short one.
+	if availabilityEnd != "" {
+		if end, err := store.ParseTS(availabilityEnd); err == nil && end.Before(deadline) {
+			deadline = end
+		}
+	}
 	sessionID := store.NewID()
 	snapshot := Snapshot{Policy: domain.ParsePolicy(policyJSON), Questions: questions}
 	raw, err := json.Marshal(snapshot)
