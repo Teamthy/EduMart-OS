@@ -181,7 +181,7 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | `POST` | `/virtual-classes/{id}/end` | Host only. `live → ended` |
 | `GET` | `/virtual-classes/{id}/roster` | Attendees with `avatar`, `stageRole`, `stageSlot`, `present`, and join/leave timestamps |
 | `GET` | `/virtual-classes/{id}/attendance` | The recorded session timeline, not a client-side counter |
-| `GET` | `/virtual-classes/{id}/ice` | STUN/TURN configuration for the browser |
+| `GET` | `/virtual-classes/{id}/ice` | iceServers for this caller: the deployment's STUN entries plus, when the relay is enabled, a `turn:` entry carrying a credential minted for that participant and expiring within the hour |
 | `GET`/`POST` | `/virtual-classes/{id}/board` | The whiteboard payload, versioned so concurrent strokes do not overwrite each other |
 | `GET`/`POST` | `/virtual-classes/{id}/signal` | SDP/ICE exchange for the board's end-to-end-encrypted channel |
 | `GET`/`POST` | `/virtual-classes/{id}/discount-codes` | Host-issued codes that reduce the credit price |

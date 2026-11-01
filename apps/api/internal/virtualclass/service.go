@@ -137,6 +137,24 @@ type Config struct {
 	// Media is the forwarding unit that carries the audio and video. It is optional so that a test can build
 	// the service without one and get a clear refusal instead of a nil panic.
 	Media *media.Service
+	// Relay hands out per-user TURN credentials. It is an interface rather than the relay package's type so
+	// that a test can hand out a fixed credential, and nil means "no relay": clients get STUN and whatever
+	// static iceServers the deployment configured.
+	Relay CredentialIssuer
+}
+
+// CredentialIssuer is the part of the relay this package needs: a credential for one participant.
+//
+// The signature is per-user on purpose. A shared TURN password would be a password in a public bundle, which
+// is why the deployment mints one per participant instead.
+type CredentialIssuer interface {
+	ICEServers(userID string) []map[string]any
+}
+
+// WithRelay attaches a TURN relay that issues per-participant credentials.
+func (s *Service) WithRelay(issuer CredentialIssuer) *Service {
+	s.config.Relay = issuer
+	return s
 }
 
 // Service implements the use cases.
@@ -958,10 +976,18 @@ func (s *Service) ICEConfig(ctx context.Context, classID, userID string) ([]map[
 	if err := s.requireMember(ctx, classID, userID); err != nil {
 		return nil, err
 	}
-	if len(s.config.ICEServers) == 0 {
-		return []map[string]any{{"urls": []string{"stun:stun.l.google.com:19302"}}}, nil
+	servers := s.config.ICEServers
+	if len(servers) == 0 {
+		servers = []map[string]any{{"urls": []string{"stun:stun.l.google.com:19302"}}}
 	}
-	return s.config.ICEServers, nil
+	// A copy, so appending per-user credentials cannot accumulate in the configured slice and hand one
+	// participant's credential to the next caller.
+	out := make([]map[string]any, 0, len(servers)+1)
+	out = append(out, servers...)
+	if s.config.Relay != nil {
+		out = append(out, s.config.Relay.ICEServers(userID)...)
+	}
+	return out, nil
 }
 
 // ── media and the stage ─────────────────────────────────────────────────────────────────────────────

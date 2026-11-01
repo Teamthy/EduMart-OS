@@ -57,8 +57,10 @@ survive.
 Live classes are **Partial**: scheduling, credits-or-discount joining, capacity, presence, roster with avatars,
 an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report, a shareable link
 and a **fifty-seat room with a six-seat stage** all work and are covered by tests on both database engines — but
-no TURN relay is deployed, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app
-opens the invite rather than hosting the room. Free sessions are capped at 45 minutes on the server. See
+an **embedded TURN relay** issues each participant an ephemeral credential so a symmetric NAT can still reach
+the forwarder, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app opens the
+invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
+them on the clock. See
 [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
 
 Synchronised exams are **Partial**: one paper, one window, the same duration for everybody, a per-candidate

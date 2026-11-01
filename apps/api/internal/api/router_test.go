@@ -30,6 +30,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
+	"github.com/teamthy/edumart/apps/api/internal/relay"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
@@ -61,7 +62,10 @@ type harness struct {
 	courier *notify.Service
 	// live is the class service behind the router, so a test can run the room sweep the worker runs
 	// on a timer, without waiting forty-five minutes or trusting that nobody knocks.
-	live  *virtualclass.Service
+	live *virtualclass.Service
+	// relay is a real TURN server on loopback, so a test can take the credentials the API hands a learner and
+	// use them to make an allocation — the same thing a browser behind a strict NAT would do.
+	relay *relay.Service
 	clock *testClock
 }
 
@@ -124,9 +128,21 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		t.Fatalf("media: %v", forwarderErr)
 	}
 	t.Cleanup(forwarder.Close)
+	relayService, relayErr := relay.New(relay.Config{
+		ListenUDP: "127.0.0.1:0",
+		PublicIP:  "127.0.0.1",
+		Realm:     "edumart.test",
+		Secret:    "api_test_turn_secret",
+		TTL:       time.Minute,
+	})
+	if relayErr != nil {
+		t.Fatalf("relay: %v", relayErr)
+	}
+	t.Cleanup(func() { _ = relayService.Close() })
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL:     "http://localhost:3000",
 		ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
+		Relay:      relayService,
 	}).WithMedia(forwarder)
 	router := api.NewRouter(api.Deps{
 		Store:    db,
@@ -154,7 +170,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier,
-		clock: clock, shop: shop, rewards: rewardsService, live: liveService}
+		clock: clock, shop: shop, rewards: rewardsService, live: liveService, relay: relayService}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {
