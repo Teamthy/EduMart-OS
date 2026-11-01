@@ -764,6 +764,19 @@ func (s *Service) requireOpen(ctx context.Context, classID string) error {
 		return nil
 	}
 
+	if err := s.closeRoom(ctx, classID); err != nil {
+		return err
+	}
+	return httpx.NewError(httpx.CodeConflict,
+		fmt.Sprintf("A free class closes %d minutes after it starts. Start a new one, or price it next time.",
+			FreeSessionMinutes))
+}
+
+// closeRoom ends a class and everything hanging off it: the class row, the open session, and every seat
+// still held. It is the one place that knows what "closed" means, because there are now three callers
+// (the host ending it, the door refusing a late arrival, and the sweep) and three ways of writing it would
+// be three chances to leave an open session behind.
+func (s *Service) closeRoom(ctx context.Context, classID string) error {
 	now := store.Now()
 	if _, err := s.db.DB.ExecContext(ctx, `UPDATE virtual_classes SET status = ?, ended_at = ?, updated_at = ?
 		WHERE id = ? AND status <> ?`, StatusEnded, now, now, classID, StatusEnded); err != nil {
@@ -777,12 +790,58 @@ func (s *Service) requireOpen(ctx context.Context, classID string) error {
 		WHERE class_id = ? AND left_at IS NULL`, now, classID); err != nil {
 		return err
 	}
+	// The forwarder holds sockets; a class that is over must stop carrying them.
 	if s.config.Media != nil {
 		s.config.Media.CloseRoom(classID)
 	}
-	return httpx.NewError(httpx.CodeConflict,
-		fmt.Sprintf("A free class closes %d minutes after it starts. Start a new one, or price it next time.",
-			FreeSessionMinutes))
+	return nil
+}
+
+// CloseExpiredFree closes free classes that have run past their forty-five minutes.
+//
+// The door already refuses a late arrival (requireOpen), but the door only matters if somebody knocks:
+// a host who starts a free class and walks away leaves the room open, the stage up and a session row
+// with no end. This is the sweep that makes "a free session is 45 minutes" a property of the clock
+// rather than a property of who happens to make a request.
+//
+// It is safe to run on every replica: closeRoom's updates are conditional on the class not already
+// being ended, so a second replica's sweep finds nothing to do. The count returned is how many classes
+// *this* call closed, which is what a log line should say — not how many were due.
+func (s *Service) CloseExpiredFree(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	cutoff := store.TS(s.now().Add(-FreeSessionMinutes * time.Minute))
+	rows, err := s.db.DB.QueryContext(ctx, `SELECT DISTINCT c.id FROM virtual_classes c
+		JOIN virtual_class_sessions s ON s.class_id = c.id
+		WHERE c.status = ? AND c.credits_cost = 0
+		  AND s.ended_at IS NULL AND s.started_at <= ?
+		LIMIT ?`, StatusLive, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	closed := 0
+	for _, id := range ids {
+		if err := s.closeRoom(ctx, id); err != nil {
+			return closed, err
+		}
+		closed++
+	}
+	return closed, nil
 }
 
 func (s *Service) requireHost(ctx context.Context, classID, userID string) error {

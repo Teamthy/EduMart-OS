@@ -166,21 +166,23 @@ func main() {
 	}
 	defer forwarder.Close()
 
+	liveService := virtualclass.New(db, virtualclass.Config{
+		WebURL: webURL,
+		// STUN alone gets two peers on ordinary home networks connected. A TURN relay is what makes
+		// the room work behind a symmetric NAT, and it is configuration rather than code because a
+		// relay is bandwidth an operator has to pay for.
+		ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
+	}).WithMedia(forwarder)
+
 	router := api.NewRouter(api.Deps{
-		Store:   db,
-		Auth:    authService,
-		Items:   content.New(db),
-		Exams:   appEngine,
-		Classes: classroom.New(db),
-		Shop:    shop,
-		Rewards: rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
-		Live: virtualclass.New(db, virtualclass.Config{
-			WebURL: webURL,
-			// STUN alone gets two peers on ordinary home networks connected. A TURN relay is what makes
-			// the room work behind a symmetric NAT, and it is configuration rather than code because a
-			// relay is bandwidth an operator has to pay for.
-			ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
-		}),
+		Store:    db,
+		Auth:     authService,
+		Items:    content.New(db),
+		Exams:    appEngine,
+		Classes:  classroom.New(db),
+		Shop:     shop,
+		Rewards:  rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
+		Live:     liveService,
 		Insights: insights.New(db),
 		// A sitting is an exam-shaped assessment definition, so the exam layer sits on the engine rather
 		// than beside it: one scorer, one deadline rule, one snapshot.
@@ -211,6 +213,11 @@ func main() {
 
 	stopExpiry := startExpiryWorker(logger, appEngine)
 	defer stopExpiry()
+
+	// Free classes end on the clock, not on the next request. A host who starts a forty-five minute
+	// class and walks away would otherwise leave the room, the stage and the session row open forever.
+	stopRooms := startRoomSweepWorker(logger, liveService)
+	defer stopRooms()
 
 	// The retry sweep: whatever failed to send is attempted again on its backoff schedule, across
 	// restarts, because the queue lives in the database rather than in memory.
@@ -325,6 +332,35 @@ func startExpiryWorker(logger *slog.Logger, exams *assessment.Service) func() {
 					logger.Error("expiry sweep failed", "error", err.Error())
 				} else if count > 0 {
 					logger.Info("expired attempts finalized", "count", count)
+				}
+			case <-done:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// startRoomSweepWorker closes free classes whose forty-five minutes are up.
+//
+// Same shape as the attempt sweep: the request path already refuses a late arrival, and this is what
+// makes the room actually close when nobody arrives at all. It runs on every replica; the closing
+// update is conditional, so concurrent sweeps converge instead of fighting.
+func startRoomSweepWorker(logger *slog.Logger, live *virtualclass.Service) func() {
+	ticker := time.NewTicker(60 * time.Second)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				count, err := live.CloseExpiredFree(ctx, 50)
+				cancel()
+				if err != nil {
+					logger.Error("room sweep failed", "error", err.Error())
+				} else if count > 0 {
+					logger.Info("free classes closed at their limit", "count", count)
 				}
 			case <-done:
 				ticker.Stop()

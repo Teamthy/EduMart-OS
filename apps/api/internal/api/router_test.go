@@ -59,7 +59,10 @@ type harness struct {
 	// courier is the durable delivery service, so a test can drive the retry sweep and inspect what
 	// happened to a message after the first attempt failed.
 	courier *notify.Service
-	clock   *testClock
+	// live is the class service behind the router, so a test can run the room sweep the worker runs
+	// on a timer, without waiting forty-five minutes or trusting that nobody knocks.
+	live  *virtualclass.Service
+	clock *testClock
 }
 
 // testClock lets a test move time forward instead of sleeping through a retry backoff.
@@ -121,6 +124,10 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		t.Fatalf("media: %v", forwarderErr)
 	}
 	t.Cleanup(forwarder.Close)
+	liveService := virtualclass.New(db, virtualclass.Config{
+		WebURL:     "http://localhost:3000",
+		ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
+	}).WithMedia(forwarder)
 	router := api.NewRouter(api.Deps{
 		Store:    db,
 		Auth:     auth.New(db, auth.WithNotifier(courier), auth.WithLogger(logger)),
@@ -135,10 +142,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Orgs:     orgs.New(db).WithNotifier(courier, "http://localhost:3000"),
 		Notifier: courier,
 		Finder:   search.New(db),
-		Live: virtualclass.New(db, virtualclass.Config{
-			WebURL:     "http://localhost:3000",
-			ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
-		}).WithMedia(forwarder),
+		Live:     liveService,
 		// The forwarder is real, not a stub: it opens no sockets until somebody negotiates, and a fake here
 		// would let a test pass against media behaviour the deployment does not have.
 		Media:    forwarder,
@@ -150,7 +154,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier,
-		clock: clock, shop: shop, rewards: rewardsService}
+		clock: clock, shop: shop, rewards: rewardsService, live: liveService}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {
