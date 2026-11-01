@@ -280,6 +280,17 @@ The CI job `Container images` builds both images, starts them on one Docker netw
 reaches the API **by name** (what a Service does in-cluster), and then: renders a page, proxies `/v1`,
 expects a 401 through the proxy, and requires the session cookie to survive the hop.
 
+## Session lifetime in a deployment
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EDUMART_ACCESS_TOKEN_TTL` | `1h` | How long an access token lives. Both clients renew with the single-use refresh token |
+
+Shortening the access token is only safe because something renews it. If a deployment sets a TTL and the web
+middleware cannot reach the API, learners are signed out hourly rather than weekly — which is the correct
+failure direction, but it is a failure, so `Rolling rollout` and `Container images` both run
+`scripts/session-lifecycle.py` against a five-second TTL to prove renewal works in the shipped image.
+
 ## Migrations are expand-only
 
 The rule the rehearsal enforces, stated once:

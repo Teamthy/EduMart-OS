@@ -49,6 +49,11 @@ RUNTIME_ENV = {"PORT", "HOSTNAME", "NODE_ENV", "PATH", "HOME", "TZ"}
 # Keys whose presence in a ConfigMap means a secret was put in the wrong place.
 SECRET_LOOKING = re.compile(r"(SECRET|PASSWORD|TOKEN|_KEY$|DSN|CREDENTIAL)", re.I)
 
+# Values that cannot be secrets: durations, numbers, booleans, URLs without credentials, short policy words.
+# Refining the key check this way matters because `EDUMART_ACCESS_TOKEN_TTL` contains "TOKEN" and is a
+# duration — a checker that flagged it would be a checker people disable.
+NOT_A_SECRET_VALUE = re.compile(r"^\d+(ms|s|m|h|d)?$|^true$|^false$|^https?://[^:@]+(/.*)?$", re.I)
+
 # Anything that looks like a live credential rather than a placeholder.
 CREDENTIAL_SHAPES = [
     re.compile(r"sk_live_[A-Za-z0-9]"),
@@ -139,7 +144,13 @@ def application_env(directory: str) -> set[str]:
     starts, uses the default, and behaves differently from the one on the whiteboard.
     """
     names: set[str] = set()
-    pattern = re.compile(r'(?:env\(|os\.Getenv\(|LookupEnv\()"([A-Z][A-Z0-9_]+)"')
+    # Any helper whose name reads an environment variable: `env(...)`, `envDuration(...)`, `os.Getenv(...)`.
+    # Matching the shape of the call rather than a fixed list of our own helper names means a new helper
+    # cannot quietly make its variables invisible to this check — which is how the first version missed
+    # everything not read through the one function it knew about.
+    pattern = re.compile(
+        r'(?:[A-Za-z_\w]*(?:[Gg]etenv|[Ll]ookupEnv)|[a-z]*[Ee]nv[A-Za-z]*|env)\(\s*"([A-Z][A-Z0-9_]+)"'
+    )
     for path in glob.glob(os.path.join(directory, "**", "*.go"), recursive=True):
         with open(path, errors="replace") as handle:
             names |= set(pattern.findall(handle.read()))
@@ -379,7 +390,10 @@ def check_secret_hygiene(manifests: Manifests, out: Violations) -> None:
     for name, doc in manifests.of_kind("ConfigMap"):
         for key, value in (doc.get("data") or {}).items():
             text = str(value)
-            if SECRET_LOOKING.search(key) or any(shape.search(text) for shape in CREDENTIAL_SHAPES):
+            credential_shaped = len(text) >= 12 and not NOT_A_SECRET_VALUE.match(text)
+            if any(shape.search(text) for shape in CREDENTIAL_SHAPES) or (
+                SECRET_LOOKING.search(key) and credential_shaped
+            ):
                 out.add("secrets", f"{name}: {key} looks like a secret in a ConfigMap")
 
     for name, doc in manifests.of_kind("Secret"):
@@ -582,6 +596,23 @@ def self_test(directory: str) -> int:
             "10-config.yaml",
             one(lambda doc: set_in(doc, ["data", "EDUMART_TRUST_PROX"], "true")),
             "environment",
+        ),
+        (
+            "a settings key read through a helper, renamed",
+            "10-config.yaml",
+            one(lambda doc: set_in(
+                doc,
+                ["data"],
+                {**{k: v for k, v in doc["data"].items() if k != "EDUMART_ACCESS_TOKEN_TTL"},
+                 "EDUMART_ACCESS_TTL": "1h"},
+            )),
+            "environment",
+        ),
+        (
+            "a token-shaped key given a credential-shaped value",
+            "10-config.yaml",
+            one(lambda doc: set_in(doc, ["data", "EDUMART_METRICS_TOKEN"], "tz_9f2Kd0Qm4Xb7Lp1Rs8Vw3Yc6Nh5Je2Gu")),
+            "secrets",
         ),
         (
             "the web proxy pointed at a Service that does not exist",

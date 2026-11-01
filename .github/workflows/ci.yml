@@ -275,6 +275,19 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://localhost:8080/readyz && break; sleep 1; done
       - name: Verify the learner journey over HTTP (SQLite)
         run: python3 scripts/smoke.py http://localhost:8080
+      - name: Verify the browser session lifecycle (SQLite)
+        # A three-second access token, so expiry is a fact about this run rather than something the suite
+        # assumes. Proves sign-in issues a scoped refresh cookie, the cookie renews the session, sign-out kills
+        # the chain, and a dead chain clears the cookies.
+        run: |
+          EDUMART_DSN=/tmp/ci-session.db PORT=8082 EDUMART_ACCESS_TOKEN_TTL=3s /tmp/edumart-api > /tmp/session-api.log 2>&1 &
+          echo $! > /tmp/session-api.pid
+          for attempt in $(seq 1 40); do
+            curl -fsS http://localhost:8082/readyz > /dev/null && break
+            sleep 1
+          done
+          python3 scripts/session-lifecycle.py --base http://localhost:8082 --ttl 3
+          kill "$(cat /tmp/session-api.pid)" 2>/dev/null || true
       - name: Stop API
         if: always()
         run: kill "$(cat /tmp/api.pid)" || true
@@ -624,6 +637,7 @@ jobs:
             -e EDUMART_VERIFICATION_SECRET=ci_only_verification_secret_value \
             -e EDUMART_ALLOWED_ORIGINS=http://localhost:3000 \
             -e EDUMART_TRUST_PROXY=true \
+            -e EDUMART_ACCESS_TOKEN_TTL=5s \
             edumart-api:ci
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8080/readyz > /tmp/readyz.json; then break; fi
@@ -671,6 +685,12 @@ jobs:
             (echo "no session cookie came back through the proxy" >&2; cat /tmp/login.headers; exit 1)
           echo "session cookie passed through with its HttpOnly attributes:"
           grep -i '^set-cookie:' /tmp/login.headers
+      - name: The web container renews an expired session by itself
+        # The whole point of the middleware, in one command: a real cookie jar, an access token that has really
+        # expired, and a page navigation that must still render. Before this existed the web app kept a
+        # seven-day access cookie and the refresh path was never exercised by any browser.
+        run: |
+          python3 scripts/session-lifecycle.py --base http://127.0.0.1:3000 --via-web --ttl 5
       - name: Both container logs on failure
         if: failure()
         run: docker logs edumart-web || true; docker logs edumart-api || true

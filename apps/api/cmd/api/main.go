@@ -87,6 +87,8 @@ func main() {
 		logger.Info("migrations applied", "engine", db.Driver, "applied", len(status.Applied))
 		return
 	}
+	logger.Info("session policy",
+		"access_ttl", envDuration("EDUMART_ACCESS_TOKEN_TTL", auth.DefaultAccessTTL).String())
 	logger.Info("database opened",
 		"engine", db.Driver, "migrate_on_boot", db.MigrateOnBoot())
 
@@ -116,6 +118,10 @@ func main() {
 		auth.WithNotifier(notifier),
 		auth.WithCodeSecret(codeSecret),
 		auth.WithLogger(logger),
+		// An access token that outlives the refresh chain makes rotation decorative: no browser ever calls
+		// /v1/auth/refresh, so nothing is ever rotated and reuse detection never fires. An hour is short
+		// enough to bound a stolen token and long enough to refresh a few times a day.
+		auth.WithAccessTTL(envDuration("EDUMART_ACCESS_TOKEN_TTL", auth.DefaultAccessTTL)),
 	)
 	paymentProvider := env("EDUMART_PAYMENT_PROVIDER", "sandbox")
 	shop := commerce.New(db, paymentProvider, env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret")).
@@ -214,6 +220,25 @@ func main() {
 		logger.Error("shutdown error", "error", err.Error())
 	}
 	logger.Info("api stopped")
+}
+
+// envDuration reads a duration such as "45m" or "2h", falling back to the default.
+//
+// A malformed value falls back rather than stopping the process: the alternative is a deployment that will
+// not boot because somebody typed "60" instead of "60s", and a wrong-but-working token lifetime is a much
+// smaller problem than an outage. The value is logged so the difference is visible.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		slog.Default().Warn("ignoring an unparseable duration, using the default",
+			"variable", key, "value", raw, "default", fallback.String())
+		return fallback
+	}
+	return parsed
 }
 
 // buildCourier chooses how messages leave the process and wraps it in the durable delivery queue.

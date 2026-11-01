@@ -212,15 +212,74 @@ func sessionCookie(token string, expires time.Time, secure bool) *http.Cookie {
 	}
 }
 
-// sessionResponse writes the token pair, and sets the access cookie for browser clients.
+// refreshCookie carries the single-use refresh token to the browser.
 //
-// The refresh token is returned only in the body, never in a cookie. A refresh token is a 30-day
-// credential and single-use: putting it in a cookie would hand it to every request the browser makes to
-// this origin, for a client that does not currently use it. The web build keeps the 7-day access cookie
-// and signs in again when it expires; native clients keep the pair in secure storage and rotate it.
-func (h *Handlers) sessionResponse(w http.ResponseWriter, r *http.Request, status int, session *Session, extra map[string]any) {
+// Three attributes do the work, and dropping any one of them is a different defect:
+//
+//   - Path=/v1/auth — the token is sent to the three endpoints that need it and to nothing else, so it does
+//     not ride along on every page request, static asset and API call for thirty days.
+//   - HttpOnly — script cannot read it, so an XSS cannot exfiltrate a thirty-day credential.
+//   - SameSite=Lax — another origin cannot trigger the refresh endpoint with the user's cookie.
+//
+// It is only set for the `web` client. A native app keeps the pair in the OS keystore and posts it, and
+// setting a cookie it will never send would be a credential in a place nobody audits.
+func refreshCookie(token string, expires time.Time, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     RefreshCookie,
+		Value:    token,
+		Path:     RefreshCookiePath,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expires,
+		MaxAge:   int(time.Until(expires).Seconds()),
+	}
+}
+
+// wantsCookies reports whether a client that declared itself `client` should be given cookies.
+//
+// The decision is the client's, not the transport's: an undeclared client is a browser (every request before
+// this existed was one), and a native app says `client: "mobile"` and gets the pair in the body only.
+// Inferring it from a User-Agent would be guesswork, and guessing wrong in the permissive direction puts a
+// thirty-day credential in a cookie jar nobody meant to use.
+func wantsCookies(declared string) bool {
+	switch strings.ToLower(strings.TrimSpace(declared)) {
+	case "mobile", "native":
+		return false
+	default:
+		return true
+	}
+}
+
+// clearCookie expires a cookie on the client. The path must match the one it was set with or the browser
+// keeps the original: clearing `edumart_refresh` at Path=/ leaves the /v1/auth cookie alive, which is a
+// sign-out that does not sign anyone out.
+func clearCookie(name, path string, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    "",
+		Path:     path,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+	}
+}
+
+// sessionResponse writes the token pair and sets the browser cookies.
+//
+// Both cookies are set for a `web` client, because both are needed for the rotation to mean anything: an
+// access cookie that outlives the session it belongs to makes /v1/auth/refresh unreachable, which is exactly
+// the state this endpoint was in — rotating tokens with no client that ever rotated them. The refresh token
+// is also still returned in the body, because a native client has no cookie jar and a browser that talks to
+// the API directly keeps working.
+func (h *Handlers) sessionResponse(w http.ResponseWriter, r *http.Request, status int, session *Session, withCookies bool, extra map[string]any) {
 	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, sessionCookie(session.Token, session.ExpiresAt, secure))
+	if session.RefreshToken != "" && withCookies {
+		http.SetCookie(w, refreshCookie(session.RefreshToken, session.RefreshExpiresAt, secure))
+	}
 	body := map[string]any{
 		"token":              session.Token,
 		"expires_at":         session.ExpiresAt,
@@ -244,7 +303,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	h.sessionResponse(w, r, http.StatusCreated, session, map[string]any{"next": "/dashboard"})
+	h.sessionResponse(w, r, http.StatusCreated, session, wantsCookies(in.Client), map[string]any{"next": "/dashboard"})
 	return nil
 }
 
@@ -285,7 +344,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
-	h.sessionResponse(w, r, http.StatusOK, session, map[string]any{"next": nextRoute(session.User)})
+	h.sessionResponse(w, r, http.StatusOK, session, wantsCookies(in.Client), map[string]any{"next": nextRoute(session.User)})
 	return nil
 }
 
@@ -304,9 +363,11 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	fromCookie := false
 	if in.RefreshToken == "" {
 		if cookie, err := r.Cookie(RefreshCookie); err == nil {
 			in.RefreshToken = cookie.Value
+			fromCookie = true
 		}
 	}
 
@@ -321,9 +382,18 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) error {
 
 	session, err := h.svc.Refresh(r.Context(), in.RefreshToken, r.UserAgent())
 	if err != nil {
+		// A dead chain must clear the cookies it can no longer use. Otherwise the browser keeps presenting a
+		// token that will fail forever, and every page load becomes a failed refresh followed by a sign-in
+		// prompt that looks like a session bug rather than the deliberate revocation it is.
+		secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+		http.SetCookie(w, clearCookie(SessionCookie, "/", secure))
+		http.SetCookie(w, clearCookie(RefreshCookie, RefreshCookiePath, secure))
 		return err
 	}
-	h.sessionResponse(w, r, http.StatusOK, session, nil)
+	// A rotation that arrived by cookie is answered by cookie: the browser cannot read an HttpOnly cookie, so
+	// a body-only response would leave it holding a token this call has just retired. A rotation that arrived
+	// in the body is answered in the body, because only a client that reads the body can have sent it.
+	h.sessionResponse(w, r, http.StatusOK, session, fromCookie, nil)
 	return nil
 }
 
@@ -361,7 +431,17 @@ func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
-	http.SetCookie(w, sessionCookie("", time.Now().Add(-time.Hour), true))
+	// Signing out must kill the chain, not just the row the access token names: otherwise the browser's
+	// refresh cookie — or a thief's copy of it — can mint a new session a second later, and "sign out on
+	// this device" is a suggestion.
+	if cookie, err := r.Cookie(RefreshCookie); err == nil && cookie.Value != "" {
+		if err := h.svc.RevokeByRefresh(r.Context(), cookie.Value); err != nil {
+			return err
+		}
+	}
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, clearCookie(SessionCookie, "/", secure))
+	http.SetCookie(w, clearCookie(RefreshCookie, RefreshCookiePath, secure))
 	httpx.JSON(w, http.StatusOK, map[string]any{"signedOut": true})
 	return nil
 }

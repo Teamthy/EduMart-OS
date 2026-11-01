@@ -156,15 +156,33 @@ changing an authorization rule, a money path or the rate limiter.
 | Password storage | Argon2id, m=19 MiB, t=2, p=1 | Memory-hard, not just CPU-hard: a GPU farm has to buy RAM for every parallel guess. Parameters live in the digest, so they can be raised without invalidating anyone |
 | Legacy digests | PBKDF2 still verifies, and is rewritten as Argon2id on next sign-in | Changing the algorithm must never lock a learner out. Sign-in is the only moment the plaintext exists |
 | Tampered digests | Parameters bounded when parsing (≤1 GiB, ≤20 passes, ≤32 lanes) | A compromised row must not be able to make the process allocate a gigabyte per attempt |
-| Access token | Opaque, 7 days, stored as `sha256` | Only a hash is stored, so a database read cannot be replayed as credentials |
+| Access token | Opaque, **1 hour** (was 7 days), stored as `sha256` | Only a hash is stored, so a database read cannot be replayed as credentials. Seven days made rotation decorative: the access cookie outlived every session it could have refreshed, so no browser ever called the refresh endpoint |
 | Refresh token | Opaque, single-use, 30 days, rotated on every exchange | A token used twice is proof that two parties hold it |
+| Refresh cookie | `HttpOnly`, `SameSite=Lax`, `Secure` behind TLS, **`Path=/v1/auth`** | Scoped to the three endpoints that need it: at `Path=/` a 30-day credential rides along on every page, asset and API call. The token is also still returned in the body, because a native client has no cookie jar |
+| Browsers that rotate | The web middleware renews an expired session before the page renders, and stores both rotated cookies | A rotation a browser never performs is a property of the test suite, not the product |
+| Native clients that rotate | The Expo app keeps the pair in secure storage and refreshes **single-flight** on a 401 | A phone waking from sleep fires several requests at once; independent refreshes would replay a retired token and the server would rightly end the session |
 | Reuse detection | Whole *family* revoked (`SESSION_REUSED`) past a 20s grace window | Revoking only the replayed row would leave the thief with a live refresh token while the victim is quietly signed out |
-| Sign-out | Revokes the family | "Sign out this device" has to end the chain, or it is advice rather than a control |
+| Sign-out | Revokes the family, by access token **or** by refresh cookie, and clears both cookies at their own paths | "Sign out this device" has to end the chain, or it is advice rather than a control. Clearing at the wrong path is a no-op, and an expired access cookie must not make sign-out a no-op too |
 | Suspension | Revokes sessions in the same transaction; the refresh path re-checks account status | A chain must not outlive the account's standing |
 
 Two things this does not do, and they are the honest gaps: there is no device-level second factor, and no
 risk signal (new country, impossible travel) that would prompt for re-authentication. The rotation model
 makes a *leaked token* detectable; it does nothing about a *guessed password* on a fresh device.
+
+**The gap that closed here was not in the server.** Rotation, single-use tokens and reuse detection were
+implemented and tested, and no client used them: the web kept a seven-day access cookie and the Expo app kept
+only the access token, so `POST /v1/auth/refresh` was dead code in production and every session quietly lasted
+a week. Both clients now rotate. `scripts/session-lifecycle.py` proves the sequence a learner actually
+experiences — sign in, token expires, session renews, sign out, replay refused — against a real server and a
+real cookie jar, and CI runs it both against the binary and through the web container.
+
+Two defects surfaced only by running it, which is the argument for running it:
+
+- **The middleware refreshed and the page still redirected.** `NextResponse.next({ request: { headers } })`
+  copies the headers when it is constructed, so mutating them afterwards renewed the session for the *next*
+  request and left the current one signed out — a sign-in loop that looks like a session bug.
+- **Sign-out with an expired access cookie revoked nothing.** The handler looked only for the access token;
+  with only the refresh cookie present it cleared a cookie and left the chain alive.
 
 ## Backup, restore and the honest gaps
 

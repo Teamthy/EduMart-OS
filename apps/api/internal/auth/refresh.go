@@ -178,7 +178,7 @@ func (s *Service) createSessionRow(ctx context.Context, userID, userAgent, clien
 	if familyID == "" {
 		familyID = sessionID
 	}
-	expires := time.Now().UTC().Add(sessionTTL)
+	expires := time.Now().UTC().Add(s.AccessTTL())
 	refreshExpires := time.Now().UTC().Add(refreshTTL)
 
 	if _, err := s.db.DB.ExecContext(ctx, `
@@ -200,6 +200,31 @@ func (s *Service) createSessionRow(ctx context.Context, userID, userAgent, clien
 		sessionID: sessionID,
 		familyID:  familyID,
 	}, nil
+}
+
+// RevokeByRefresh ends the chain a refresh token belongs to.
+//
+// Signing out has to revoke the family rather than one row: the browser holds a refresh cookie, and revoking
+// only the access session leaves that cookie able to mint a fresh one a second later. A sign-out that does
+// not sign anyone out is worse than no sign-out button, because it is trusted.
+func (s *Service) RevokeByRefresh(ctx context.Context, refreshToken string) error {
+	refreshToken = trimToken(refreshToken)
+	if refreshToken == "" {
+		return nil
+	}
+	var familyID string
+	err := s.db.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(family_id, id) FROM sessions WHERE refresh_token_hash = ?`,
+		hashToken(refreshToken)).Scan(&familyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The chain is already gone: a second sign-out, or a rotation that ended it. Nothing to revoke, and
+		// nothing worth telling the caller about.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.RevokeFamily(ctx, familyID)
 }
 
 // RevokeFamily revokes every live session descended from one sign-in.

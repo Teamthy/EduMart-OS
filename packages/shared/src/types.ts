@@ -146,6 +146,15 @@ export interface SessionResponse {
   expires_at: string;
   user: User;
   next: string;
+  /**
+   * The single-use refresh token. Present for every client — a browser also receives it as an HttpOnly
+   * cookie scoped to `/v1/auth`, but a native app has no cookie jar and must keep this pair itself.
+   *
+   * Optional in the type because an older server may not send it; a client that needs to rotate should treat
+   * its absence as "this session cannot be renewed" rather than refreshing with `undefined`.
+   */
+  refresh_token?: string;
+  refresh_expires_at?: string;
 }
 
 // ── taxonomy ──────────────────────────────────────────────────────────────
