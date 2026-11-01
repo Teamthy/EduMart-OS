@@ -32,6 +32,10 @@ export default function TabsLayout() {
         options={{ title: "Practice", tabBarIcon: ({ focused }) => <TabGlyph label="✎" focused={focused} /> }}
       />
       <Tabs.Screen
+        name="live"
+        options={{ title: "Live", tabBarIcon: ({ focused }) => <TabGlyph label="◉" focused={focused} /> }}
+      />
+      <Tabs.Screen
         name="progress"
         options={{ title: "Progress", tabBarIcon: ({ focused }) => <TabGlyph label="▤" focused={focused} /> }}
       />

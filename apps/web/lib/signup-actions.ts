@@ -86,6 +86,7 @@ export async function createAccount(_prev: StepState, formData: FormData): Promi
     displayName: draft.displayName,
     email: draft.email,
     referralCode: draft.referralCode,
+    accountType: draft.accountType,
   });
   if (!nameStep.ok) return nameStep;
 
@@ -93,6 +94,8 @@ export async function createAccount(_prev: StepState, formData: FormData): Promi
     const response = await serverFetch<{ token: string; user: { id: string }; next: string }>("/v1/auth/register", {
       method: "POST",
       body: {
+        // Intent only: the API stores it and routes onboarding. It grants no role.
+        accountType: draft.accountType,
         displayName: draft.displayName.trim(),
         email: draft.email.trim().toLowerCase(),
         password: draft.password,
@@ -153,6 +156,7 @@ async function mergedDraft(formData: FormData) {
 function draftFromForm(formData: FormData): SignupDraft {
   const raw = formData.get("draft");
   let base: SignupDraft = {
+    accountType: "student",
     examPathwayKey: "",
     examPathwayId: "",
     subjectIds: [],
@@ -179,6 +183,7 @@ function draftFromForm(formData: FormData): SignupDraft {
 
   return {
     ...base,
+    accountType: (value("accountType") as SignupDraft["accountType"]) ?? base.accountType,
     examPathwayKey: value("examPathwayKey") ?? base.examPathwayKey,
     examPathwayId: value("examPathwayId") ?? base.examPathwayId,
     targetDate: value("targetDate") ?? base.targetDate,

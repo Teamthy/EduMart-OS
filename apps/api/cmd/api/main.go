@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
+	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
 )
 
 // version is the release identity, set at build time:
@@ -148,13 +150,20 @@ func main() {
 	institutions := orgs.New(db).WithNotifier(notifier, webURL)
 
 	router := api.NewRouter(api.Deps{
-		Store:    db,
-		Auth:     authService,
-		Items:    content.New(db),
-		Exams:    assessment.New(db),
-		Classes:  classroom.New(db),
-		Shop:     shop,
-		Rewards:  rewards.New(db),
+		Store:   db,
+		Auth:    authService,
+		Items:   content.New(db),
+		Exams:   assessment.New(db),
+		Classes: classroom.New(db),
+		Shop:    shop,
+		Rewards: rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
+		Live: virtualclass.New(db, virtualclass.Config{
+			WebURL: webURL,
+			// STUN alone gets two peers on ordinary home networks connected. A TURN relay is what makes
+			// the room work behind a symmetric NAT, and it is configuration rather than code because a
+			// relay is bandwidth an operator has to pay for.
+			ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
+		}),
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
@@ -342,4 +351,40 @@ func reminderInterval() time.Duration {
 		return 5 * time.Minute
 	}
 	return parsed
+}
+
+// parseRates reads EDUMART_REFERRAL_RATES (e.g. "10,3,1") into a commission schedule. A malformed list is
+// ignored rather than fatal: a typo in an optional incentive setting should not stop the API from booting.
+func parseRates(raw string) []int {
+	rates := []int{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil {
+			return rewards.DefaultRates
+		}
+		rates = append(rates, value)
+	}
+	if len(rates) == 0 {
+		return rewards.DefaultRates
+	}
+	return rates
+}
+
+// parseICEServers reads EDUMART_ICE_SERVERS as a JSON array of RTCPeerConnection iceServers entries. The
+// default is a public STUN server, which is enough to negotiate a direct path and not enough to guarantee
+// one, so /v1/virtual-classes/{id}/ice reports exactly what the deployment configured.
+func parseICEServers(raw string) []map[string]any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []map[string]any{{"urls": []string{"stun:stun.l.google.com:19302"}}}
+	}
+	var servers []map[string]any
+	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+		return []map[string]any{{"urls": []string{"stun:stun.l.google.com:19302"}}}
+	}
+	return servers
 }

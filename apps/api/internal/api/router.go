@@ -24,6 +24,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
+	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
 )
 
 // Config carries runtime settings that affect routing.
@@ -60,6 +61,7 @@ type Deps struct {
 	Orgs     *orgs.Service
 	Notifier *notify.Service
 	Finder   *search.Service
+	Live     *virtualclass.Service
 	Logger   *slog.Logger
 	Config   Config
 }
@@ -87,6 +89,7 @@ func NewRouter(d Deps) http.Handler {
 	signupHandlers := signup.NewHandlers(d.Signup)
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 	searchHandlers := search.NewHandlers(d.Finder, d.Logger)
+	liveHandlers := virtualclass.NewHandlers(d.Live)
 
 	// Forwarded headers are believed only when an operator has said a proxy is in front of us. Without
 	// this, a caller rotating X-Forwarded-For bypasses every rate limit in the system.
@@ -249,10 +252,42 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/webhooks/payments/{provider}", wrap(commerceHandlers.Webhook))
 		})
 
+		// ── live classes ─────────────────────────────────────────────────
+		// Any signed-in account can host, so the authority that matters is per-class, not per-role: only
+		// the host starts, ends and prices the room, and every other route checks the caller is seated.
+		// The invite link is the one anonymous route: it answers "what is this and what does it cost?"
+		// before asking a visitor for an account.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("virtual-class-invite", 120, time.Minute))
+			g.Get("/join/{slug}", wrap(liveHandlers.Resolve))
+		})
+		v1.Group(func(g chi.Router) {
+			// The room polls: board reads and signalling polls are long-ish requests by design, so this
+			// budget is per minute per caller rather than per request.
+			g.Use(limiter.Limit("virtual-class", 600, time.Minute))
+			g.Get("/virtual-classes", wrap(liveHandlers.List))
+			g.Post("/virtual-classes", wrap(liveHandlers.Create))
+			g.Get("/virtual-classes/{id}", wrap(liveHandlers.Get))
+			g.Post("/virtual-classes/{id}/join", wrap(liveHandlers.Join))
+			g.Post("/virtual-classes/{id}/leave", wrap(liveHandlers.Leave))
+			g.Post("/virtual-classes/{id}/start", wrap(liveHandlers.Start))
+			g.Post("/virtual-classes/{id}/end", wrap(liveHandlers.End))
+			g.Get("/virtual-classes/{id}/roster", wrap(liveHandlers.Roster))
+			g.Get("/virtual-classes/{id}/ice", wrap(liveHandlers.ICE))
+			g.Get("/virtual-classes/{id}/board", wrap(liveHandlers.Board))
+			g.Post("/virtual-classes/{id}/board", wrap(liveHandlers.Board))
+			g.Get("/virtual-classes/{id}/signal", wrap(liveHandlers.Signal))
+			g.Post("/virtual-classes/{id}/signal", wrap(liveHandlers.Signal))
+			g.Get("/virtual-classes/{id}/attendance", wrap(liveHandlers.Attendance))
+			g.Get("/virtual-classes/{id}/discount-codes", wrap(liveHandlers.DiscountCodes))
+			g.Post("/virtual-classes/{id}/discount-codes", wrap(liveHandlers.DiscountCodes))
+		})
+
 		// ── rewards ──────────────────────────────────────────────────────
 		v1.Get("/rewards", wrap(rewardsHandlers.Summary))
 		v1.Post("/rewards/redeem", wrap(rewardsHandlers.Redeem))
 		v1.Get("/referrals/me", wrap(rewardsHandlers.ReferralCode))
+		v1.Get("/referrals/tree", wrap(rewardsHandlers.Tree))
 
 		// ── support and staff ────────────────────────────────────────────
 		v1.Post("/support-cases", wrap(staffHandlers.OpenCase))

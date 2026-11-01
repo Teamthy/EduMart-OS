@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
@@ -359,45 +360,62 @@ func settleRefundInTx(ctx context.Context, tx *sql.Tx, refundID, providerReferen
 	return &refund, true, nil
 }
 
-// reverseCommissionInTx appends the correcting entry in the commission ledger.
+// reverseCommissionInTx appends the correcting entries in the commission ledger.
 //
 // Proportional, because money out has to take the same fraction of the incentive with it: a half refund
-// that leaves the full commission in place turns a refund into a payout. The entry is a negative row keyed
-// on the refund id, so it is written once per refund however many times the refund settles.
+// that leaves the full commission in place turns a refund into a payout. One entry is written **per level**,
+// because commission is now paid up a chain and a single slice would reverse level 1's share while leaving
+// levels 2 and 3 whole. Each entry is keyed on the refund id and the level, so it is written once per refund
+// however many times the refund settles.
 func reverseCommissionInTx(ctx context.Context, tx *sql.Tx, refundID, orderID string, amountMinor, totalMinor int, currency string) error {
 	if totalMinor <= 0 {
 		return nil
 	}
-	var commissionPaid int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(amount_minor), 0) FROM commission_ledger_entries
-		 WHERE source_type = 'order' AND source_id = ?`, orderID).Scan(&commissionPaid); err != nil {
-		return err
-	}
-	if commissionPaid <= 0 {
-		return nil
-	}
-	var ownerID string
-	err := tx.QueryRowContext(ctx, `
-		SELECT user_id FROM commission_ledger_entries
+	rows, err := tx.QueryContext(ctx, `
+		SELECT user_id, referral_level, COALESCE(SUM(amount_minor), 0)
+		  FROM commission_ledger_entries
 		 WHERE source_type = 'order' AND source_id = ? AND entry_type = 'earn'
-		 ORDER BY created_at LIMIT 1`, orderID).Scan(&ownerID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		 GROUP BY user_id, referral_level
+		 ORDER BY referral_level`, orderID)
+	if err != nil {
 		return err
 	}
-	reversal := commissionPaid * amountMinor / totalMinor
-	if reversal <= 0 {
-		return nil
+	type levelPay struct {
+		ownerID string
+		level   int
+		paid    int
 	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO commission_ledger_entries
-			(id, user_id, amount_minor, currency, entry_type, source_type, source_id,
-			 status, idempotency_key, created_at)
-		VALUES (?,?,?,?,'reversal','refund',?,'pending',?,?)
-		ON CONFLICT (idempotency_key) DO NOTHING`,
-		store.NewID(), ownerID, -reversal, currency, refundID,
-		"commission:reversal:"+refundID, store.Now())
-	return err
+	var pays []levelPay
+	for rows.Next() {
+		var p levelPay
+		if err := rows.Scan(&p.ownerID, &p.level, &p.paid); err != nil {
+			rows.Close()
+			return err
+		}
+		pays = append(pays, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, p := range pays {
+		reversal := p.paid * amountMinor / totalMinor
+		if reversal <= 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO commission_ledger_entries
+				(id, user_id, amount_minor, currency, entry_type, source_type, source_id,
+				 status, idempotency_key, referral_level, created_at)
+			VALUES (?,?,?,?,'reversal','refund',?,'pending',?,?,?)
+			ON CONFLICT (idempotency_key) DO NOTHING`,
+			store.NewID(), p.ownerID, -reversal, currency, refundID,
+			"commission:reversal:"+refundID+":L"+strconv.Itoa(p.level), p.level, store.Now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ResolveRefund lets a human settle a refund the provider left ambiguous.

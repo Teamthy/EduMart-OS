@@ -7,7 +7,10 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with session rotation: the browser and the native app now rotate refresh tokens, so an hour-long
+Last updated with live classes and multi-level referrals: a scheduled room that learners enter with credits or a
+discount code, peer-to-peer encrypted audio/video and whiteboard, presence by heartbeat, avatars, attendance by
+measurement and a shareable link; and commission that walks the referral chain for students, tutors and
+institutions alike. Before that, session rotation: the browser and the native app now rotate refresh tokens, so an hour-long
 access token is a real bound rather than a number nothing enforced. Before that, the rolling rollout: the API is a tested container image, and the swap that an orchestrator
 performs — surge, drain, then abort halfway — is executed under continuous traffic on every pull request, with
 two deliberately broken rollouts proving the gate still fails. Before that, search closed the last "lists only" gap,
@@ -23,7 +26,7 @@ survive.
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
-| 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
+| 6 | API platform and contracts | Done | 100 routes, contract checked in CI (every router path must be documented or the gate fails) |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, and **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **No device-level 2FA, no IP/geo risk signals** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
@@ -40,7 +43,7 @@ survive.
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
 | 22 | Commerce and payments | Partial | Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
-| 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and refunds now reverse commission proportionally; **no payouts** |
+| 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and **commission that walks the whole referral chain**: `referral_level` on every ledger row, 10/3/1% by default (`EDUMART_REFERRAL_RATES`), a per-level idempotency key, a cycle guard, a level-aware refund reversal, and `GET /v1/referrals/tree`; refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Partial | Prefix search across the catalogue and syllabus, public, with ranking that is identical on both engines and visibility re-checked against the source tables on every query; **no stemming, no typo tolerance, no question-bank search, no relevance evaluation** |
@@ -48,6 +51,12 @@ survive.
 | 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
 | 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors), seven invariants proved to hold afterwards in CI, and accessibility now gated on contrast and structure; **no device matrix, no screen-reader or keyboard-only pass, no production-sized dataset, no soak run** |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
+
+Live classes are new and start **Partial**: scheduling, credits-or-discount joining, capacity, presence, roster with
+avatars, an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report and a
+shareable link all work and are covered by tests on both database engines — but with no TURN relay and no SFU the
+room is honest at 6–8 participants, and the mobile app opens the invite rather than hosting the room. See
+[`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
 
 **Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
 been measured under load and its invariants proved to survive it. The remaining work is real, not polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do
@@ -287,6 +296,25 @@ creates it that way.
 
 Still missing: org-scoped reporting and analytics, membership suspension, ownership transfer, an admin
 surface that lists pending organisations, organisation-level billing, and SSO.
+
+### Virtual classes — the room, and the two things it refuses to do
+
+| Piece | Where | Test |
+| --- | --- | --- |
+| Scheduling, price in credits or free | `POST /v1/virtual-classes`, `apps/api/internal/virtualclass` | `TestLiveClassJoinChargesCreditsOnce`, `TestLiveClassIsFreeWhenTheHostPays` |
+| Discount codes | `POST /v1/virtual-classes/{id}/discount-codes` | `TestLiveClassDiscountCodeIsSingleUse` |
+| Capacity and idempotent join | lock + unique attendee + ledger key | `TestLiveClassCapacityIsAFact`, `TestLiveClassRefusesWhenCreditsAreShort` |
+| Host-only start/end/attendance | per-class authority | `TestOnlyTheHostRunsTheRoom` |
+| Encrypted whiteboard with replay | `…/board`, dense `seq` | `TestWhiteboardIsStoredAsOpaqueOrderedCiphertext` |
+| Presence as heartbeat | 75 s window | `TestPresenceIsAHeartbeatNotAFlag` |
+| Signalling relay | `…/signal`, members only | `TestSignallingRelayIsTargetedAndMemberOnly` |
+| Shareable link | `GET /v1/join/{slug}` | `TestInviteLinkResolvesWithoutAnAccount` |
+| Session tracking | `…/attendance` | `TestAttendanceRecordsTheSession` |
+
+The two refusals are the point: **no media through the server** (WebRTC mesh under DTLS-SRTP, so the API cannot
+record) and **no whiteboard plaintext** (opaque ciphertext under a room key the server never receives). Both are
+what make the encryption claim true rather than aspirational, and both are the reason an SFU or cloud recording
+would be a re-architecture rather than a feature.
 
 ### Phase 19 — Classrooms and assignments · Partial
 

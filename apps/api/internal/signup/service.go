@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/teamthy/edumart/apps/api/internal/auth"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
@@ -54,6 +55,9 @@ type Payload struct {
 	DisplayName    string   `json:"displayName"`
 	Email          string   `json:"email"`
 	Timezone       string   `json:"timezone"`
+	// AccountType is the student/tutor/institution choice. Persisting it in the draft is what lets the
+	// account step, and a resumed session on another device, agree on what the wizard is building.
+	AccountType string `json:"accountType"`
 }
 
 // Patch applies a partial update. Only provided fields change, so two devices editing different
@@ -68,6 +72,7 @@ type Patch struct {
 	DisplayName    *string   `json:"displayName"`
 	Email          *string   `json:"email"`
 	Timezone       *string   `json:"timezone"`
+	AccountType    *string   `json:"accountType"`
 	ReferralCode   *string   `json:"referralCode"`
 }
 
@@ -96,7 +101,7 @@ func newToken() string {
 func (s *Service) Create(ctx context.Context, referralCode string) (*Draft, error) {
 	token := newToken()
 	now := store.Now()
-	payload := Payload{Timezone: "Africa/Lagos", DailyMinutes: 30, SubjectIDs: []string{}}
+	payload := Payload{Timezone: "Africa/Lagos", DailyMinutes: 30, SubjectIDs: []string{}, AccountType: "student"}
 	raw, _ := json.Marshal(payload)
 
 	_, err := s.db.DB.ExecContext(ctx, `INSERT INTO signup_drafts
@@ -196,6 +201,13 @@ func (s *Service) Update(ctx context.Context, token string, patch Patch) (*Draft
 	}
 	if patch.Timezone != nil && *patch.Timezone != "" {
 		payload.Timezone = *patch.Timezone
+	}
+	if patch.AccountType != nil {
+		if !auth.ValidAccountType(strings.TrimSpace(*patch.AccountType)) {
+			return nil, httpx.Validation([]httpx.FieldError{{Field: "accountType",
+				Message: "Choose a student, tutor or institution account."}})
+		}
+		payload.AccountType = strings.TrimSpace(*patch.AccountType)
 	}
 	if patch.ReferralCode != nil {
 		referral = strings.ToUpper(strings.TrimSpace(*patch.ReferralCode))

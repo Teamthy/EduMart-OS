@@ -34,4 +34,11 @@ data:
   # Migrations are a deploy step (`-migrate-only`, run by the Job), never a boot side effect. Replicas verify
   # the ledger instead, so exactly one process ever changes the schema during a rollout.
   EDUMART_MIGRATE_ON_BOOT: "false"
+  # Referral commission by level: direct referrer, their referrer, and one more. Depth is a configuration
+  # decision because every extra level pays somebody with no relationship to the customer.
+  EDUMART_REFERRAL_RATES: "10,3,1"
+  # ICE servers for live classes, as the JSON a browser passes to RTCPeerConnection. STUN alone gets most home
+  # networks connected; peers behind a symmetric NAT need a TURN relay, which is bandwidth an operator pays
+  # for, so it is configured here rather than assumed. Credentials belong in 11-secrets.
+  EDUMART_ICE_SERVERS: '[{"urls":["stun:stun.l.google.com:19302"]}]' 
   EDUMART_MIGRATION_LOCK_TIMEOUT: 60s

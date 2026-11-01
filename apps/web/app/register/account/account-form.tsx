@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 
-import type { SignupDraft } from "@edumart/shared";
+import { ACCOUNT_TYPES, type SignupDraft } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,40 @@ export function AccountForm({ draft }: { draft: SignupDraft }) {
           {state.requestId ? <span className="mt-1 block text-xs opacity-70">Request {state.requestId}</span> : null}
         </Alert>
       ) : null}
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">What kind of account is this?</legend>
+        <p id="accountType-hint" className="text-xs text-muted-foreground">
+          This shapes your onboarding. It grants no permissions: an institution is verified by an administrator
+          before it can run classes, and a tutor is invited by a school before teaching inside one.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {ACCOUNT_TYPES.map((option) => (
+            <label
+              key={option.value}
+              className="flex cursor-pointer items-start gap-2 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+            >
+              <input
+                type="radio"
+                name="accountType"
+                value={option.value}
+                defaultChecked={draft.accountType === option.value}
+                className="mt-1 size-4 accent-current"
+                aria-describedby="accountType-hint"
+              />
+              <span>
+                <span className="block font-medium">{option.label}</span>
+                <span className="block text-xs text-muted-foreground">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {state.errors.accountType ? (
+          <p className="text-xs text-destructive" role="alert">
+            {state.errors.accountType}
+          </p>
+        ) : null}
+      </fieldset>
 
       <Field id="displayName" label="Full name" required error={state.errors.displayName}>
         <Input
