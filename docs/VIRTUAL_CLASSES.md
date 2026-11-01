@@ -64,7 +64,18 @@ A free class (`creditsCost: 0`) is capped at **45 minutes**:
   stated length defaults to 45 (a paid class defaults to 60);
 - at the door, `requireOpen` closes a free room whose session started more than 45 minutes ago — seating,
   joining, publishing and drawing all go through it. Merely refusing the caller would leave the seats and the
-  stage open past the booking, so the class is ended and its attendance closed.
+  stage open past the booking, so the class is ended and its attendance closed;
+- on the clock, `CloseExpiredFree` runs every 60 seconds from the API process and closes free classes whose
+  forty-five minutes are up. This is the half the door cannot do: a host who starts a free class and walks
+  away never makes a request, so without the sweep the room stays `live` and the session row stays open. It
+  is safe on every replica — the closing `UPDATE` is conditional on the class not already being ended, so
+  concurrent sweeps converge instead of fighting — and a second sweep in the same minute closes nothing.
+
+All three paths converge on one `closeRoom`, which ends the class, closes the open session, releases every
+seat and asks the forwarder to drop the room's sockets. Three copies of that would be three chances to leave
+a session row open. The paid-class exemption is part of the sweep's SQL rather than a check after the fact:
+`TestAFreeClassClosesItselfWithoutAnyoneKnocking` starts a free class and a paid one, backdates both sessions,
+runs the sweep, and asserts the free one is `ended` with no open session while the paid one is still `live`.
 
 Paid classes run for the length their host booked, up to 480 minutes.
 

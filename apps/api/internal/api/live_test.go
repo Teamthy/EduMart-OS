@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -780,4 +781,72 @@ func testOfferSDP(t *testing.T) string {
 		builder.WriteString("a=setup:actpass\r\na=mid:" + strconv.Itoa(mid+1) + "\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n")
 	}
 	return builder.String()
+}
+
+// TestAFreeClassClosesItselfWithoutAnyoneKnocking is the half of the forty-five minute rule that the door
+// cannot enforce.
+//
+// requireOpen refuses a late arrival, which is only useful if somebody arrives: a host who starts a free
+// class and walks away leaves the room listed as live, the stage up and the session row unfinished. The
+// sweep is what makes the limit a property of the clock. The session is backdated instead of waiting
+// forty-five minutes, because a test that sleeps is a test nobody runs.
+func TestAFreeClassClosesItselfWithoutAnyoneKnocking(t *testing.T) {
+	h := newHarness(t)
+	host := h.registerAndVerify("sweep-host@example.com")
+
+	free := h.createLiveClass(t, host, map[string]any{"title": "Free Clinic", "creditsCost": 0})
+	freeID := free["id"].(string)
+	if status, body := h.do("POST", "/v1/virtual-classes/"+freeID+"/join", host, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("join: %d %v", status, body)
+	}
+	if status, body := h.do("POST", "/v1/virtual-classes/"+freeID+"/start", host, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("start: %d %v", status, body)
+	}
+	// A class that costs credits keeps the length its host booked, so it must survive the same sweep.
+	paid := h.createLiveClass(t, host, map[string]any{"title": "Paid Clinic", "creditsCost": 30, "durationMinutes": 90})
+	paidID := paid["id"].(string)
+	if status, body := h.do("POST", "/v1/virtual-classes/"+paidID+"/join", host, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("paid join: %d %v", status, body)
+	}
+	if status, body := h.do("POST", "/v1/virtual-classes/"+paidID+"/start", host, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("paid start: %d %v", status, body)
+	}
+
+	// Both sessions started more than forty-five minutes ago.
+	backdated := time.Now().UTC().Add(-46 * time.Minute).Format("2006-01-02T15:04:05.000Z")
+	if _, err := h.store.DB.Exec(`UPDATE virtual_class_sessions SET started_at = ? WHERE class_id IN (?, ?)`,
+		backdated, freeID, paidID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	closed, err := h.live.CloseExpiredFree(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("the sweep must close exactly the free class, closed %d", closed)
+	}
+
+	if status, body := h.do("GET", "/v1/virtual-classes/"+freeID, host, nil); status != http.StatusOK {
+		t.Fatalf("free class: %d %v", status, body)
+	} else if class := body["class"].(map[string]any); class["status"] != "ended" {
+		t.Fatalf("a free class past forty-five minutes must be ended, got %v", class["status"])
+	}
+	var open int
+	if err := h.store.DB.QueryRow(`SELECT COUNT(*) FROM virtual_class_sessions WHERE class_id = ? AND ended_at IS NULL`, freeID).Scan(&open); err != nil {
+		t.Fatalf("count open sessions: %v", err)
+	}
+	if open != 0 {
+		t.Fatalf("the session row must be closed too, %d still open", open)
+	}
+	if status, body := h.do("GET", "/v1/virtual-classes/"+paidID, host, nil); status != http.StatusOK {
+		t.Fatalf("paid class: %d %v", status, body)
+	} else if class := body["class"].(map[string]any); class["status"] != "live" {
+		t.Fatalf("a paid class must keep its booked length, got %v", class["status"])
+	}
+
+	// A second sweep is a no-op rather than an error: every replica runs one.
+	if again, err := h.live.CloseExpiredFree(context.Background(), 50); err != nil || again != 0 {
+		t.Fatalf("a second sweep must close nothing: %d %v", again, err)
+	}
 }

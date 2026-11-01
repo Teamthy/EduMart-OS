@@ -319,7 +319,7 @@ surface that lists pending organisations, organisation-level billing, and SSO.
 | Session tracking | `…/attendance` | `TestAttendanceRecordsTheSession` |
 | Fifty seats, really | `apps/api/internal/media` (forwarder), capacity clamped at the door | `TestRoomHoldsFiftyPeople` |
 | Six-seat stage, server-assigned | `…/stage`, `…/media` | `TestStageGrantsTheSlotAndTheMediaServerAgrees` |
-| A free class is 45 minutes | create-time rule **and** `requireOpen` at the door | `TestFreeClassIsCappedAtFortyFiveMinutes` |
+| A free class is 45 minutes | create-time rule, `requireOpen` at the door, and a 60-second `CloseExpiredFree` sweep for the host who walks away | `TestFreeClassIsCappedAtFortyFiveMinutes`, `TestAFreeClassClosesItselfWithoutAnyoneKnocking` |
 | Consistency without a counter | `GET /v1/consistency`, derived from activity rows | `TestConsistencyIsDerivedFromActivity` |
 
 **What changed about the encryption claim, and why it had to.** A mesh cannot hold fifty people: every
