@@ -213,8 +213,8 @@ Reachability has a relay. `internal/relay` runs a TURN server in the API process
   by the operator.
 
 What that does not fix: a relayed connection is still terminated by our forwarder, so media stays **hop-by-hop**
-encrypted rather than end-to-end, and a participant who blocks UDP entirely needs a `turns:`/TCP service this
-repository does not host. The room now holds **50 people** because media is forwarded by an in-process media
+encrypted rather than end-to-end. A participant who blocks UDP entirely is served by the relay's TCP endpoint
+(`?transport=tcp`, `turns:` when a certificate is configured), which is the same process and the same credentials. The room now holds **50 people** because media is forwarded by an in-process media
 server rather than meshed — which changes what "encrypted" means for audio and video: DTLS-SRTP protects each
 leg, but the server terminates both, so media is **hop-by-hop** encrypted. The forwarder records nothing and has
 no write path, and the whiteboard and chat keep their end-to-end property (the board key travels in the link's

@@ -177,11 +177,17 @@ func main() {
 		ttl := time.Duration(number(env("EDUMART_TURN_TTL_MINUTES", "60"))) * time.Minute
 		started, relayErr := relay.New(relay.Config{
 			ListenUDP: env("EDUMART_TURN_LISTEN", "0.0.0.0:3478"),
-			PublicIP:  env("EDUMART_TURN_PUBLIC_IP", ""),
-			Realm:     env("EDUMART_TURN_REALM", "edumart"),
-			Secret:    secret,
-			TTL:       ttl,
-			Logger:    logger,
+			// UDP is blocked on some networks — school and corporate firewalls, some carriers — so the relay
+			// also speaks TCP on the same port, and TLS when a certificate is supplied. Both are opt-in: an
+			// endpoint is only advertised when its listener actually bound.
+			ListenTCP:   env("EDUMART_TURN_LISTEN_TCP", env("EDUMART_TURN_LISTEN", "0.0.0.0:3478")),
+			TLSCertFile: env("EDUMART_TURN_TLS_CERT", ""),
+			TLSKeyFile:  env("EDUMART_TURN_TLS_KEY", ""),
+			PublicIP:    env("EDUMART_TURN_PUBLIC_IP", ""),
+			Realm:       env("EDUMART_TURN_REALM", "edumart"),
+			Secret:      secret,
+			TTL:         ttl,
+			Logger:      logger,
 		})
 		if relayErr != nil {
 			// Fail closed: a relay that cannot start would leave every restrictive network silently

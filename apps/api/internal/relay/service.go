@@ -25,6 +25,7 @@ package relay
 import (
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is what the TURN REST credential scheme specifies.
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -47,6 +48,18 @@ const DefaultTTL = time.Hour
 type Config struct {
 	// ListenUDP is the address the server binds, e.g. "0.0.0.0:3478".
 	ListenUDP string
+	// ListenTCP is the address for the TCP listener, e.g. "0.0.0.0:3478". Optional.
+	//
+	// UDP is blocked outright on some networks — school and corporate firewalls, and some mobile carriers — and
+	// a browser on one of those joins a room and hears nothing. `turn:` over TCP uses the same port and the
+	// same credentials and gets through a firewall that only permits TLS or plain TCP outbound. Advertising a
+	// URL nothing listens on is the failure this package exists to prevent, so the endpoint is only advertised
+	// when the listener actually bound.
+	ListenTCP string
+	// TLSCertFile and TLSKeyFile turn the TCP listener into `turns:`. Both are required to serve TLS; one
+	// without the other is a configuration mistake and is refused rather than silently downgraded to TCP.
+	TLSCertFile string
+	TLSKeyFile  string
 	// PublicIP is the address clients are told to send to, and the address relays allocate on. It is required:
 	// a relay that advertises the wrong address is worse than none, because the client waits for media that
 	// nobody will ever send.
@@ -65,9 +78,14 @@ type Config struct {
 type Service struct {
 	server *turn.Server
 	conn   net.PacketConn
-	cfg    Config
-	ttl    time.Duration
-	logger *slog.Logger
+	// tcpListener is the plain-TCP endpoint, when one was asked for and bound.
+	tcpListener net.Listener
+	// tlsEnabled records whether that listener is wrapped in TLS, because the advertised scheme is
+	// `turns:` when it is and `turn:` when it is not.
+	tlsEnabled bool
+	cfg        Config
+	ttl        time.Duration
+	logger     *slog.Logger
 	// now is injectable so a test can mint an already-expired credential without sleeping through it.
 	now func() time.Time
 }
@@ -99,6 +117,45 @@ func New(cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("relay: bind %s: %w", listen, err)
 	}
 
+	// The same relay address generator serves every listener: an allocation made over TCP is still UDP to the
+	// peer, and must advertise the address the peer was told about.
+	generator := &turn.RelayAddressGeneratorStatic{RelayAddress: ip, Address: "0.0.0.0"}
+
+	listenerConfigs := []turn.ListenerConfig{}
+	var tcpListener net.Listener
+	tlsEnabled := false
+	if listenTCP := strings.TrimSpace(cfg.ListenTCP); listenTCP != "" {
+		hasCert, hasKey := strings.TrimSpace(cfg.TLSCertFile) != "", strings.TrimSpace(cfg.TLSKeyFile) != ""
+		if hasCert != hasKey {
+			_ = conn.Close()
+			return nil, errors.New("relay: TLS needs both a certificate and a key; one without the other would " +
+				"silently serve plaintext")
+		}
+		listener, listenErr := net.Listen("tcp", listenTCP)
+		if listenErr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("relay: bind %s/tcp: %w", listenTCP, listenErr)
+		}
+		if hasCert {
+			certificate, certErr := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+			if certErr != nil {
+				_ = listener.Close()
+				_ = conn.Close()
+				return nil, fmt.Errorf("relay: load TLS certificate: %w", certErr)
+			}
+			listener = tls.NewListener(listener, &tls.Config{
+				Certificates: []tls.Certificate{certificate},
+				MinVersion:   tls.VersionTLS12,
+			})
+			tlsEnabled = true
+		}
+		tcpListener = listener
+		listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
+			Listener:              listener,
+			RelayAddressGenerator: generator,
+		})
+	}
+
 	loggerFactory := logging.NewDefaultLoggerFactory()
 	server, err := turn.NewServer(turn.ServerConfig{
 		Realm: cfg.Realm,
@@ -107,32 +164,37 @@ func New(cfg Config) (*Service, error) {
 		AuthHandler:   turn.LongTermTURNRESTAuthHandler(cfg.Secret, loggerFactory.NewLogger("relay")),
 		LoggerFactory: loggerFactory,
 		PacketConnConfigs: []turn.PacketConnConfig{{
-			PacketConn: conn,
-			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-				// Relays allocate on the same address clients were told about; anything else is an address
-				// nobody will send to.
-				RelayAddress: ip,
-				Address:      "0.0.0.0",
-			},
+			PacketConn:            conn,
+			RelayAddressGenerator: generator,
 		}},
+		ListenerConfigs: listenerConfigs,
 	})
 	if err != nil {
 		_ = conn.Close()
+		if tcpListener != nil {
+			_ = tcpListener.Close()
+		}
 		return nil, fmt.Errorf("relay: start turn server: %w", err)
 	}
 
 	service := &Service{
-		server: server,
-		conn:   conn,
-		cfg:    cfg,
-		ttl:    ttl,
-		logger: cfg.Logger,
-		now:    func() time.Time { return time.Now().UTC() },
+		server:      server,
+		conn:        conn,
+		tcpListener: tcpListener,
+		tlsEnabled:  tlsEnabled,
+		cfg:         cfg,
+		ttl:         ttl,
+		logger:      cfg.Logger,
+		now:         func() time.Time { return time.Now().UTC() },
 	}
 	if service.logger != nil {
+		tcpAddress := ""
+		if tcpListener != nil {
+			tcpAddress = tcpListener.Addr().String()
+		}
 		service.logger.Info("turn relay listening",
-			"address", conn.LocalAddr().String(), "public_ip", ip.String(), "realm", cfg.Realm,
-			"credential_ttl", ttl.String())
+			"address", conn.LocalAddr().String(), "tcp_address", tcpAddress, "tls", tlsEnabled,
+			"public_ip", ip.String(), "realm", cfg.Realm, "credential_ttl", ttl.String())
 	}
 	return service, nil
 }
@@ -145,6 +207,9 @@ func (s *Service) Close() error {
 	err := s.server.Close()
 	if s.conn != nil {
 		_ = s.conn.Close()
+	}
+	if s.tcpListener != nil {
+		_ = s.tcpListener.Close()
 	}
 	return err
 }
@@ -170,7 +235,21 @@ func (s *Service) URLs() []string {
 	if err != nil {
 		port = "3478"
 	}
-	return []string{"turn:" + net.JoinHostPort(strings.TrimSpace(s.cfg.PublicIP), port) + "?transport=udp"}
+	host := strings.TrimSpace(s.cfg.PublicIP)
+	urls := []string{"turn:" + net.JoinHostPort(host, port) + "?transport=udp"}
+	if s.tcpListener != nil {
+		_, tcpPort, splitErr := net.SplitHostPort(s.tcpListener.Addr().String())
+		if splitErr == nil {
+			// Advertised only because the listener exists: a URL for a port nothing accepts makes a browser
+			// spend its budget on a path that cannot work, and then blame the room.
+			if s.tlsEnabled {
+				urls = append(urls, "turns:"+net.JoinHostPort(host, tcpPort)+"?transport=tcp")
+			} else {
+				urls = append(urls, "turn:"+net.JoinHostPort(host, tcpPort)+"?transport=tcp")
+			}
+		}
+	}
+	return urls
 }
 
 // Credentials mints a username/password pair for one user, valid until the returned time.

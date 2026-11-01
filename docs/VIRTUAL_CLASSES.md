@@ -181,6 +181,8 @@ counted in a column, so it cannot drift from what happened. Days are UTC days an
 | `EDUMART_WEB_URL` | `http://localhost:3000` | Origin of join links and invitation links |
 | `EDUMART_ICE_SERVERS` | one public STUN server | JSON array of iceServers (a hosted TURN service can be listed here) |
 | `EDUMART_TURN_SECRET` | unset — relay off | Switches the self-hosted TURN relay on; also the key its credentials are signed with |
+| `EDUMART_TURN_LISTEN_TCP` | same as `EDUMART_TURN_LISTEN` | TCP listener address, advertised as `?transport=tcp` once bound |
+| `EDUMART_TURN_TLS_CERT` / `_KEY` | unset — plain TCP | Both together turn the TCP endpoint into `turns:`; one without the other is refused at boot |
 | `EDUMART_TURN_PUBLIC_IP` | unset | The address clients are told to send to. Required when the secret is set, because a relay advertising an unreachable address is worse than none |
 | `EDUMART_TURN_LISTEN` | `0.0.0.0:3478` | UDP address the relay binds |
 | `EDUMART_TURN_REALM` | `edumart` | TURN realm; part of the credential hash |
@@ -203,7 +205,9 @@ than an operator's optional extra.
 ### The embedded relay
 
 `EDUMART_TURN_SECRET` switches on a TURN server inside the API process (`internal/relay`, built on
-`pion/turn`). It binds UDP, allocates relay ports on the public address, and authenticates with the
+`pion/turn`). It binds UDP **and TCP on the same port**, optionally TLS
+(`EDUMART_TURN_TLS_CERT` + `EDUMART_TURN_TLS_KEY` turn the TCP endpoint into `turns:`), allocates relay ports on
+the public address, and authenticates with the
 [TURN REST scheme](https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00): the username is
 `<unix expiry>:<user id>` and the password is `base64(HMAC-SHA1(secret, username))`. Three properties are the
 point:
@@ -248,8 +252,12 @@ it changes nothing about who may refer or be referred.
 
 ## What is not built
 
-- No TURN **over TLS** (`turns:`) from the embedded relay: it speaks plain TURN over UDP. A network that blocks
-  UDP entirely needs `turn:…?transport=tcp` or a hosted `turns:` service listed in `EDUMART_ICE_SERVERS`.
+- **No hosted relay and no bandwidth accounting.** The embedded relay speaks `turn:…?transport=udp`,
+  `turn:…?transport=tcp` and — with a certificate — `turns:…?transport=tcp`, so a network that blocks UDP is served
+  by the TCP endpoint. An endpoint is advertised only when its listener actually bound (`relay.URLs`), because a URL
+  for a closed port makes a browser spend its budget on a path that cannot work. Allocations are bounded by
+  credential lifetime, not by a per-user quota, and CI does not open a real TLS listener — the certificate path is
+  covered by the "TLS needs a key too" test, not by a handshake against a public hostname.
 - No relay accounting: allocations are bounded by credential lifetime, not by a per-user bandwidth quota.
 - No recording, transcription or captions.
 - No mobile video room: the mobile app lists classes and sittings and opens the link; the room itself is the web
