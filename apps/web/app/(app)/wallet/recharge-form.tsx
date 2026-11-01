@@ -46,6 +46,14 @@ export function RechargeForm({ wallet, sandboxEnabled }: { wallet: WalletView; s
     setNotice(null);
     try {
       const { topup } = await api().startTopup(amountMinor);
+      if (topup.checkoutUrl) {
+        // A live provider handed us a hosted payment page. Navigating away is the whole point of the
+        // recharge, and the credits appear when the provider's signed webhook settles — not when this
+        // browser comes back.
+        setNotice(`Redirecting to the payment page for recharge ${topup.reference}…`);
+        window.location.assign(topup.checkoutUrl);
+        return;
+      }
       setPendingId(topup.id);
       setNotice(
         sandboxEnabled

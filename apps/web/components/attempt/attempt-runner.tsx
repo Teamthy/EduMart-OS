@@ -98,6 +98,56 @@ export function AttemptRunner({ session }: { session: AssessmentSessionView }) {
     };
   }, []);
 
+  /**
+   * Integrity signals.
+   *
+   * The candidate's browser reports on itself: the tab lost focus, fullscreen was left, text was pasted. The
+   * server records it against this attempt and the host's report shows the tally beside the score, which is the
+   * difference between "a clean result" and "a clean result after six interruptions".
+   *
+   * What this is not: video proctoring. It proves nothing about who was at the keyboard, and it fails silently
+   * if the client lies — so it is evidence, not a verdict. Reports are best-effort and never block answering:
+   * a learner must not lose a question because a telemetry call failed.
+   */
+  useEffect(() => {
+    const report = (kind: string, detail?: string) => {
+      void api()
+        .recordIntegrity(session.session_id, kind, detail)
+        .catch(() => undefined);
+    };
+    const onVisibility = () => report(document.visibilityState === "hidden" ? "focus_lost" : "focus_back");
+    const onBlur = () => report("focus_lost");
+    const onFullscreen = () => {
+      if (!document.fullscreenElement) report("fullscreen_exit");
+    };
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Pasting into the answer note is typing; pasting anywhere else is text arriving from outside the paper.
+      if (target && target.closest("[data-allow-paste]")) return;
+      report("paste");
+    };
+    const onCopy = () => report("copy");
+    const onOffline = () => report("offline");
+    const onOnline = () => report("back_online");
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("fullscreenchange", onFullscreen);
+    document.addEventListener("paste", onPaste);
+    document.addEventListener("copy", onCopy);
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("fullscreenchange", onFullscreen);
+      document.removeEventListener("paste", onPaste);
+      document.removeEventListener("copy", onCopy);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [session.session_id]);
+
   const save = useCallback(
     async (questionId: string, optionId: string | null) => {
       if (inFlight.current.has(questionId)) return;

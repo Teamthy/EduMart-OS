@@ -42,7 +42,8 @@ deadline, the scoring policy and the single finalisation path; `internal/exams` 
 | Each answer | the chosen option, a version counter, the save time | `assessment_responses` |
 | The candidate submits | `submitted_at`, `score_raw`, `score_max`, `score_percent` | `assessment_sessions` |
 | The deadline passes first | the same fields, with status `expired` | `ExpireDue` / the expiry worker |
-| The host looks | start, submit, score, remaining seconds per candidate | `GET /v1/exams/{id}/results` |
+| The candidate's tab loses focus | the signal, our receipt time, and the client's claim | `exam_integrity_events` |
+| The host looks | start, submit, score, remaining seconds, and the integrity tally per candidate | `GET /v1/exams/{id}/results` |
 
 A candidate never sees another candidate's attempt: `GET /v1/assessment-sessions/{id}` is scoped to its owner,
 and the sitting report is host-only (`403` for everybody else).
@@ -73,10 +74,40 @@ feature from the synchronised sitting above, and the difference is worth stating
 A simulation reuses the same snapshot, the same `domain.ScoreAttempt` and the same "no corrections" rule, which is
 what makes it a rehearsal rather than a mini-game: the only things it removes are the other people.
 
+## Integrity signals: attention, recorded and reported
+
+A synchronised sitting has a deadline and a shuffled paper, which stops a neighbour's screen being copied. It
+does not stop a candidate leaving the tab for four minutes and coming back with an answer. So the candidate's
+browser reports on itself, and the server records what it said:
+
+| Signal | When the client sends it |
+| --- | --- |
+| `focus_lost` / `focus_back` | the tab was hidden or the window lost focus, and came back |
+| `fullscreen_exit` | fullscreen was left during the paper |
+| `paste` / `copy` | text arrived from or left for outside the paper (a field marked `data-allow-paste` is exempt) |
+| `offline` / `back_online` | the network dropped mid-question |
+
+Four rules make the record worth reading:
+
+1. **The vocabulary is closed.** `POST /v1/assessment-sessions/{id}/integrity` accepts seven kinds and nothing
+   else, because the value is rendered to a host; an open list would be arbitrary text in their report.
+2. **Only the owner's open attempt.** Recording into somebody else's attempt is `403`, and into a closed one is
+   `409` — a "distraction" cannot be written after submission.
+3. **Two clocks, not one.** `occurred_at` is what the client claimed; `received_at` is when we saw it. The
+   difference is itself a signal, and normalising one into the other would erase it.
+4. **It never blocks answering.** Reporting is best-effort in the runner: a failed telemetry call is swallowed, so
+   a learner never loses a question because a signal did not send.
+
+What it is **not**: video proctoring. Nothing here proves who was at the keyboard, and a client that lies leaves
+no trace. It is evidence a host weighs — six lost-tab events beside a clean score is a different result from a
+clean score with none — and the report paints the tally rather than deciding for them.
+
 ## What is not built
 
-- **No proctoring.** Nothing detects a second browser tab, and the honest statement is that this is a revision
-  and assessment tool, not a proctored examination.
+- **No proctoring of identity.** Integrity signals record attention, not who was sitting the paper: there is no
+  webcam capture, no ID check and no keystroke biometrics, and a modified client can under-report.
+- **No A/V recording of a sitting.** The class media server forwards packets and writes nothing to disk; the
+  integrity record is data, not video.
 - **No partial credit** beyond the engine's scoring policy (correct / wrong / unanswered weights).
 - **No question authoring in the sitting flow.** A sitting draws from approved, published question versions, or
   names them by id; authoring and review stay with the content pipeline.

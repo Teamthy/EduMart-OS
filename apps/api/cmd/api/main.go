@@ -196,6 +196,25 @@ func main() {
 	allowSandboxPay := env("EDUMART_ALLOW_SANDBOX_PAYMENTS", "true") == "true"
 	nairaPerPoint := envInt("EDUMART_NAIRA_PER_POINT", wallet.DefaultNairaPerPoint)
 
+	// Recharges take money through the same provider the shop does. With Paystack configured but no secret key,
+	// the wallet falls back to the sandbox adapter *and says so*: a deployment that believes it is taking card
+	// payments and is not would be discovered by a learner, not by an operator.
+	var chargeProvider wallet.ChargeProvider = wallet.SandboxCharges{}
+	switch paymentProvider {
+	case "paystack":
+		key := env("EDUMART_PAYSTACK_SECRET_KEY", "")
+		if key == "" {
+			logger.Warn("EDUMART_PAYMENT_PROVIDER=paystack but EDUMART_PAYSTACK_SECRET_KEY is unset: " +
+				"recharges stay in the sandbox and take no money")
+		} else {
+			chargeProvider = wallet.PaystackCharges{
+				SecretKey: key,
+				BaseURL:   env("EDUMART_PAYSTACK_BASE_URL", ""),
+			}
+			logger.Info("recharges settle through paystack", "provider", chargeProvider.Name())
+		}
+	}
+
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL: webURL,
 		// Static iceServers still come first, so a deployment that points at a hosted TURN service keeps
@@ -216,7 +235,11 @@ func main() {
 		Wallet: wallet.New(db, wallet.Config{
 			NairaPerPoint: nairaPerPoint,
 			Sandbox:       allowSandboxPay,
-			Logger:        logger,
+			Provider:      chargeProvider,
+			// The provider returns the browser to the wallet, which re-reads the balance. It never marks a
+			// top-up paid: that is the webhook's job, because a return URL is something a payer can type.
+			CallbackURL: strings.TrimRight(webURL, "/") + "/wallet",
+			Logger:      logger,
 		}),
 		Insights: insights.New(db),
 		// A sitting is an exam-shaped assessment definition, so the exam layer sits on the engine rather

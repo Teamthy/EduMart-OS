@@ -7,7 +7,10 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with admission control, rechargeable credits and practice/simulation modes: a host can now run a
+Last updated with a live recharge provider and exam integrity signals: a top-up now opens a real hosted checkout
+and settles only on a signed provider webhook, and a candidate's browser reports lost focus, pasted text and
+dropped network to the attempt, which the host's sitting report shows beside the score. Nothing here is video
+proctoring, and the docs say so. Previous update — admission control, rechargeable credits and practice/simulation modes: a host can now run a
 waiting room and charge only on acceptance, money can become credits at a ₦200 floor with an idempotent settle,
 and practice has split into untimed revision and a clocked exam simulation. The previous update added fifty-seat
 rooms, synchronised exams and consistency: media is now forwarded by an in-process
@@ -47,7 +50,7 @@ survive.
 | 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
-| 22 | Commerce and payments | Partial | Credits can now be **bought**: `POST /v1/wallet/topups` (kobo, ₦200 floor, rate stored per row) with an idempotent settle into the points ledger — provider wiring for top-ups is still the sandbox path. Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
+| 22 | Commerce and payments | Partial | Credits can be **bought** and are now settled by a live provider: `POST /v1/wallet/topups` (kobo, ₦200 floor, rate stored per row) returns Paystack's `checkoutUrl`, and only the signed `POST /v1/webhooks/wallet/paystack` credits — signature, event, reference, amount, each refusal moving nothing. Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and **commission that walks the whole referral chain**: `referral_level` on every ledger row, 10/3/1% by default (`EDUMART_REFERRAL_RATES`), a per-level idempotency key, a cycle guard, a level-aware refund reversal, and `GET /v1/referrals/tree`; refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
@@ -81,12 +84,15 @@ minutes, options permuted per candidate, no corrections afterwards). Selection i
 refused when combined rather than guessed. Both modes score through the same engine. Still missing: per-topic
 adaptive difficulty, and no separate "simulation" history view.
 
-Wallet recharges are **Partial**: `POST /v1/wallet/topups` takes kobo with a **₦200 floor**, `GET /v1/wallet`
-reports the balance from the append-only ledger, and crediting is idempotent per top-up (`topup:<id>`), so a
-duplicated provider callback pays once. **What is not built: a live payment-provider adapter for top-ups.** The
-settle path is the same sandbox switch the order flow uses (`POST /v1/wallet/topups/{id}/confirm`, registered only
-when `EDUMART_ALLOW_SANDBOX_PAYMENTS` is on); a real deployment still needs the provider's webhook mapped onto
-`wallet.Confirm` before it can take card money for credits, and there is no refund path for top-ups.
+Wallet recharges are **implemented end to end, sandbox and live**: `POST /v1/wallet/topups` takes kobo with a
+**₦200 floor**, `GET /v1/wallet` reports the balance from the append-only ledger, and crediting is idempotent per
+top-up (`topup:<id>`), so a duplicated provider callback pays once. With `EDUMART_PAYMENT_PROVIDER=paystack` and a
+secret key, the top-up opens Paystack's hosted checkout (`checkoutUrl`) and **only** the signed
+`POST /v1/webhooks/wallet/paystack` can mark it paid: signature → `charge.success` → reference → amount **and**
+currency, each refusal moving nothing, a mismatch answering `409` rather than crediting either figure. **Still
+missing: refunds for top-ups, and a live key in a real deployment.** Everything above is proved against a fake
+Paystack over HTTP (`TestRechargeOpensAProviderCheckout`, `TestWebhookCreditsOnceAndOnlyOnce`,
+`TestWebhookRefusesWhatItCannotTrust`) and the adapter's own unit tests; no real card has been charged.
 
 **Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
 been measured under load and its invariants proved to survive it. The remaining work is real, not polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do

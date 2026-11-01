@@ -507,6 +507,13 @@ export interface Topup {
   nairaPerPoint: number;
   status: "pending" | "paid" | "failed";
   provider: string;
+  /**
+   * Where to send the browser to pay. Empty when the deployment runs the sandbox, which has no hosted page and
+   * settles through the authenticated confirm route instead.
+   */
+  checkoutUrl?: string;
+  /** The provider's id for this charge, for support and reconciliation. */
+  providerReference?: string;
   createdAt: string;
   paidAt: string | null;
 }
