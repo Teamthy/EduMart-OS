@@ -214,9 +214,71 @@ docker run --rm -p 8080:8080 -e EDUMART_DRIVER=postgres -e EDUMART_DSN='postgres
 | `HEALTHCHECK` on `/healthz` | Liveness must not depend on the database. If it did, a database blip would restart every healthy process and turn one outage into two |
 | `-X main.version` build stamp | `/healthz` and `/readyz` report the release, so "is the rollout finished?" is answered by asking a replica — see `TestTheProbesReportWhichBuildIsRunning` |
 
-The image is multi-hundred-megabytes because the build stage is not separate from a distroless runtime
-decision that has not been made yet: **no registry, no image signing, no SBOM, no web-app image.** The API is
-the only component with one.
+The image is larger than it needs to be because a distroless runtime has not been attempted: **no registry, no
+image signing, no SBOM.** See "What is still missing" at the end of this document for the full list.
+
+## The deployment manifests
+
+`infra/k8s/` is the deployment described as objects rather than prose: a namespace with Pod Security
+Admission set to `restricted`, a ConfigMap, a Secret *shape*, the migration Job, the API Deployment and
+Service, the web Deployment and Service, an Ingress with TLS, PodDisruptionBudgets, and a default-deny
+NetworkPolicy with three permitted flows.
+
+`scripts/check-manifests.py` checks them, because everything that makes those files safe is an invariant
+Kubernetes does not enforce for you:
+
+| Check | The mistake it catches |
+| --- | --- |
+| `probes` | API readiness on `/readyz` (schema + database) and liveness on `/healthz` (cheap); **web readiness on a static file**, never on `/healthz` or a page — those fail when the API fails, which would take every web pod out of rotation during the API's bad minute |
+| `rollout` | `replicas >= 2`, `maxSurge >= 1`, `maxUnavailable == 0`, and a `terminationGracePeriodSeconds` longer than the API's own 10s drain |
+| `migration` | a Job running `-migrate-only` with `backoffLimit: 0`, `restartPolicy: Never`, `EDUMART_SEED=false` — and `EDUMART_MIGRATE_ON_BOOT=false` on the replicas, which is the line that stopped three of four replicas dying on a fresh database |
+| `images` | anything on `:latest`, anything unpinned — and **the Job and the replicas running different builds** |
+| `environment` | names checked against the Go source and the web source, in both directions: a key the code does not read is a typo that silently falls back to a default (`EDUMART_TRUST_PROX`), and a variable the API needs to boot must be set somewhere |
+| `secrets` | a token-shaped key in a ConfigMap, a credential-shaped value in a committed file, a `REPLACE_ME` placeholder replaced by something that looks real |
+| `pod-security` | non-root, seccomp, no privilege escalation, all capabilities dropped, read-only root filesystem, and CPU/memory requests and limits on every container |
+| `topology` | a Deployment nothing selects, a missing PodDisruptionBudget, an Ingress without TLS or pointing at a Service that does not exist |
+| `proxy` | `EDUMART_API_URL` naming a Service and port that are not in the directory |
+| `network` | no default-deny policy, which would make the other two decoration |
+
+```bash
+python3 scripts/check-manifests.py --verbose      # check
+python3 scripts/check-manifests.py --self-test    # break it on purpose
+```
+
+`--self-test` applies fourteen real faults — readiness moved to `/healthz`, `maxUnavailable: 1`, one replica,
+`EDUMART_MIGRATE_ON_BOOT=true`, a Job on a different image, `:latest`, a secret in the ConfigMap, a renamed
+settings key, a proxy pointed at a missing Service, a writable root filesystem, a deleted PDB, a five-second
+grace period, no default-deny — and requires the corresponding check to fire. The renamed key is there
+because the first version of the checker **missed it**: the ConfigMap was never inspected, only the inline
+`env:` blocks, so a typo in the file everything reads from passed every check.
+
+## The web image, and the trap it exposed
+
+`apps/web/Dockerfile` builds the Next.js app with `output: "standalone"` and runs `node server.js` as UID
+10002. Building it and running it against a live API found a defect that no test in the repository could have
+caught, because it is a property of *configuration lifetime*:
+
+| How it was built | How it was run | Pages | `/v1/subjects` |
+| --- | --- | --- | --- |
+| default (`127.0.0.1:8080`) | `EDUMART_API_URL=http://127.0.0.1:8091` | 200 | **500 — went to 8080** |
+| `EDUMART_API_URL=http://127.0.0.1:8091` | nothing set | **500 — "the API is unreachable"** | 200 |
+
+The `/v1` proxy was a `next build` rewrite, so its destination was frozen into the routes manifest, while
+server-rendered pages read the same variable at run time. One variable, two lifetimes — which produces a
+container that **half works**, and which half depends on how the image was built rather than on how it is run.
+An image that must be rebuilt to point at another environment also cannot be promoted from staging.
+
+The rewrite is now a route handler (`apps/web/lib/api-proxy.ts`, mounted at `app/v1/[...path]`), so
+`EDUMART_API_URL` is read per request everywhere. Measured after the change, on a standalone build made with
+no URL at all: `/`, `/login`, `/v1/subjects`, `/v1/subjects?exam=jamb` and `/healthz` all 200 against an API on
+8092; `set-cookie: edumart_session=…; HttpOnly; SameSite=Lax` passes through intact; the API's 401 and 404
+envelopes pass through with their `request_id`; with the API stopped, `/v1/*` answers 502 with the API's own
+error envelope and **`/manifest.webmanifest` still answers 200**, which is exactly why the web probes that and
+not `/healthz`.
+
+The CI job `Container images` builds both images, starts them on one Docker network so the web container
+reaches the API **by name** (what a Service does in-cluster), and then: renders a page, proxies `/v1`,
+expects a 401 through the proxy, and requires the session cookie to survive the hop.
 
 ## Migrations are expand-only
 
@@ -253,7 +315,11 @@ will be, and each step is either proven or marked.
    a job that does two things, and the second is not safe against production.
 4. **Watch the signals** for ten minutes: error rate, p95 latency, reconciliation contradictions, webhook
    failures. `docs/OBSERVABILITY.md` names the alert for each.
-5. **If it goes wrong, roll back the binary** — do not roll back the schema. The schema stays ahead; that is
+5. **Apply the manifests.** `kubectl apply -f infra/k8s/` (or the GitOps equivalent). The migration Job must
+   complete before the Deployment is updated — the Job, not the replicas, owns the schema. The manifests are
+   checked in CI, but **they have never been applied to a cluster from this repository**, so the first apply
+   is a real step performed by a human who watches it.
+6. **If it goes wrong, roll back the binary** — do not roll back the schema. The schema stays ahead; that is
    what the rehearsal proves is survivable. Deploying an older migration set is a data-loss operation
    dressed as a rollback.
 
@@ -262,13 +328,14 @@ will be, and each step is either proven or marked.
 - **No staging environment.** Nothing has ever been deployed to a host. The rehearsal proves the *schema and
   binary* transition; it proves nothing about DNS, TLS, a real load balancer, secrets management, or an
   orchestrator performing the rolling restart it rehearses.
-- **A container image for the API, and only the API.** `apps/api/Dockerfile` builds, runs as a non-root user
-  and passes a real readiness check in CI. There is **no image for the web app**, no registry push, no image
-  signing and no SBOM; the mobile app is not containerised at all.
-- **No orchestrator.** The rollout rehearsal performs the swap — surge, drain, abort — against real
-  processes behind a load balancer, which is the ordering an orchestrator would use. What does not exist is
-  the controller itself: no Kubernetes manifests, no `Deployment`, no PodDisruptionBudget, no readiness
-  probe wired into an ingress.
+- **Images, but no registry.** Both `apps/api/Dockerfile` and `apps/web/Dockerfile` build and run as
+  non-root in CI, together, against PostgreSQL. Nothing is pushed to a registry, nothing is signed, there is
+  no SBOM and no image scanning step; the mobile app is not containerised at all.
+- **Manifests, but no cluster.** `infra/k8s` is checked by `scripts/check-manifests.py` (ten checks, fourteen
+  injected faults) and parsed by `kubectl --dry-run=client` in CI — **it has never been applied to a real
+  cluster.** No TLS certificate is issued, no ingress controller is configured beyond annotations, no
+  external-secrets operator or vault is wired to the placeholder Secret, and there is **no autoscaling, no
+  multi-region, and no cluster upgrade story.**
 - **No automated rollback trigger.** Deciding to roll back is a human judgement on the signals above.
 - **No data rollback.** Reverting a schema change loses whatever the newer code wrote into it. The rehearsal
   proves the *old code* can read the *old columns*; it says nothing about a column added and populated by the

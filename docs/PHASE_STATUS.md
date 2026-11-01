@@ -74,8 +74,9 @@ clean install on every push.
 | Concurrent boot | **New.** A session-level advisory lock (PostgreSQL) or an flock (SQLite) serialises migrations across processes; six replicas start together in CI and every migration is recorded exactly once. Before this, **three of four replicas exited with status 1** on a fresh database |
 | Rollback | **Rehearsed on every pull request.** Previous release built from git, migrated forward, then rolled back onto the newer schema and proved to read the newer release's data |
 | Rolling rollout | **New.** `scripts/rollout-rehearsal.py` replaces a four-replica fleet under continuous traffic (surge, no-surge), **aborts the rollout halfway and recovers under traffic**, and fails deterministically when a replica joins the rotation before it is ready or a stopped replica is left in it. Both faults are injected in CI to prove the gate still fails |
-| Container image | **New.** `apps/api/Dockerfile` — cgo-capable Debian build, non-root `10001`, CA bundle, liveness healthcheck, build-stamped version. CI builds it, asserts the user is not root, runs it against PostgreSQL and waits for `/readyz`. **API only**: no web-app image, no registry, no signing |
-| Environments | Development and CI are real. **Staging and production are still not provisioned**, and there is no orchestrator: the rollout rehearsal performs the swap against processes, not a controller performing it against pods |
+| Container images | **Both, tested together.** `apps/api/Dockerfile` (cgo-capable Debian, non-root `10001`, CA bundle, build-stamped version) and `apps/web/Dockerfile` (Next standalone, non-root `10002`, static-asset healthcheck). CI builds both, asserts neither runs as root, and runs them **as one stack** on a Docker network: a page renders, `/v1` is proxied by name, a 401 and a `Set-Cookie` survive the hop. No registry, no signing, no SBOM |
+| Deployment manifests | **New.** `infra/k8s` — `restricted` Pod Security, migration Job, API and web Deployments (`maxSurge 1`/`maxUnavailable 0`, `runAsNonRoot`, read-only root filesystem, graceful shutdown), Services, TLS Ingress, PDBs, default-deny NetworkPolicies. `scripts/check-manifests.py` enforces ten invariants against the application's own environment surface and **proves each check can fail with fourteen injected faults**; `kubectl --dry-run=client` parses them in CI. **Never applied to a cluster** |
+| Environments | Development and CI are real. **Staging and production are still not provisioned**: there are manifests and images, but no cluster, no registry push, no secrets manager and no TLS issuance. The rollout rehearsal performs the swap against processes, not a controller performing it against pods |
 
 **A second thing Phase 4 was hiding: a fleet could not start.** Six replicas launched within 20 ms of each
 other against an empty database left **three of them dead**, each with
@@ -94,6 +95,13 @@ previous one from a git ref, this one from the working tree), deploys the old on
 one still serves the migrated database, deploys the new one, writes an order with it, **rolls back**, and
 reads that order with the old code. Seven stages, both engines, in CI. See
 [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
+**A fourth thing: the web container half worked, and only a container could show it.** The `/v1` proxy was a
+`next build` rewrite, so its destination was frozen at build time while server-rendered pages read the same
+variable at run time. Built with the default and run with the right URL, the pages rendered and every API call
+went to `127.0.0.1:8080`; built the other way round, the opposite. That is a container whose broken half
+depends on how it was built, and it cannot be caught by any test that does not build and run the image. The
+proxy is now a route handler with nine tests, and the CI job runs both images as a stack.
 
 **A third thing: the rollout gate was passing when it should have failed.** The first version of the rolling
 rollout asserted only "no client request failed", and its deliberately broken rollout — a replica entering the

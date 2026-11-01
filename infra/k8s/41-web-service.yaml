@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: edumart-web
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: edumart-web
+    app.kubernetes.io/part-of: edumart
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: edumart-web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

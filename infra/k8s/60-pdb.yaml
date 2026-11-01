@@ -1,0 +1,23 @@
+# A rolling update cannot proceed without the PDB: with `maxUnavailable: 0` and a disruption budget that
+# allows zero unavailable pods, a node drain waits instead of evicting the last serving replica.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: edumart-api
+  namespace: edumart
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: edumart-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: edumart-web
+  namespace: edumart
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: edumart-web
