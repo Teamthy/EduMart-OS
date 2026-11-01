@@ -2,11 +2,14 @@ package api_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pion/turn/v4"
 
 	"github.com/teamthy/edumart/apps/api/internal/store"
 )
@@ -848,5 +851,101 @@ func TestAFreeClassClosesItselfWithoutAnyoneKnocking(t *testing.T) {
 	// A second sweep is a no-op rather than an error: every replica runs one.
 	if again, err := h.live.CloseExpiredFree(context.Background(), 50); err != nil || again != 0 {
 		t.Fatalf("a second sweep must close nothing: %d %v", again, err)
+	}
+}
+
+// TestICEGivesARestrictedNetworkARelayItCanUse follows the credential all the way to a working allocation.
+//
+// The failure this guards against is subtle: an iceServers payload can look perfectly correct — a turn: URL,
+// a username, a credential — and still be useless, because the credential was minted for someone else, or
+// signed with a secret the relay does not know, or named a port nothing listens on. So the test does what the
+// browser does: read /ice as the learner, then open an allocation on the relay with exactly those values.
+func TestICEGivesARestrictedNetworkARelayItCanUse(t *testing.T) {
+	h := newHarness(t)
+	host := h.registerAndVerify("ice-host@example.com")
+	learner := h.registerAndVerify("ice-learner@example.com")
+
+	class := h.createLiveClass(t, host, map[string]any{"title": "ICE Clinic"})
+	classID := class["id"].(string)
+	if status, body := h.do("POST", "/v1/virtual-classes/"+classID+"/join", learner, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("join: %d %v", status, body)
+	}
+
+	status, body := h.do("GET", "/v1/virtual-classes/"+classID+"/ice", learner, nil)
+	if status != http.StatusOK {
+		t.Fatalf("ice: %d %v", status, body)
+	}
+	servers := body["iceServers"].([]any)
+
+	var turnEntry map[string]any
+	for _, raw := range servers {
+		entry := raw.(map[string]any)
+		for _, url := range entry["urls"].([]any) {
+			if strings.HasPrefix(url.(string), "turn:") {
+				turnEntry = entry
+			}
+		}
+	}
+	if turnEntry == nil {
+		t.Fatalf("no turn: entry in %v", servers)
+	}
+
+	_, me := h.do("GET", "/v1/me", learner, nil)
+	userID := me["user"].(map[string]any)["id"].(string)
+	if username := turnEntry["username"].(string); !strings.HasSuffix(username, ":"+userID) {
+		t.Fatalf("the credential must be bound to the learner, got %q for %q", username, userID)
+	}
+
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client socket: %v", err)
+	}
+	defer conn.Close()
+	client, err := turn.NewClient(&turn.ClientConfig{
+		TURNServerAddr: h.relay.Address(),
+		Username:       turnEntry["username"].(string),
+		Password:       turnEntry["credential"].(string),
+		Realm:          "edumart.test",
+		Conn:           conn,
+	})
+	if err != nil {
+		t.Fatalf("turn client: %v", err)
+	}
+	if err := client.Listen(); err != nil {
+		t.Fatalf("turn listen: %v", err)
+	}
+	if _, err := client.Allocate(); err != nil {
+		t.Fatalf("the credential the API handed out was refused by the relay: %v", err)
+	}
+
+	// The learner's username with the host's credential must not allocate, so the credential is genuinely this
+	// learner's rather than a shared one that happens to work.
+	_, hostBody := h.do("GET", "/v1/virtual-classes/"+classID+"/ice", host, nil)
+	hostCredential := ""
+	for _, raw := range hostBody["iceServers"].([]any) {
+		if credential, ok := raw.(map[string]any)["credential"].(string); ok {
+			hostCredential = credential
+		}
+	}
+	mixed, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("second socket: %v", err)
+	}
+	defer mixed.Close()
+	mixedClient, err := turn.NewClient(&turn.ClientConfig{
+		TURNServerAddr: h.relay.Address(),
+		Username:       turnEntry["username"].(string),
+		Password:       hostCredential,
+		Realm:          "edumart.test",
+		Conn:           mixed,
+	})
+	if err != nil {
+		t.Fatalf("mixed client: %v", err)
+	}
+	if err := mixedClient.Listen(); err != nil {
+		t.Fatalf("mixed listen: %v", err)
+	}
+	if _, err := mixedClient.Allocate(); err == nil {
+		t.Fatal("one learner's username with another's credential was accepted")
 	}
 }

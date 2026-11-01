@@ -144,19 +144,59 @@ counted in a column, so it cannot drift from what happened. Days are UTC days an
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `EDUMART_WEB_URL` | `http://localhost:3000` | Origin of join links and invitation links |
-| `EDUMART_ICE_SERVERS` | one public STUN server | JSON array of iceServers |
+| `EDUMART_ICE_SERVERS` | one public STUN server | JSON array of iceServers (a hosted TURN service can be listed here) |
+| `EDUMART_TURN_SECRET` | unset — relay off | Switches the self-hosted TURN relay on; also the key its credentials are signed with |
+| `EDUMART_TURN_PUBLIC_IP` | unset | The address clients are told to send to. Required when the secret is set, because a relay advertising an unreachable address is worse than none |
+| `EDUMART_TURN_LISTEN` | `0.0.0.0:3478` | UDP address the relay binds |
+| `EDUMART_TURN_REALM` | `edumart` | TURN realm; part of the credential hash |
+| `EDUMART_TURN_TTL_MINUTES` | `60` | Lifetime of a minted credential |
 | `EDUMART_MEDIA_UDP_MIN` / `EDUMART_MEDIA_UDP_MAX` | unset (OS picks) | UDP range pinned for the media forwarder, for a firewall that only forwards a few ports |
 | `EDUMART_REFERRAL_RATES` | `10,3,1` | Commission percentage per referral level |
 
 ## NAT traversal
 
-`GET /v1/virtual-classes/{id}/ice` returns the deployment's `RTCPeerConnection` iceServers list verbatim.
+`GET /v1/virtual-classes/{id}/ice` returns the `RTCPeerConnection` iceServers list for **the caller**:
 
-- The default is a single public **STUN** server. That gets most home networks to the forwarder.
-- A deployment behind a **symmetric NAT** edge, or one whose UDP range is closed, needs a **TURN** relay. Set
-  `EDUMART_ICE_SERVERS` to a JSON array including `turns:` entries with credentials to enable it.
-- The forwarder itself needs its UDP ports reachable from the internet. On a host with a firewall, pin
-  `EDUMART_MEDIA_UDP_MIN`/`MAX` and open that range.
+- the deployment's static `EDUMART_ICE_SERVERS` (a public **STUN** server by default), plus
+- one `turn:` entry with a credential minted for that participant, when the embedded relay is enabled.
+
+STUN alone connects most home networks. It cannot connect a network that blocks outbound UDP, or one behind a
+symmetric NAT: the forwarder's address is unreachable and no direct path exists. Without a relay those learners
+join the room, appear in the roster, and hear nothing — which is why the relay is part of the feature rather
+than an operator's optional extra.
+
+### The embedded relay
+
+`EDUMART_TURN_SECRET` switches on a TURN server inside the API process (`internal/relay`, built on
+`pion/turn`). It binds UDP, allocates relay ports on the public address, and authenticates with the
+[TURN REST scheme](https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00): the username is
+`<unix expiry>:<user id>` and the password is `base64(HMAC-SHA1(secret, username))`. Three properties are the
+point:
+
+1. **No shared password ships to a client.** A bundle with a permanent TURN password leaks one the first time a
+   browser caches it, and every user shares the leak.
+2. **Credentials expire.** A scraped username/password stops working when the window closes (default one hour),
+   so abuse is a short ride rather than an open relay.
+3. **Credentials are attributable.** The user id is inside the value the server recomputes the password from, so
+   the relay keeps no session table and abuse still traces to an account.
+
+The secret never reaches a client; hosts do not see other participants' credentials; the list is rebuilt per
+request with a fresh expiry rather than stored. Everything the relay is asked to do is checked by the library's
+own REST auth handler, and the tests assert **both** directions: a minted credential allocates, a tampered or
+expired one is refused, and a packet written through the allocation comes back.
+
+Because a credential is derived from the shared secret rather than stored, **every replica can serve every
+participant**: a fleet of API pods behind one UDP load balancer needs no sticky sessions, and a credential minted
+by one pod is accepted by the next. That falls out of holding no session table, which is the same property that
+makes abuse attributable.
+
+Two deployment facts follow from the protocol and are not optional:
+
+- **The UDP port must be reachable from the internet.** In Kubernetes the API Service is `ClusterIP`, so a
+  deployment either adds a UDP `LoadBalancer`/`NodePort` on 3478 or points `EDUMART_ICE_SERVERS` at a hosted
+  relay instead. Nothing in this repository runs a cluster yet.
+- **The forwarder's own UDP ports must be open too.** On a firewalled host pin `EDUMART_MEDIA_UDP_MIN`/`MAX` and
+  forward that range.
 
 ## Referral levels
 
@@ -173,7 +213,9 @@ it changes nothing about who may refer or be referred.
 
 ## What is not built
 
-- No TURN server is deployed in this repository; only the configuration path for one.
+- No TURN **over TLS** (`turns:`) from the embedded relay: it speaks plain TURN over UDP. A network that blocks
+  UDP entirely needs `turn:…?transport=tcp` or a hosted `turns:` service listed in `EDUMART_ICE_SERVERS`.
+- No relay accounting: allocations are bounded by credential lifetime, not by a per-user bandwidth quota.
 - No recording, transcription or captions.
 - No mobile video room: the mobile app lists classes and sittings and opens the link; the room itself is the web
   app, so there is one implementation of the board's key rather than two that disagree.

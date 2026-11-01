@@ -40,5 +40,17 @@ data:
   # ICE servers for live classes, as the JSON a browser passes to RTCPeerConnection. STUN alone gets most home
   # networks connected; peers behind a symmetric NAT need a TURN relay, which is bandwidth an operator pays
   # for, so it is configured here rather than assumed. Credentials belong in 11-secrets.
-  EDUMART_ICE_SERVERS: '[{"urls":["stun:stun.l.google.com:19302"]}]' 
+  EDUMART_ICE_SERVERS: '[{"urls":["stun:stun.l.google.com:19302"]}]'
+  # The self-hosted TURN relay. It is **off unless EDUMART_TURN_SECRET exists in the Secret**: an
+  # unauthenticated relay is an open proxy on the operator's bandwidth, so the secret is the switch.
+  # PUBLIC_IP is the address a browser is told to send to and must be the one traffic actually arrives on;
+  # a relay advertising an unreachable address is worse than no relay, because the client waits for media
+  # that will never come. The UDP port below must be exposed outside the cluster — a ClusterIP Service
+  # cannot carry it, so a deployment either runs this behind a UDP LoadBalancer/NodePort on 3478 or points
+  # EDUMART_ICE_SERVERS at a hosted relay instead.
+  EDUMART_TURN_LISTEN: 0.0.0.0:3478
+  EDUMART_TURN_PUBLIC_IP: turn.edumart.ng
+  EDUMART_TURN_REALM: edumart
+  # Credentials are minted per participant and expire; one hour covers the longest class with room to spare.
+  EDUMART_TURN_TTL_MINUTES: "60"
   EDUMART_MIGRATION_LOCK_TIMEOUT: 60s

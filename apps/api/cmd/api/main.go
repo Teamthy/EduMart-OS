@@ -33,6 +33,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/notify"
 	"github.com/teamthy/edumart/apps/api/internal/orgs"
+	"github.com/teamthy/edumart/apps/api/internal/relay"
 	"github.com/teamthy/edumart/apps/api/internal/rewards"
 	"github.com/teamthy/edumart/apps/api/internal/search"
 	"github.com/teamthy/edumart/apps/api/internal/seed"
@@ -166,12 +167,37 @@ func main() {
 	}
 	defer forwarder.Close()
 
+	// A TURN relay is the difference between "the room exists" and "the room is audible" for anyone behind a
+	// symmetric NAT or a network that blocks outbound UDP. It is opt-in by secret: without one there is
+	// nothing to authenticate against, and an unauthenticated relay is an open proxy on the operator's
+	// bandwidth.
+	var relayService *relay.Service
+	if secret := strings.TrimSpace(os.Getenv("EDUMART_TURN_SECRET")); secret != "" {
+		ttl := time.Duration(number(env("EDUMART_TURN_TTL_MINUTES", "60"))) * time.Minute
+		started, relayErr := relay.New(relay.Config{
+			ListenUDP: env("EDUMART_TURN_LISTEN", "0.0.0.0:3478"),
+			PublicIP:  env("EDUMART_TURN_PUBLIC_IP", ""),
+			Realm:     env("EDUMART_TURN_REALM", "edumart"),
+			Secret:    secret,
+			TTL:       ttl,
+			Logger:    logger,
+		})
+		if relayErr != nil {
+			// Fail closed: a relay that cannot start would leave every restrictive network silently
+			// without media, which is exactly the failure this code exists to remove.
+			logger.Error("turn relay unavailable", "error", relayErr.Error())
+			os.Exit(1)
+		}
+		relayService = started
+		defer relayService.Close()
+	}
+
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL: webURL,
-		// STUN alone gets two peers on ordinary home networks connected. A TURN relay is what makes
-		// the room work behind a symmetric NAT, and it is configuration rather than code because a
-		// relay is bandwidth an operator has to pay for.
+		// Static iceServers still come first, so a deployment that points at a hosted TURN service keeps
+		// working; the self-hosted relay is appended per participant when EDUMART_TURN_SECRET is set.
 		ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
+		Relay:      relayCredentialIssuer(relayService),
 	}).WithMedia(forwarder)
 
 	router := api.NewRouter(api.Deps{
@@ -340,6 +366,15 @@ func startExpiryWorker(logger *slog.Logger, exams *assessment.Service) func() {
 		}
 	}()
 	return func() { close(done) }
+}
+
+// relayCredentialIssuer narrows a *relay.Service to the interface the class service wants, keeping nil
+// nil: a typed nil in an interface is not nil, and it would turn "no relay" into a panic on first join.
+func relayCredentialIssuer(service *relay.Service) virtualclass.CredentialIssuer {
+	if service == nil {
+		return nil
+	}
+	return service
 }
 
 // startRoomSweepWorker closes free classes whose forty-five minutes are up.

@@ -2369,9 +2369,11 @@ paths:
       tags: [live]
       summary: ICE servers for the room
       description: |
-        Handed straight to `RTCPeerConnection`. Audio and video never reach the API — peers connect directly
-        under DTLS-SRTP — so what this returns is the whole of NAT traversal for this deployment. With STUN
-        alone, two peers behind symmetric NAT cannot connect; that is a stated limit, not a bug.
+        Handed straight to `RTCPeerConnection`, and the whole of NAT traversal for this deployment: the
+        deployment's static STUN entries plus, when the embedded relay is enabled, one `turn:` entry whose
+        `username`/`credential` are minted for **this** participant and expire within the hour. A credential
+        belonging to one learner does not authenticate another, and the shared secret it is signed with never
+        appears in any response.
       operationId: virtualClassICEServers
       parameters:
         - $ref: "#/components/parameters/VirtualClassId"

@@ -190,7 +190,8 @@ Two defects surfaced only by running it, which is the argument for running it:
 | --- | --- | --- | --- |
 | Audio and video | Never reaches the API; peer-to-peer under DTLS-SRTP | The participants only | A peer with a compromised browser can record what it displays. That is true of every video call; the control is that the *server* never holds a copy and there is no recording feature to misfile |
 | Whiteboard strokes | `virtual_class_board_events`, opaque ciphertext under a room key held by participants | Anyone seated in the class, who still needs the key | Key distribution is out of band (WebRTC data channel). A participant who shares the key shares the board; owner: API/web |
-| SDP and ICE candidates | `virtual_class_signals`, pruned after 10 minutes | Members of that class, or the sender's target | They disclose participants' IP addresses to each other. Unavoidable for a direct connection without a relay; a TURN server hides them from peers but not from the relay operator |
+| SDP and ICE candidates | `virtual_class_signals`, pruned after 10 minutes | Members of that class, or the sender's target | They disclose participants' IP addresses to each other. A relayed leg hides a participant's address from the forwarder but not from the relay, which is the same operator |
+| TURN credentials | Never stored; minted per request | The participant alone | Ephemeral and per-user, so a leaked credential expires and names its owner. The secret they are signed with stays in the environment |
 | Who attended and for how long | `virtual_class_attendees`, `virtual_class_sessions` | The host, via the attendance report | Attendance is personal data; it is retained with the class, not indefinitely. Owner: API |
 | Signup account type | `users.account_type` | The account itself and administrators | It is *intent*, not authority: an `institution` account holds no organisation until it is verified and approved |
 
@@ -200,8 +201,20 @@ read nor inject into a room's signalling channel** (`TestSignallingRelayIsTarget
 endpoint refuses anything that is not base64 ciphertext, because a server that can store plaintext can also be
 compelled to hand it over.
 
-The remaining honest gap: there is **no TURN relay deployed**, so a participant behind symmetric NAT may not
-reach the media server. The room now holds **50 people** because media is forwarded by an in-process media
+Reachability has a relay. `internal/relay` runs a TURN server in the API process, enabled by
+`EDUMART_TURN_SECRET`, and hands each participant an **ephemeral, per-user** credential
+(`<expiry>:<user id>` signed with HMAC-SHA1) when it asks for iceServers. Four decisions are security decisions:
+
+- the secret never leaves the server, and no client ships a shared TURN password;
+- credentials expire (one hour by default) and are re-minted per request, so a scraped one is a short ride;
+- the user id is inside the signed value, so an abusive allocation is attributable without the relay keeping a
+  session table;
+- the relay is **off** unless the secret exists, because an unauthenticated TURN server is an open proxy paid for
+  by the operator.
+
+What that does not fix: a relayed connection is still terminated by our forwarder, so media stays **hop-by-hop**
+encrypted rather than end-to-end, and a participant who blocks UDP entirely needs a `turns:`/TCP service this
+repository does not host. The room now holds **50 people** because media is forwarded by an in-process media
 server rather than meshed — which changes what "encrypted" means for audio and video: DTLS-SRTP protects each
 leg, but the server terminates both, so media is **hop-by-hop** encrypted. The forwarder records nothing and has
 no write path, and the whiteboard and chat keep their end-to-end property (the board key travels in the link's
