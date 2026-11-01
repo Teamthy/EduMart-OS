@@ -28,6 +28,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
+	"github.com/teamthy/edumart/apps/api/internal/wallet"
 )
 
 // Config carries runtime settings that affect routing.
@@ -65,6 +66,7 @@ type Deps struct {
 	Notifier *notify.Service
 	Finder   *search.Service
 	Live     *virtualclass.Service
+	Wallet   *wallet.Service
 	// Sittings is the synchronised-exam layer over the assessment engine; Habit is the derived
 	// consistency read model. Both are optional in tests that do not touch them.
 	Sittings *exams.Service
@@ -98,6 +100,7 @@ func NewRouter(d Deps) http.Handler {
 	orgHandlers := orgs.NewHandlers(d.Orgs)
 	searchHandlers := search.NewHandlers(d.Finder, d.Logger)
 	liveHandlers := virtualclass.NewHandlers(d.Live)
+	walletHandlers := wallet.NewHandlers(d.Wallet)
 	// The room forwards media instead of meshing it. Attaching the forwarder here keeps one process owning
 	// both the room's rules and the connections it admits.
 	if d.Media != nil && d.Live != nil {
@@ -256,6 +259,15 @@ func NewRouter(d Deps) http.Handler {
 		v1.Post("/orders", wrap(commerceHandlers.CreateOrder))
 		v1.Get("/orders/{id}", wrap(commerceHandlers.GetOrder))
 		v1.Get("/library", wrap(commerceHandlers.Library))
+
+		// ── wallet (recharge money into credits) ─────────────────────────
+		v1.Get("/wallet", wrap(walletHandlers.Summary))
+		v1.Post("/wallet/topups", wrap(walletHandlers.StartTopup))
+		if d.Config.AllowSandboxPay {
+			// The sandbox settle lives behind the same switch as the order sandbox: one deployment either
+			// accepts self-confirmed payments or it does not, and two switches would drift apart.
+			v1.Post("/wallet/topups/{id}/confirm", wrap(walletHandlers.ConfirmTopup))
+		}
 		if d.Config.AllowSandboxPay {
 			v1.Post("/orders/{id}/simulate-payment", wrap(commerceHandlers.Simulate))
 		}
@@ -288,6 +300,10 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/virtual-classes/{id}/start", wrap(liveHandlers.Start))
 			g.Post("/virtual-classes/{id}/end", wrap(liveHandlers.End))
 			g.Get("/virtual-classes/{id}/roster", wrap(liveHandlers.Roster))
+			// Admission: the host's queue and the host's decision. Both are host-only in the service, not by
+			// hiding a link — a learner who guesses the path is refused.
+			g.Get("/virtual-classes/{id}/requests", wrap(liveHandlers.Requests))
+			g.Post("/virtual-classes/{id}/requests/{userId}", wrap(liveHandlers.Decide))
 			g.Get("/virtual-classes/{id}/ice", wrap(liveHandlers.ICE))
 			g.Get("/virtual-classes/{id}/board", wrap(liveHandlers.Board))
 			g.Post("/virtual-classes/{id}/board", wrap(liveHandlers.Board))

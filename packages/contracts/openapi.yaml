@@ -612,10 +612,32 @@ paths:
   /v1/practice-sessions:
     post:
       tags: [assessment]
-      summary: Start an untimed practice attempt
+      summary: Start a practice or simulated attempt
       description: |
-        The session snapshot is frozen here: questions, options and the scoring policy version are
-        copied into the attempt, so a later content edit cannot change a past score.
+        The session snapshot is frozen here: questions, options and the scoring policy version are copied into
+        the attempt, so a later content edit cannot change a past score.
+
+        **Selection** is one dimension, and `mixed` means "no dimension":
+
+        - `subjectId` (+ optional `topicIds` to narrow it) — revise one subject;
+        - `classId` — the questions this class's published assessments already use; membership is checked server-side;
+        - `examBody` — `WAEC`, `NECO`, `JAMB`, `Post-UTME`… matched case-insensitively against the exam pathway
+          key or body, so a JAMB paper can only contain questions from JAMB subjects;
+        - `mixed: true` — draw from the whole bank.
+
+        Combining two sources, or `mixed` with a source, is a `400`: "this subject but that class" is ambiguous and
+        guessing would show a learner the wrong questions.
+
+        **Modes** are two different products, not two labels:
+
+        - `practice` (default) — a four-hour server window nobody is meant to notice, fresh questions on every
+          start, and answers/explanations after submitting. A closed practice attempt accepts corrections.
+        - `simulation` — "exact exam simulation": a fixed paper (same selection, same caller ⇒ same questions, so
+          re-sitting means the same paper), a hard clock of `durationMinutes` (default 45, 5–240), options shuffled
+          per candidate, and **no corrections afterwards** (`409`). Answers and explanations appear only after
+          submit, exactly as in the graded path.
+
+        Both modes score through the same engine, so a simulated paper and a real one are marked by the same code.
       operationId: startPractice
       requestBody:
         required: true
@@ -623,14 +645,34 @@ paths:
           application/json:
             schema:
               type: object
-              required: [subjectId]
               properties:
+                mode:
+                  type: string
+                  enum: [practice, simulation]
+                  default: practice
                 subjectId: { type: string }
                 topicIds:
                   type: array
                   items: { type: string }
-                count: { type: integer, minimum: 1, maximum: 50, default: 10 }
-                difficulty: { type: string, enum: [easy, medium, hard] }
+                classId: { type: string, description: Requires active membership of that class. }
+                examBody:
+                  type: string
+                  description: Exam pathway key or body, e.g. `jamb`, `WAEC`, `Post-UTME`.
+                mixed:
+                  type: boolean
+                  description: Draw from the whole bank. Exclusive with every other selector.
+                count:
+                  type: integer
+                  minimum: 1
+                  description: |
+                    Practice draws at most 40; a simulation at most 100 and defaults to 40, the shape of one
+                    standard objective paper.
+                difficulty: { type: string, enum: [all, easy, medium, hard] }
+                durationMinutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 240
+                  description: Simulation only; practice ignores it.
       responses:
         "201":
           description: Attempt created
@@ -640,7 +682,19 @@ paths:
                 type: object
                 properties:
                   session: { $ref: "#/components/schemas/AssessmentSession" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: Not a member of the class that paper belongs to
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: No approved questions exist for that selection yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/assessment-definitions/{id}/sessions:
@@ -1403,6 +1457,109 @@ paths:
                       built_at: { type: string, format: date-time }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/wallet:
+    get:
+      tags: [wallet]
+      summary: Balance, recharge terms, and recent points history
+      description: |
+        `balance` is the sum of the append-only points ledger, never a stored counter — so it cannot disagree with
+        the history beside it. The terms (`minTopupMinor`, `nairaPerPoint`) come from the server: a price change is
+        a deployment, not a front-end release.
+      operationId: getWallet
+      responses:
+        "200":
+          description: The wallet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet: { $ref: "#/components/schemas/Wallet" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/wallet/topups:
+    post:
+      tags: [wallet]
+      summary: Start a recharge (minimum ₦200)
+      description: |
+        A top-up is not an order: an order buys a product and grants an entitlement, a top-up changes a balance at
+        a fixed rate. Nothing is credited here — a pending top-up is a promise, and credits appear only when the
+        money is confirmed.
+
+        `amountMinor` is kobo, and it is the only amount field: one unit means no 100x mistake. Amounts under
+        ₦200 are refused with a field error naming the floor, because payment fees and support cost more than a
+        micro top-up.
+      operationId: startTopup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountMinor]
+              properties:
+                amountMinor:
+                  type: integer
+                  minimum: 20000
+                  maximum: 100000000
+                  description: Amount in kobo. 20000 is the ₦200 floor.
+      responses:
+        "201":
+          description: Pending top-up with its conversion and payment reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  topup: { $ref: "#/components/schemas/Topup" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/wallet/topups/{id}/confirm:
+    post:
+      tags: [wallet]
+      summary: Settle a top-up (sandbox only)
+      description: |
+        The provider-free settle path, registered only when `EDUMART_ALLOW_SANDBOX_PAYMENTS` is on — the same
+        single switch as the order sandbox, so a deployment cannot accept self-confirmed payments in one place
+        and not the other.
+
+        Crediting is idempotent: the ledger row carries a unique key derived from the top-up id, and the status
+        update is conditional on the row still being pending. A retried or duplicated confirmation returns
+        `200` with the settled top-up and credits nothing twice.
+      operationId: confirmTopup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Paid, with the wallet after crediting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  topup: { $ref: "#/components/schemas/Topup" }
+                  wallet: { $ref: "#/components/schemas/Wallet" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: Sandbox payments are off in this deployment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: No such top-up, or it belongs to somebody else
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: The top-up already failed and cannot be completed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /v1/orders:
     get:
@@ -2254,7 +2411,11 @@ paths:
         - `409` when the last seat went to somebody else, or when the caller cannot afford the price;
         - `409` when a discount code has expired or has no uses left;
         - `200` with `alreadyJoined: true` and `creditsSpent: 0` when the caller is already seated, so a retried
-          submit is never a second charge.
+          submit is never a second charge;
+        - `202` with `pending: true` when the class requires approval. A request is not a seat: nothing is charged
+          until the host admits the learner, and `403` follows for the roster, board, stage and signalling until
+          then. The same `202` is returned on a retried request, so polling the invite page is safe;
+        - `403` when the host has already declined this learner.
       operationId: joinVirtualClass
       parameters:
         - $ref: "#/components/parameters/VirtualClassId"
@@ -2281,8 +2442,31 @@ paths:
                   creditsSpent: { type: integer }
                   discountApplied: { type: integer, description: Percentage, 0 when none was used. }
                   alreadyJoined: { type: boolean }
+                  pending:
+                    type: boolean
+                    description: True when this call created or found a request rather than a seat.
+                  admissionStatus: { type: string, enum: [admitted, pending] }
+        "202":
+          description: Request queued for the host; no seat and no charge yet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  class: { $ref: "#/components/schemas/VirtualClass" }
+                  attendee: { type: [object, "null"] }
+                  creditsSpent: { type: integer }
+                  discountApplied: { type: integer }
+                  alreadyJoined: { type: boolean }
+                  pending: { type: boolean }
+                  admissionStatus: { type: string }
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: The host already declined this learner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2363,6 +2547,94 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+
+  /v1/virtual-classes/{id}/requests:
+    get:
+      tags: [live]
+      summary: The host's admission queue
+      description: |
+        Host only — a learner gets `403` rather than an empty list, because the queue contains the names of people
+        whose requests are still undecided and that is not theirs to see. Oldest first, so the host clears the
+        queue in the order it formed.
+      operationId: listJoinRequests
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Pending requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items: { $ref: "#/components/schemas/Attendee" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/virtual-classes/{id}/requests/{userId}:
+    post:
+      tags: [live]
+      summary: Admit or decline one waiting learner
+      description: |
+        Accepting is where the money moves, not the request: the learner's credits are charged when the host says
+        yes, so a decline costs nobody a refund. Everything else happens under the class row lock:
+
+        - `409` when there is no seat left. The request stays pending rather than being dropped, so the host can
+          decline it deliberately or the learner can be admitted when somebody leaves;
+        - `409` when the learner cannot afford the price, naming how many credits they are short;
+        - `200` when the request was already in the requested state, so a double tap is safe.
+
+        The response is the whole roster rather than the one attendee: the host's waiting room and the class list
+        are the same screen and would otherwise need two round trips to agree.
+      operationId: decideJoinRequest
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [accept, reject] }
+      responses:
+        "200":
+          description: Decided; the roster follows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attendees:
+                    type: array
+                    items: { $ref: "#/components/schemas/Attendee" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such class, or that learner never asked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: Room full, or the learner cannot afford the seat
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /v1/virtual-classes/{id}/ice:
     get:
@@ -3384,7 +3656,22 @@ components:
         creditsCost:
           type: integer
           description: Price in learning credits. 0 means free.
-        capacity: { type: integer, description: 0 means unlimited. }
+        capacity:
+          type: integer
+          description: Seats in the room, 2 to 50. A class is never unlimited — the media ceiling is 50.
+        admission:
+          type: string
+          enum: [open, approval]
+          description: |
+            `open` seats whoever pays or knocks; `approval` queues every learner until the host admits them.
+            The policy is fixed at creation so a learner reading the invite page knows what to expect.
+        admissionStatus:
+          type: string
+          enum: [admitted, pending, rejected, ""]
+          description: |
+            Where the caller stands. The host is always `admitted`; empty means the caller has never knocked. A
+            pending request has no seat: the roster, board, stage and signalling are all refused until the host
+            says yes.
         status: { type: string, enum: [scheduled, live, ended, cancelled] }
         startsAt: { type: string, format: date-time }
         durationMinutes: { type: integer }
@@ -3405,9 +3692,76 @@ components:
         description: { type: string }
         subjectId: { type: [string, "null"] }
         creditsCost: { type: integer, minimum: 0, maximum: 10000, default: 0 }
-        capacity: { type: integer, minimum: 0, maximum: 5000, default: 0 }
+        capacity:
+          type: integer
+          minimum: 2
+          maximum: 50
+          default: 50
+          description: Seats, 2 to 50. Omitted or 0 means 50.
+        admission:
+          type: string
+          enum: [open, approval]
+          default: open
+          description: |
+            `approval` puts every learner through a waiting room the host decides on. It cannot be changed after
+            creation, because a room that flips to approval midway would throw out learners already inside.
         startsAt: { type: string, format: date-time }
-        durationMinutes: { type: integer, minimum: 15, maximum: 480, default: 60 }
+        durationMinutes:
+          type: integer
+          minimum: 15
+          maximum: 480
+          default: 45
+          description: A free class (`creditsCost: 0`) is capped at 45 minutes; longer sessions must be priced.
+
+    Topup:
+      type: object
+      required: [id, reference, amountMinor, currency, points, nairaPerPoint, status, provider, createdAt]
+      properties:
+        id: { type: string }
+        reference:
+          type: string
+          description: Stable payment reference, unique per top-up; what a provider callback quotes back.
+        amountMinor: { type: integer, description: Amount in kobo. }
+        currency: { type: string, default: NGN }
+        points: { type: integer, description: Credits this top-up buys, computed at the stored rate. }
+        nairaPerPoint:
+          type: integer
+          description: |
+            The rate stored on the row, not read from configuration when the receipt is drawn. A later price
+            change must not rewrite an earlier receipt.
+        status: { type: string, enum: [pending, paid, failed] }
+        provider: { type: string }
+        createdAt: { type: string, format: date-time }
+        paidAt: { type: [string, "null"], format: date-time }
+
+    Wallet:
+      type: object
+      required: [balance, earned, spent, minTopupMinor, nairaPerPoint, currency]
+      properties:
+        balance: { type: integer }
+        earned: { type: integer }
+        spent: { type: integer }
+        minTopupMinor: { type: integer, description: The recharge floor in kobo — 20000, i.e. ₦200. }
+        nairaPerPoint: { type: integer, description: Naira per credit. 10 means ₦200 buys 20 credits. }
+        currency: { type: string, default: NGN }
+        topups:
+          type: array
+          items: { $ref: "#/components/schemas/Topup" }
+        recent:
+          type: array
+          description: The last ten ledger rows, so "where did my credits go" has an answer in the API.
+          items: { $ref: "#/components/schemas/LedgerRow" }
+
+    LedgerRow:
+      type: object
+      required: [id, amount, entryType, source, createdAt]
+      properties:
+        id: { type: string }
+        amount: { type: integer, description: Signed; negative is a spend. }
+        entryType: { type: string }
+        source: { type: string }
+        note: { type: string }
+        createdAt: { type: string, format: date-time }
 
     Avatar:
       type: object
@@ -3433,6 +3787,16 @@ components:
         present:
           type: boolean
           description: True only while a heartbeat was seen inside the presence window.
+        stageRole: { type: string, enum: [host, speaker, audience] }
+        stageSlot:
+          type: integer
+          description: Server-assigned stage position, or -1. The host reserves slot 0.
+        status:
+          type: string
+          enum: [admitted, pending, rejected]
+          description: |
+            Only `admitted` rows are attendees. `pending` rows are requests, listed for the host alone; `rejected`
+            ones are kept so a declined learner is told what happened instead of being silently re-queued.
 
     BoardEvent:
       type: object

@@ -28,6 +28,8 @@ interface Invite {
   durationMinutes: number;
   status: string;
   joinUrl: string;
+  /** `approval` means joining sends a request the host decides on, and nothing is charged until they accept. */
+  admission: "open" | "approval";
 }
 
 /**
@@ -84,6 +86,7 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
             encrypted whiteboard
           </Badge>
           <Badge variant="outline">{invite.capacity} seats</Badge>
+          {invite.admission === "approval" ? <Badge variant="outline">host approves each learner</Badge> : null}
           {invite.creditsCost === 0 ? <Badge variant="outline">45 minutes</Badge> : null}
         </div>
         <h1 className="text-2xl">{invite.title}</h1>
@@ -111,6 +114,12 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
                 ? `Seats are paid for with learning credits (${invite.creditsCost} for this class), or a discount code from the host.`
                 : "This class is free — signing in is how the host knows who is in the room."}
             </p>
+            {invite.admission === "approval" ? (
+              <p className="text-sm text-muted-foreground">
+                The host approves each learner, so joining sends a request. You are charged nothing unless they
+                accept you.
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button asChild>
                 <Link href={`/login?next=${encodeURIComponent(`/live/${invite.slug}`)}`}>Sign in to join</Link>

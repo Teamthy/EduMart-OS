@@ -105,7 +105,7 @@ Draft steps: `pathway → subjects → schedule → account → confirm`.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/practice-sessions` | `{subjectId, topicIds[], count, difficulty}` |
+| `POST` | `/practice-sessions` | `{mode, subjectId \| topicIds \| classId \| examBody \| mixed, count, difficulty, durationMinutes}` — see *Practice and simulation* below |
 | `POST` | `/assessment-definitions/{id}/sessions` | Starts a timed attempt; enforces window, class membership, attempt limit |
 | `GET` | `/assessment-sessions/{id}` | Owner only (or a teacher of the owning class) |
 | `GET` | `/assessment-sessions?limit=20` | History |
@@ -136,8 +136,6 @@ Content-Type: application/json
 - **Deadline passed**: `409 SESSION_EXPIRED`; the attempt is finalised in the same request.
 - **Closed attempt**: `409 SESSION_CLOSED`.
 
-### Session projection
-
 ### Corrections
 
 ```
@@ -151,6 +149,33 @@ evidence, so the released answer key can never be used to rewrite its score (`40
 response carries the new answer version and nothing else: no correctness, no score, so the endpoint
 cannot be used as an answer oracle. Everything the learner scored is then recomputed from the stored
 responses with the same `domain.ScoreAttempt` used at submission.
+
+### Practice and simulation
+
+`POST /v1/practice-sessions` starts one of two products, chosen by `mode`:
+
+| | `practice` (default) | `simulation` |
+| --- | --- | --- |
+| Clock | four-hour server window nobody is meant to notice | `durationMinutes` (default 45, 5–240), set by the server |
+| Paper | fresh draw every start | fixed: same selection + same caller ⇒ same paper, options shuffled per candidate |
+| Corrections after submit | allowed | refused (`409`) — an exam is evidence |
+| Answers and explanations | after submit | only after submit, exactly as in the graded path |
+
+Both modes are scored by the same engine (`domain.ScoreAttempt`), so a simulated paper and a real one cannot drift
+apart in marking.
+
+Selection is **one** dimension, and `mixed` means "no dimension":
+
+- `subjectId` (+ optional `topicIds` to narrow it);
+- `classId` — the questions that class's published assessments already use; membership is checked server-side;
+- `examBody` — the pathway key or body (`jamb`, `WAEC`, `Post-UTME`, …), matched case-insensitively, so a JAMB
+  paper can only hold questions from JAMB subjects;
+- `mixed: true` — the whole bank.
+
+Combining two sources, or `mixed` with a source, is a `400 VALIDATION_ERROR` naming `selection`: "this subject but
+that class" is ambiguous, and guessing would show a learner the wrong questions.
+
+### Session projection
 
 `GET /assessment-sessions/{id}` returns questions **without** `answerOptionId` or explanations while
 the attempt is in progress. After finalisation, `result_released` follows the assessment's policy
@@ -172,15 +197,17 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/virtual-classes?scope=mine\|past\|all` | Classes the caller hosts or attends, each with the caller's `role` (`host`, `attendee`, or empty for a public listing) |
-| `POST` | `/virtual-classes` | `{title, startsAt, creditsCost, durationMinutes, capacity}`. `capacity` defaults to 50 and is refused outside 2–50, `creditsCost: 0` is capped at 45 minutes |
+| `POST` | `/virtual-classes` | `{title, startsAt, creditsCost, durationMinutes, capacity, admission}`. `capacity` defaults to 50 and is refused outside 2–50, `creditsCost: 0` is capped at 45 minutes, `admission` is `open` (default) or `approval` and is fixed at creation |
 | `GET` | `/virtual-classes/{id}` | One class, its attendees and the caller's role in it |
 | `GET` | `/join/{slug}` | **Anonymous.** What an invite link says before it asks for an account: title, host, time, price, capacity, status |
-| `POST` | `/virtual-classes/{id}/join` | Seat, then attendance row. Paid classes charge credits in the same transaction |
+| `POST` | `/virtual-classes/{id}/join` | Seat, then attendance row. Paid classes charge credits in the same transaction. On an `approval` class this answers **`202`** with `pending: true` and charges nothing; once the host declines, the same call is `403` |
 | `POST` | `/virtual-classes/{id}/leave` | Closes the attendance row; presence is a heartbeat, not a flag |
 | `POST` | `/virtual-classes/{id}/start` | Host only. `scheduled → live` |
 | `POST` | `/virtual-classes/{id}/end` | Host only. `live → ended` |
 | `GET` | `/virtual-classes/{id}/roster` | Attendees with `avatar`, `stageRole`, `stageSlot`, `present`, and join/leave timestamps |
 | `GET` | `/virtual-classes/{id}/attendance` | The recorded session timeline, not a client-side counter |
+| `GET` | `/virtual-classes/{id}/requests` | **Host only.** The admission queue: everyone whose request is undecided, oldest first |
+| `POST` | `/virtual-classes/{id}/requests/{userId}` | **Host only.** `{decision: "accept" \| "reject"}`. Accepting takes a seat under the class row lock and charges then; `409` when the room is full or the learner is short of credits, and the request stays queued |
 | `GET` | `/virtual-classes/{id}/ice` | iceServers for this caller: the deployment's STUN entries plus, when the relay is enabled, a `turn:` entry carrying a credential minted for that participant and expiring within the hour |
 | `GET`/`POST` | `/virtual-classes/{id}/board` | The whiteboard payload, versioned so concurrent strokes do not overwrite each other |
 | `GET`/`POST` | `/virtual-classes/{id}/signal` | SDP/ICE exchange for the board's end-to-end-encrypted channel |
@@ -192,6 +219,11 @@ A room holds **50 people**; the **six-seat stage** (host slot 0 plus five speake
 forwards, so fifty people in a room never means fifty simultaneous video streams from one laptop. Audio and video
 travel hop by hop — browser → server → browser — so the honest claim is *encrypted in transit and forwarded by an
 SFU we run*, not end to end. Only the whiteboard is end-to-end encrypted.
+
+A class with `admission: "approval"` is a **waiting room**: a learner's join creates a `pending` attendance row — no
+seat, no charge — and the roster, board, stage and signalling all answer `403` (naming whether the request is
+pending or declined) until the host decides. Charging at acceptance rather than at knocks means a decline never
+costs a refund. See [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md#admission-and-the-waiting-room).
 
 Free classes are capped at **45 minutes server-side**, enforced twice: at creation, and again at the door by
 `join`, `start` and `/media`, so a clock cannot be talked past. A paid class keeps its own `durationMinutes`.
@@ -274,6 +306,28 @@ visibility. See [`SEARCH.md`](./SEARCH.md).
 Webhook behaviour: verify signature → record event (unique per `provider`+`event_id`) → match order by
 reference → verify amount and currency → ignore non-`succeeded` statuses → mark paid, grant
 entitlements, audit. Replays return `{received: true, duplicate: true}`.
+
+### Wallet (recharge → credits)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/wallet` | Balance (summed from the ledger, never stored), `earned`/`spent`, the terms (`minTopupMinor`, `nairaPerPoint`), the last ten top-ups and the last ten ledger rows |
+| `POST` | `/wallet/topups` | `{amountMinor}` in **kobo**. Minimum **₦200 (20000)**; at most ₦1,000,000. Creates a `pending` top-up and credits nothing |
+| `POST` | `/wallet/topups/{id}/confirm` | **Sandbox only** (registered only when `EDUMART_ALLOW_SANDBOX_PAYMENTS` is on). Marks the top-up paid and credits the points once |
+
+A top-up is **not** an order: an order buys a product and grants an entitlement, a top-up changes a balance at a
+fixed rate. Three consequences are contractual:
+
+- **The floor is ₦200 and it is the server's.** A smaller amount is `400 VALIDATION_ERROR` on the field
+  `amountMinor`, with the floor in the message; nothing is written for a refused attempt.
+- **The rate is stored on the row.** `naira_per_point` is copied into each top-up, so changing the price tomorrow
+  cannot rewrite today's receipt.
+- **Crediting is idempotent.** The ledger row carries the idempotency key `topup:<topup id>` and the status update
+  is conditional on the row still being `pending`, so a retried or duplicated confirmation pays once. A confirmation
+  for somebody else's top-up is `404`, never `403` — its existence is not the caller's business.
+
+Points land in the same append-only ledger that referrals and rewards write to (`entry_type = 'topup'`,
+`source_type = 'wallet_topup'`), so a live class charges topped-up and earned credits identically.
 
 ### Refunds
 

@@ -37,6 +37,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
+	"github.com/teamthy/edumart/apps/api/internal/wallet"
 )
 
 const webhookSecret = "test_webhook_secret"
@@ -139,6 +140,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		t.Fatalf("relay: %v", relayErr)
 	}
 	t.Cleanup(func() { _ = relayService.Close() })
+	walletService := wallet.New(db, wallet.Config{Sandbox: true, Logger: logger})
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL:     "http://localhost:3000",
 		ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
@@ -159,6 +161,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Notifier: courier,
 		Finder:   search.New(db),
 		Live:     liveService,
+		Wallet:   walletService,
 		// The forwarder is real, not a stub: it opens no sockets until somebody negotiates, and a fake here
 		// would let a test pass against media behaviour the deployment does not have.
 		Media:    forwarder,

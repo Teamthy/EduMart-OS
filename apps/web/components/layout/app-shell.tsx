@@ -14,6 +14,7 @@ import {
   Shield,
   Sparkles,
   Users,
+  Wallet,
 } from "lucide-react";
 
 import type { Role, User } from "@edumart/shared";
@@ -45,6 +46,7 @@ const NAV: NavItem[] = [
   { href: "/teacher", label: "Teaching", icon: GraduationCap, roles: ["teacher", "org_admin", "platform_admin"] },
   { href: "/admin", label: "Operations", icon: Shield, roles: ["content_editor", "platform_admin", "support", "finance"] },
   { href: "/rewards", label: "Rewards", icon: BookOpen },
+  { href: "/wallet", label: "Wallet", icon: Wallet },
 ];
 
 function visibleFor(user: User): NavItem[] {

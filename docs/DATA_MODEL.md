@@ -76,7 +76,8 @@ public endpoint that echoes paid content in a snippet is a content leak with a h
 
 | Table | Asset | Notes |
 | --- | --- | --- |
-| `points_ledger_entries` | Engagement points | `idempotency_key` unique; negative rows for redemptions |
+| `points_ledger_entries` | Learning credits | `idempotency_key` unique; negative rows for spends. Written by rewards, referrals and recharges alike (`entry_type`/`source_type` say which), so a balance is always the sum of one table |
+| `wallet_topups` | Money in, before it is credits | `reference` unique and quoted to the provider; `naira_per_point` copied per row so a price change cannot rewrite an old receipt; `status` moves `pending → paid` once and only once |
 | `commission_ledger_entries` | Money owed (minor units) | Separate table, separate status lifecycle |
 
 ## Growth and operations
@@ -84,6 +85,7 @@ public endpoint that echoes paid content in a snippet is a content leak with a h
 | Table | Purpose |
 | --- | --- |
 | `referral_codes`, `referral_attributions` | One code per learner; attribution pending → qualified on first paid order |
+| `virtual_classes`, `virtual_class_attendees` | A class carries its `admission` policy (`open`/`approval`) at creation; an attendee row carries `status` (`admitted`/`pending`/`rejected`). A pending row is a **request**, not a seat: seat counts and rosters only ever count `admitted`. The policy and the status are two different questions ("who may enter" vs "where does this person stand") and are deliberately not one column |
 | `study_plans` | Daily minutes, focus topics |
 | `learning_events` | Append-only behavioural log |
 | `support_cases`, `audit_logs` | Support queue and an audit trail that names the actor, action and reason |

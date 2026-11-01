@@ -72,11 +72,16 @@ export interface LiveClass {
   attendees: number;
   joinUrl: string;
   role: string;
+  /** `open` seats whoever pays or knocks; `approval` queues learners until the host decides. */
+  admission: "open" | "approval";
+  /** Where the caller stands: admitted, pending, rejected, or empty if they have never knocked. */
+  admissionStatus: "admitted" | "pending" | "rejected" | "";
 }
 
 export interface StageSeat {
   userId: string;
   displayName: string;
+  avatar?: { initials: string; color: string };
   role: string;
   paymentMethod: string;
   creditsPaid: number;
@@ -85,6 +90,7 @@ export interface StageSeat {
   present: boolean;
   stageRole: "host" | "speaker" | "audience";
   stageSlot: number;
+  status: "admitted" | "pending" | "rejected";
 }
 
 export interface BoardEventRow {
@@ -125,14 +131,36 @@ export async function createLiveClass(input: {
   capacity?: number;
   startsAt: string;
   durationMinutes: number;
+  admission?: "open" | "approval";
 }) {
   return call<{ class: LiveClass }>("/virtual-classes", { method: "POST", body: JSON.stringify(input) });
 }
 
+export interface JoinOutcome {
+  class: LiveClass;
+  creditsSpent: number;
+  alreadyJoined: boolean;
+  /** True when the class requires approval and this call queued a request instead of taking a seat. */
+  pending: boolean;
+  admissionStatus: "admitted" | "pending" | "";
+}
+
 export async function joinLiveClass(id: string, discountCode?: string) {
-  return call<{ class: LiveClass }>(`/virtual-classes/${id}/join`, {
+  return call<JoinOutcome>(`/virtual-classes/${id}/join`, {
     method: "POST",
     body: JSON.stringify(discountCode ? { discountCode } : {}),
+  });
+}
+
+/** The host's waiting room: everybody whose request is still undecided. Host-only, refused for anyone else. */
+export async function liveRequests(id: string) {
+  return call<{ requests: StageSeat[] }>(`/virtual-classes/${id}/requests`);
+}
+
+export async function decideRequest(id: string, userId: string, decision: "accept" | "reject") {
+  return call<{ attendees: StageSeat[] }>(`/virtual-classes/${id}/requests/${userId}`, {
+    method: "POST",
+    body: JSON.stringify({ decision }),
   });
 }
 
@@ -355,4 +383,85 @@ export interface Consistency {
 
 export async function getConsistency(days = 30) {
   return call<{ consistency: Consistency }>(`/consistency?days=${days}`);
+}
+
+// ── wallet ──────────────────────────────────────────────────────────────────────────────────────
+
+export interface Topup {
+  id: string;
+  reference: string;
+  amountMinor: number;
+  currency: string;
+  points: number;
+  nairaPerPoint: number;
+  status: "pending" | "paid" | "failed";
+  provider: string;
+  createdAt: string;
+  paidAt: string | null;
+}
+
+export interface LedgerRow {
+  id: string;
+  amount: number;
+  entryType: string;
+  source: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface Wallet {
+  balance: number;
+  earned: number;
+  spent: number;
+  /** The recharge floor in kobo — 20000 is ₦200. Rendered from the server so a price change needs no release. */
+  minTopupMinor: number;
+  nairaPerPoint: number;
+  currency: string;
+  topups: Topup[];
+  recent: LedgerRow[];
+}
+
+export async function getWallet() {
+  return call<{ wallet: Wallet }>("/wallet");
+}
+
+export async function startTopup(amountMinor: number) {
+  return call<{ topup: Topup }>("/wallet/topups", {
+    method: "POST",
+    body: JSON.stringify({ amountMinor }),
+  });
+}
+
+/**
+ * Settle a top-up without a payment provider. Registered only where the deployment allows sandbox payments, so
+ * this can 403 in production — the wallet screen offers it only when the environment says so.
+ */
+export async function confirmTopup(id: string) {
+  return call<{ topup: Topup; wallet: Wallet }>(`/wallet/topups/${id}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+// ── practice selection ──────────────────────────────────────────────────────────────────────────
+
+export interface PracticeSelection {
+  /** `practice` is untimed revision; `simulation` is a clocked paper with no corrections afterwards. */
+  mode?: "practice" | "simulation";
+  subjectId?: string;
+  topicIds?: string[];
+  classId?: string;
+  /** WAEC, NECO, JAMB, Post-UTME — the pathway key or body, matched case-insensitively. */
+  examBody?: string;
+  mixed?: boolean;
+  difficulty?: string;
+  count?: number;
+  durationMinutes?: number;
+}
+
+export async function startPracticeSession(input: PracticeSelection) {
+  return call<{ session: { session_id: string; mode: string; remaining_seconds: number } }>("/practice-sessions", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }

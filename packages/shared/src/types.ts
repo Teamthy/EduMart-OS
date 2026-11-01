@@ -493,6 +493,50 @@ export interface Order {
   refunds: Refund[];
 }
 
+/**
+ * One recharge attempt. `nairaPerPoint` is stored per row on purpose: a later price change must not rewrite what an
+ * earlier receipt said.
+ */
+export interface Topup {
+  id: string;
+  reference: string;
+  /** Amount in kobo. 20000 is the ₦200 floor. */
+  amountMinor: number;
+  currency: string;
+  points: number;
+  nairaPerPoint: number;
+  status: "pending" | "paid" | "failed";
+  provider: string;
+  createdAt: string;
+  paidAt: string | null;
+}
+
+/** One points movement, as shown in the wallet's history. */
+export interface PointsLedgerRow {
+  id: string;
+  /** Signed: negative is a spend. */
+  amount: number;
+  entryType: string;
+  source: string;
+  note: string;
+  createdAt: string;
+}
+
+/**
+ * The wallet screen. `balance` is the sum of the append-only ledger, and the terms (`minTopupMinor`,
+ * `nairaPerPoint`) come from the server so the form cannot disagree with what is charged.
+ */
+export interface Wallet {
+  balance: number;
+  earned: number;
+  spent: number;
+  minTopupMinor: number;
+  nairaPerPoint: number;
+  currency: string;
+  topups: Topup[];
+  recent: PointsLedgerRow[];
+}
+
 /** Where two records of the same money disagree. */
 export type DiscrepancyKind =
   | "paid_without_entitlement"

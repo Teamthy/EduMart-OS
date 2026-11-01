@@ -58,16 +58,13 @@ func (h *Handlers) StartPractice(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var in struct {
-		SubjectID  string   `json:"subjectId"`
-		TopicIDs   []string `json:"topicIds"`
-		Count      int      `json:"count"`
-		Difficulty string   `json:"difficulty"`
-	}
+	// One body for both modes. `subjectId` + `count` + `difficulty` is the original shape and still works, so a
+	// client that predates modes keeps drawing from a subject without knowing simulation exists.
+	var in PracticeInput
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
 	}
-	session, err := h.svc.StartPractice(r.Context(), user.ID, in.SubjectID, in.TopicIDs, in.Count, in.Difficulty)
+	session, err := h.svc.StartPractice(r.Context(), user.ID, in)
 	if err != nil {
 		return err
 	}

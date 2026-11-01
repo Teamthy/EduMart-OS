@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, Sparkles } from "lucide-react";
 
-import { formatPercent, type Dashboard, type Subject, type Topic } from "@edumart/shared";
+import { formatPercent, type ClassSummary, type Dashboard, type Pathway, type Subject } from "@edumart/shared";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ServerApiError, serverFetch } from "@/lib/server-api";
 import { requireUser } from "@/lib/session";
+import { QuickStart } from "./quick-start";
 
 export const metadata: Metadata = { title: "Practice" };
 export const dynamic = "force-dynamic";
@@ -20,14 +21,20 @@ export default async function PracticePage() {
 
   let subjects: Subject[] = [];
   let dashboard: Dashboard | null = null;
+  let pathways: Pathway[] = [];
+  let classes: ClassSummary[] = [];
 
   try {
-    const [subjectResponse, dashboardResponse] = await Promise.all([
+    const [subjectResponse, dashboardResponse, pathwayResponse, classResponse] = await Promise.all([
       serverFetch<{ subjects: Subject[] }>("/v1/subjects"),
       serverFetch<{ dashboard: Dashboard }>("/v1/dashboard"),
+      serverFetch<{ pathways: Pathway[] }>("/v1/exam-pathways"),
+      serverFetch<{ classes: ClassSummary[] }>("/v1/classes"),
     ]);
     subjects = subjectResponse.subjects;
     dashboard = dashboardResponse.dashboard;
+    pathways = pathwayResponse.pathways;
+    classes = classResponse.classes;
   } catch (error) {
     return (
       <Alert tone="error" title="Practice is unavailable right now">
@@ -50,6 +57,11 @@ export default async function PracticePage() {
           shown only after you finish.
         </p>
       </header>
+
+      <QuickStart
+        pathways={pathways.filter((pathway) => pathway.subjects > 0)}
+        classes={classes.map((room) => ({ id: room.id, name: room.name }))}
+      />
 
       {focus.length > 0 ? (
         <Card>
@@ -142,4 +154,4 @@ function SubjectCard({ subject }: { subject: Subject }) {
   );
 }
 
-export type { Topic };
+export type { Topic } from "@edumart/shared";
