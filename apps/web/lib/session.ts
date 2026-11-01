@@ -14,7 +14,13 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
     const { user } = await serverFetch<{ user: User }>("/v1/me");
     return user;
   } catch (error) {
-    if (error instanceof ServerApiError && (error.isUnauthenticated || error.isForbidden)) return null;
+    if (!(error instanceof ServerApiError)) throw error;
+    if (error.isUnauthenticated || error.isForbidden) return null;
+    // A transport failure is not a session failure, but rendering a 500 on every page is not an
+    // improvement: `EDUMART_API_URL` is unset or wrong in this environment, so treat the visitor as
+    // signed out and let the sign-in attempt surface the real error. The `/v1/*` proxy still answers
+    // 503 "the API is unreachable" for every API call, so the outage stays visible instead of hidden.
+    if (error.code === "NETWORK_ERROR") return null;
     throw error;
   }
 });
