@@ -34,15 +34,25 @@ const (
 // SessionCookie is the browser session cookie name: the short-lived access token.
 const SessionCookie = "edumart_session"
 
-// RefreshCookie is the name a browser client may use to present its refresh token to
+// RefreshCookie is the name a browser client presents its refresh token in, to
 // POST /v1/auth/refresh instead of sending it in the body.
 //
-// The API never sets this cookie itself. A refresh token is a 30-day single-use credential, and putting
-// it in a cookie hands it to every request the browser makes to this origin on behalf of a client that
-// may not use it. A client that wants the cookie can set it itself, scoped to the auth path.
+// The API sets this cookie for browser sign-ins and scopes it to RefreshCookiePath. That scope is the
+// whole argument for it: the token is a 30-day single-use credential, and at `Path=/v1/auth` the browser
+// sends it to three endpoints and nowhere else — not to every page, image and API call the way an
+// origin-wide cookie would.
 const RefreshCookie = "edumart_refresh"
 
-const sessionTTL = 7 * 24 * time.Hour
+// RefreshCookiePath is deliberately narrower than "/".
+const RefreshCookiePath = "/v1/auth"
+
+// DefaultAccessTTL is how long an access token lives.
+//
+// It used to be seven days, and that made the rotation below decorative: no browser ever called
+// /v1/auth/refresh, because its access cookie outlived every session it could have refreshed. An hour is
+// short enough that a stolen access token is a bounded problem, and long enough that the refresh path runs
+// a few times a day rather than on every click.
+const DefaultAccessTTL = time.Hour
 
 // Account statuses. `suspended` is the only one a member of staff can set; the others exist so a status
 // column is never a free-text field.
@@ -101,6 +111,10 @@ type Service struct {
 	notifier   notify.Courier
 	codeSecret []byte
 	logger     *slog.Logger
+	// accessTTL is how long an issued access token lives. Configurable because a test that has to wait an
+	// hour to prove expiry is a test nobody runs, and because an operator may want to shorten it during an
+	// incident.
+	accessTTL time.Duration
 }
 
 // Option configures the identity service.
@@ -119,6 +133,25 @@ func WithCodeSecret(secret string) Option {
 	return func(s *Service) { s.codeSecret = []byte(secret) }
 }
 
+// WithAccessTTL changes how long an access token lives. A non-positive value is ignored rather than
+// producing tokens that expire before they are used.
+func WithAccessTTL(ttl time.Duration) Option {
+	return func(s *Service) {
+		if ttl > 0 {
+			s.accessTTL = ttl
+		}
+	}
+}
+
+// AccessTTL is the configured lifetime, used by the handlers to set cookie expiry from the same number
+// the token itself was created with.
+func (s *Service) AccessTTL() time.Duration {
+	if s.accessTTL <= 0 {
+		return DefaultAccessTTL
+	}
+	return s.accessTTL
+}
+
 // WithLogger sets the logger used for delivery failures.
 func WithLogger(logger *slog.Logger) Option {
 	return func(s *Service) { s.logger = logger }
@@ -126,7 +159,8 @@ func WithLogger(logger *slog.Logger) Option {
 
 // New builds the auth service.
 func New(db *store.Store, opts ...Option) *Service {
-	s := &Service{db: db, notifier: discardCourier{}, codeSecret: []byte(DefaultCodeSecret), logger: slog.Default()}
+	s := &Service{db: db, notifier: discardCourier{}, codeSecret: []byte(DefaultCodeSecret),
+		logger: slog.Default(), accessTTL: DefaultAccessTTL}
 	for _, opt := range opts {
 		opt(s)
 	}

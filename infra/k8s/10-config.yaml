@@ -28,6 +28,9 @@ data:
   EDUMART_PAYMENT_PROVIDER: paystack
   # Sandbox payments are an acceptance-test path that credits an account without money. Off in production.
   EDUMART_ALLOW_SANDBOX_PAYMENTS: "false"
+  # An hour, not a week. Clients renew with the single-use refresh token, so a stolen access token is a
+  # bounded problem rather than a seven-day one.
+  EDUMART_ACCESS_TOKEN_TTL: 1h
   # Migrations are a deploy step (`-migrate-only`, run by the Job), never a boot side effect. Replicas verify
   # the ledger instead, so exactly one process ever changes the schema during a rollout.
   EDUMART_MIGRATE_ON_BOOT: "false"

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import type { User } from "@edumart/shared";
 
-import { api, tokenStore } from "./api";
+import { api, rotateSession, tokenStore } from "./api";
 
 interface AuthState {
   user: User | null;
@@ -30,7 +30,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await api.me();
       setUser(response.user);
-    } catch {
+    } catch (error) {
+      // An expired access token is the normal case after an hour asleep, not a sign-out: rotate and retry
+      // once before giving up. Anything else is a genuine failure and clears the session.
+      const status = (error as { status?: number } | null)?.status;
+      if (status === 401 && (await rotateSession())) {
+        try {
+          const response = await api.me();
+          setUser(response.user);
+          return;
+        } catch {
+          /* fall through to signing out */
+        }
+      }
       await tokenStore.clear();
       setUser(null);
     } finally {
@@ -45,6 +57,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     const session = await api.login(email, password, "mobile");
     await tokenStore.set(session.token);
+    // Both halves of the pair, or the app can never rotate and an hourly token becomes an hourly sign-in.
+    if (session.refresh_token) await tokenStore.setRefresh(session.refresh_token);
     setUser(session.user);
   }, []);
 

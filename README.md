@@ -255,6 +255,7 @@ Copy `.env.example` to `.env` for local overrides; both services read environmen
 | `EDUMART_ALLOW_SANDBOX_PAYMENTS` | `true` | Exposes the sandbox "simulate webhook" endpoint |
 | `EDUMART_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:8081` | CORS allowlist for native clients |
 | `EDUMART_TRUST_PROXY` | `false` | Believe `X-Forwarded-For`. Set `true` **only** behind a load balancer or proxy — otherwise every rate limit is keyed on a value the caller chooses |
+| `EDUMART_ACCESS_TOKEN_TTL` | `1h` | Access-token lifetime; clients renew with the single-use refresh token |
 | `EDUMART_MIGRATE_ON_BOOT` | `true` | A replica sets this `false` and lets a migration job (`api -migrate-only`) own the schema |
 | `EDUMART_MIGRATION_LOCK_TIMEOUT` | `60s` | How long to wait for another process to finish migrating |
 | `EDUMART_DB_MAX_OPEN_CONNS` | `20` | PostgreSQL connection ceiling per process. Unbounded is Go's default and fails only under pressure |

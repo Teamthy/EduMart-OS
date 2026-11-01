@@ -7,7 +7,8 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with the rolling rollout: the API is a tested container image, and the swap that an orchestrator
+Last updated with session rotation: the browser and the native app now rotate refresh tokens, so an hour-long
+access token is a real bound rather than a number nothing enforced. Before that, the rolling rollout: the API is a tested container image, and the swap that an orchestrator
 performs — surge, drain, then abort halfway — is executed under continuous traffic on every pull request, with
 two deliberately broken rollouts proving the gate still fails. Before that, search closed the last "lists only" gap,
 accessibility was measured rather than claimed, and the system was load-tested with its invariants proved to
@@ -23,7 +24,7 @@ survive.
 | 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 78 routes, contract checked in CI |
-| 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id and rotating refresh tokens with reuse detection are all in place; **no device-level 2FA, no IP/geo risk signals, and the web shell does not rotate** |
+| 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, and **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **No device-level 2FA, no IP/geo risk signals** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
@@ -192,10 +193,20 @@ TypeScript client used by web and mobile.
 | **Email and phone verification** | **Done** — `POST /v1/auth/verification/request` and `/confirm`; HMAC-protected, single-use, 15-minute, attempt-limited codes; E.164 normalisation; per-user throttling; delivery through the durable courier (Phase 24), so a relay outage retries instead of losing the code |
 | Verification gate | Checkout (`POST /v1/orders`) refuses an unverified address with `EMAIL_NOT_VERIFIED` |
 | Rate limits | Per-route, **in-process** — resets on restart and does not span instances |
-| Refresh tokens / rotation | **Done** — `POST /v1/auth/refresh` exchanges a single-use, 30-day refresh token for a new pair (7-day access token + new refresh token). Reuse past a 20-second grace window revokes the whole session family with `401 SESSION_REUSED`. Sign-out ends the family too. The web shell does not yet rotate — it keeps its 7-day cookie and signs in again; native clients rotate |
+| Refresh tokens / rotation | **Done, and now used.** `POST /v1/auth/refresh` exchanges a single-use, 30-day refresh token for a new pair (**1-hour** access token + new refresh token). Reuse past a 20-second grace window revokes the whole session family (`SESSION_REUSED`). Browser sign-ins also get an `HttpOnly`, `SameSite=Lax` refresh cookie **scoped to `Path=/v1/auth`**; the web middleware rotates it transparently before a page renders, and the Expo app keeps the pair in secure storage and refreshes single-flight on a 401. Sign-out kills the family from either credential and clears both cookies at their own paths |
 | **Account suspension** | **Done** — `POST /v1/admin/users/{id}/suspend` and `/reinstate`, platform administrators only, never against an administrator or yourself |
 | Moderation lookup | `GET /v1/admin/users?q=&status=` — an administrator cannot suspend an account they cannot find |
 | Security-event audit trail | Suspension and reinstatement write `user.suspended` / `user.reinstated` to `audit_logs` in the same transaction as the change |
+
+**The gap that closed here was in the clients, not the server.** Everything in the row above was already
+implemented and tested, and nothing used it: the web kept a seven-day access cookie and the app kept only the
+access token, so the refresh endpoint was dead code in production and every session really lasted a week. Both
+now rotate, the access token is an hour, and `scripts/session-lifecycle.py` proves the experience end to end —
+sign in, expire, renew, sign out, replay refused — against a real server and a real cookie jar, in CI, both
+against the binary and through the web container. Two defects only surfaced by running it: the web middleware
+renewed the session for the *next* request while the current one still redirected to `/login`
+(`NextResponse.next` copies headers when constructed), and sign-out with an expired access cookie revoked
+nothing. See [`SECURITY_AND_DURABILITY.md`](./SECURITY_AND_DURABILITY.md).
 
 **Session rotation, and why the family is the unit.** A single long-lived token has one failure mode
 that matters: once it leaks, the thief has the owner's standing for the token's whole life and nobody can
