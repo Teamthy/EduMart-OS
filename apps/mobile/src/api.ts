@@ -144,6 +144,7 @@ async function draftRequest<T>(method: "GET" | "PATCH" | "POST", path: string, b
 
 export interface ServerDraft {
   draft: {
+    accountType?: "student" | "tutor" | "institution";
     examPathwayId?: string;
     examPathwayKey?: string;
     subjectIds?: string[];

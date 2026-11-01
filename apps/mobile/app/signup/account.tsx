@@ -2,7 +2,7 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { ScrollView, Text } from "react-native";
 
-import { ApiError, SIGNUP_STEPS, validateStep, type SignupDraft } from "@edumart/shared";
+import { ACCOUNT_TYPES, ApiError, SIGNUP_STEPS, validateStep, type AccountType, type SignupDraft } from "@edumart/shared";
 
 import { api, draftStore, signupApi, tokenStore } from "@/api";
 import { useAuth } from "@/auth";
@@ -15,6 +15,7 @@ export default function AccountStep() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [referralCode, setReferralCode] = useState("");
+  const [accountType, setAccountType] = useState<AccountType>("student");
   const [draft, setDraft] = useState<Awaited<ReturnType<typeof signupApi.current>> | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -27,11 +28,13 @@ export default function AccountStep() {
       setDisplayName(current.draft?.displayName ?? "");
       setEmail(current.draft?.email ?? "");
       setReferralCode(current.referralCode ?? "");
+      setAccountType(current.draft?.accountType ?? "student");
     })();
   }, []);
 
   async function submit() {
     const form: SignupDraft = {
+      accountType,
       examPathwayKey: draft?.draft?.examPathwayKey ?? "",
       examPathwayId: draft?.draft?.examPathwayId ?? "",
       subjectIds: draft?.draft?.subjectIds ?? [],
@@ -55,8 +58,10 @@ export default function AccountStep() {
     setError(null);
     try {
       // Persist the visible fields first, then create the account from the same draft.
-      await signupApi.patch({ currentStep: "confirm", displayName, email, referralCode });
+      await signupApi.patch({ currentStep: "confirm", displayName, email, referralCode, accountType });
       const session = await api.register({
+        // Intent only. It routes onboarding and never grants a role.
+        accountType,
         displayName: displayName.trim(),
         email: email.trim().toLowerCase(),
         password,
@@ -95,6 +100,20 @@ export default function AccountStep() {
       <Screen title={step.title} subtitle={step.description}>
         <StepHeader step={4} total={SIGNUP_STEPS.length} label={step.label} />
         {error ? <Banner tone="error">{error}</Banner> : null}
+
+        <Text style={{ color: theme.colors.ink, fontSize: 13, fontWeight: "600" }}>What kind of account is this?</Text>
+        <Text style={{ color: theme.colors.inkMuted, fontSize: 12 }}>
+          It shapes onboarding and grants no permissions: institutions are verified before running classes, and
+          tutors are invited by a school before teaching inside one.
+        </Text>
+        {ACCOUNT_TYPES.map((option) => (
+          <Button
+            key={option.value}
+            label={`${accountType === option.value ? "● " : "○ "}${option.label}`}
+            variant={accountType === option.value ? "secondary" : "ghost"}
+            onPress={() => setAccountType(option.value)}
+          />
+        ))}
 
         <Field label="Full name" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" error={errors.displayName} />
         <Field

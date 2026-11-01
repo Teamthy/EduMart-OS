@@ -38,6 +38,7 @@ tags:
   - name: classroom
   - name: commerce
   - name: rewards
+  - name: live
   - name: staff
 
 paths:
@@ -1566,6 +1567,31 @@ paths:
       responses:
         "200": { description: Referral }
 
+  /v1/referrals/tree:
+    get:
+      tags: [rewards]
+      summary: Multi-level referral tree
+      description: |
+        The caller's downline, rung by rung, up to the configured programme depth. Each level reports how many
+        people it contains, how many of them qualified, its rate, and what it has actually paid — commission is
+        read from the ledger, so the tree can never disagree with a payout report.
+
+        Members are shown by first name and initials. A referral tree answers "is my link working?", it is not
+        a contact export, so no email address or phone number appears here.
+      operationId: getReferralTree
+      responses:
+        "200":
+          description: The tree
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tree]
+                properties:
+                  tree: { $ref: "#/components/schemas/ReferralTree" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
   /v1/support-cases:
     post:
       tags: [staff]
@@ -2107,6 +2133,477 @@ paths:
       responses:
         "200": { description: Resolved }
 
+  /v1/join/{slug}:
+    get:
+      tags: [live]
+      summary: Resolve a shareable join link
+      description: |
+        The one anonymous live-class route. It answers "what is this, who hosts it, what does it cost?" before a
+        visitor has an account, because a link that demands sign-in before saying what it is for is a link
+        nobody clicks twice. It deliberately does not list the roster.
+      operationId: resolveJoinLink
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, minLength: 4, maxLength: 32 }
+      responses:
+        "200":
+          description: The class the link points at
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [class]
+                properties:
+                  class: { $ref: "#/components/schemas/JoinInvite" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/virtual-classes:
+    get:
+      tags: [live]
+      summary: List live classes
+      operationId: listVirtualClasses
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: hosting, attending, or upcoming (default) for classes the caller may see.
+          schema: { type: string, enum: [upcoming, hosting, attending, all] }
+      responses:
+        "200":
+          description: Classes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  classes:
+                    type: array
+                    items: { $ref: "#/components/schemas/VirtualClass" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    post:
+      tags: [live]
+      summary: Schedule a class (free or paid)
+      description: |
+        Any signed-in account may host: a student running a revision session is as valid as an institution
+        running a lecture, so there is no role check. `creditsCost` 0 means free. A price is taken in learning
+        credits only — the API never holds a card on behalf of a host.
+      operationId: createVirtualClass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateVirtualClassRequest" }
+      responses:
+        "201":
+          description: Scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  class: { $ref: "#/components/schemas/VirtualClass" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/virtual-classes/{id}:
+    get:
+      tags: [live]
+      summary: One class, including the caller's role in it
+      operationId: getVirtualClass
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: The class
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  class: { $ref: "#/components/schemas/VirtualClass" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/virtual-classes/{id}/join:
+    post:
+      tags: [live]
+      summary: Take a seat, paying credits or applying a discount code
+      description: |
+        One transaction re-reads the price, the capacity and the discount inside the lock. Three things follow
+        from that and are contractual:
+
+        - `409` when the last seat went to somebody else, or when the caller cannot afford the price;
+        - `409` when a discount code has expired or has no uses left;
+        - `200` with `alreadyJoined: true` and `creditsSpent: 0` when the caller is already seated, so a retried
+          submit is never a second charge.
+      operationId: joinVirtualClass
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                discountCode:
+                  type: string
+                  description: Optional. Without one the class's full credit price applies.
+      responses:
+        "200":
+          description: Seated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  class: { $ref: "#/components/schemas/VirtualClass" }
+                  attendee: { $ref: "#/components/schemas/Attendee" }
+                  creditsSpent: { type: integer }
+                  discountApplied: { type: integer, description: Percentage, 0 when none was used. }
+                  alreadyJoined: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Full, finished, unaffordable, or the code is not usable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/virtual-classes/{id}/leave:
+    post:
+      tags: [live]
+      summary: Leave the room
+      description: Stamps `leftAt` so the attendance report has an end time. Idempotent.
+      operationId: leaveVirtualClass
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200": { description: Left }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /v1/virtual-classes/{id}/start:
+    post:
+      tags: [live]
+      summary: Start the session (host only)
+      description: Opens a session row and marks the class live. Repeatable, so a host who reloads the room is not locked out.
+      operationId: startVirtualClass
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200": { description: Started }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/virtual-classes/{id}/end:
+    post:
+      tags: [live]
+      summary: End the session (host only)
+      description: Closes the open session and the class. An ended class refuses new joins, or the attendance report becomes a lie.
+      operationId: endVirtualClass
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200": { description: Ended }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/virtual-classes/{id}/roster:
+    get:
+      tags: [live]
+      summary: Attendee list with avatars and presence
+      description: |
+        `present` is a heartbeat, not a flag: true only while the attendee has been seen within the presence
+        window (75 seconds). A browser that crashes never sends a leave, so presence has to decay on its own.
+      operationId: virtualClassRoster
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Attendees, host first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attendees:
+                    type: array
+                    items: { $ref: "#/components/schemas/Attendee" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/virtual-classes/{id}/ice:
+    get:
+      tags: [live]
+      summary: ICE servers for the room
+      description: |
+        Handed straight to `RTCPeerConnection`. Audio and video never reach the API — peers connect directly
+        under DTLS-SRTP — so what this returns is the whole of NAT traversal for this deployment. With STUN
+        alone, two peers behind symmetric NAT cannot connect; that is a stated limit, not a bug.
+      operationId: virtualClassICEServers
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: RTCPeerConnection iceServers shape
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  iceServers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        urls:
+                          oneOf:
+                            - { type: string }
+                            - { type: array, items: { type: string } }
+                        username: { type: string }
+                        credential: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/virtual-classes/{id}/board:
+    get:
+      tags: [live]
+      summary: Replay whiteboard events
+      description: Returns every stored event after `since`, in order, so a late joiner sees the board as it stands.
+      operationId: getVirtualClassBoard
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Ordered ciphertext
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/BoardEvent" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [live]
+      summary: Append a whiteboard event
+      description: |
+        The payload is opaque ciphertext under a room key the server never receives. Only shape is validated, so
+        plaintext is refused outright: the API has no key, and storing anything else would make "end-to-end
+        encrypted" false. `seq` is assigned by the server and is dense, so the board has no holes.
+      operationId: appendVirtualClassBoardEvent
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nonce, ciphertext]
+              properties:
+                nonce: { type: string, minLength: 8, maxLength: 64, description: base64url }
+                ciphertext: { type: string, minLength: 16, maxLength: 16384, description: base64url }
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seq: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/virtual-classes/{id}/signal:
+    get:
+      tags: [live]
+      summary: Poll the signalling relay
+      description: |
+        SDP and ICE candidates only. The relay is targeted at members of the class, and rows are pruned after ten
+        minutes because they contain the peers' addresses and are worthless within seconds. Polling is also the
+        presence heartbeat.
+      operationId: pollVirtualClassSignals
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: wait
+          in: query
+          required: false
+          description: Long-poll seconds. 0 returns immediately.
+          schema: { type: integer, default: 0, maximum: 25 }
+      responses:
+        "200":
+          description: Signals after the cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signals:
+                    type: array
+                    items: { $ref: "#/components/schemas/Signal" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [live]
+      summary: Post a signalling message
+      operationId: postVirtualClassSignal
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, payload]
+              properties:
+                kind:
+                  type: string
+                  enum: [offer, answer, ice, presence, leave, chat]
+                toUserId:
+                  type: string
+                  description: Empty for a broadcast; a non-member is a 404.
+                payload: { type: string, maxLength: 65536, description: Opaque base64 body. }
+      responses:
+        "201":
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seq: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/virtual-classes/{id}/attendance:
+    get:
+      tags: [live]
+      summary: Session tracking report (host only)
+      description: Minutes in the room, session count, first and last heartbeat, and what each attendee paid.
+      operationId: virtualClassAttendance
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Attendance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attendance:
+                    type: array
+                    items: { $ref: "#/components/schemas/AttendanceRow" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/virtual-classes/{id}/discount-codes:
+    get:
+      tags: [live]
+      summary: List a class's discount codes (host only)
+      operationId: listVirtualClassDiscountCodes
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Codes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discountCodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscountCode" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [live]
+      summary: Create a discount code (host only)
+      description: |
+        A percentage off the credit price with an optional use limit and expiry. The limit is enforced in the
+        UPDATE that increments the counter, so two simultaneous uses of the last one cannot both succeed.
+      operationId: createVirtualClassDiscountCode
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [percentOff]
+              properties:
+                percentOff: { type: integer, minimum: 1, maximum: 100 }
+                maxUses: { type: integer, minimum: 0, description: 0 means unlimited. }
+                expiresAt: { type: [string, "null"], format: date-time }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discountCode: { $ref: "#/components/schemas/DiscountCode" }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
 components:
   securitySchemes:
     sessionCookie:
@@ -2118,6 +2615,11 @@ components:
       scheme: bearer
 
   parameters:
+    VirtualClassId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
     SessionId:
       name: id
       in: path
@@ -2229,6 +2731,10 @@ components:
         roles:
           type: array
           items: { type: string }
+        accountType:
+          type: string
+          enum: [student, tutor, institution]
+          description: Signup intent, echoed back so a client can resume the right onboarding. Never an authority.
         onboardingStep: { type: integer }
         phone:
           type: [string, "null"]
@@ -2499,6 +3005,15 @@ components:
           type: array
           items: { type: string }
         dailyMinutes: { type: integer }
+        accountType:
+          type: string
+          enum: [student, tutor, institution]
+          default: student
+          description: |
+            What kind of account the person is creating. This is signup *intent*, not authority: it routes
+            onboarding and nothing else. An `institution` account still needs organisation verification and
+            an administrator's approval, and a `tutor` account still needs an invitation before it can teach
+            inside an organisation, so choosing a type never grants a role.
         referralCode: { type: string }
         timezone: { type: string, default: Africa/Lagos }
         client: { type: string, enum: [web, mobile] }
@@ -2520,6 +3035,7 @@ components:
             displayName: { type: string }
             email: { type: string }
             timezone: { type: string }
+            accountType: { type: string, enum: [student, tutor, institution] }
         step:
           type: [string, "null"]
           enum: [pathway, subjects, schedule, account, confirm, null]
@@ -2528,6 +3044,154 @@ components:
         token:
           type: string
           description: Returned only on creation.
+
+    VirtualClass:
+      type: object
+      required: [id, slug, title, creditsCost, status, startsAt, joinUrl]
+      properties:
+        id: { type: string }
+        slug:
+          type: string
+          description: 16 characters from an alphabet without ambiguous letters. Rotating it is not supported on purpose: a link sent to forty learners must keep working.
+        title: { type: string }
+        description: { type: string }
+        subjectId: { type: [string, "null"] }
+        creditsCost:
+          type: integer
+          description: Price in learning credits. 0 means free.
+        capacity: { type: integer, description: 0 means unlimited. }
+        status: { type: string, enum: [scheduled, live, ended, cancelled] }
+        startsAt: { type: string, format: date-time }
+        durationMinutes: { type: integer }
+        hostUserId: { type: string }
+        hostName: { type: string }
+        hostAvatar: { $ref: "#/components/schemas/Avatar" }
+        attendees: { type: integer }
+        joinUrl: { type: string, description: Absolute URL of the room, built from the deployment's web origin. }
+        role: { type: string, enum: [host, attendee, none] }
+        createdAt: { type: string, format: date-time }
+        endedAt: { type: [string, "null"], format: date-time }
+
+    CreateVirtualClassRequest:
+      type: object
+      required: [title, startsAt]
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string }
+        subjectId: { type: [string, "null"] }
+        creditsCost: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+        capacity: { type: integer, minimum: 0, maximum: 5000, default: 0 }
+        startsAt: { type: string, format: date-time }
+        durationMinutes: { type: integer, minimum: 15, maximum: 480, default: 60 }
+
+    Avatar:
+      type: object
+      required: [initials, color]
+      properties:
+        initials: { type: string }
+        color:
+          type: string
+          description: Stable colour derived from the user id, so two clients draw the same person identically.
+
+    Attendee:
+      type: object
+      required: [userId, displayName, avatar, role, presence]
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+        avatar: { $ref: "#/components/schemas/Avatar" }
+        role: { type: string, enum: [host, attendee] }
+        paymentMethod: { type: string, enum: [free, credits, discount, host] }
+        creditsPaid: { type: integer }
+        joinedAt: { type: string, format: date-time }
+        leftAt: { type: [string, "null"], format: date-time }
+        present:
+          type: boolean
+          description: True only while a heartbeat was seen inside the presence window.
+
+    BoardEvent:
+      type: object
+      required: [seq, authorId, nonce, ciphertext]
+      properties:
+        seq: { type: integer, description: Dense and monotonic per class; the client orders the board by it. }
+        authorId: { type: string }
+        nonce: { type: string }
+        ciphertext: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    Signal:
+      type: object
+      properties:
+        seq: { type: integer }
+        fromUserId: { type: string }
+        toUserId: { type: [string, "null"] }
+        kind: { type: string, enum: [offer, answer, ice, presence, leave, chat] }
+        payload: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    AttendanceRow:
+      type: object
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+        sessions: { type: integer }
+        minutes: { type: integer }
+        firstJoinedAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        creditsPaid: { type: integer }
+
+    DiscountCode:
+      type: object
+      properties:
+        code: { type: string }
+        percentOff: { type: integer }
+        maxUses: { type: integer }
+        uses: { type: integer }
+        expiresAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    JoinInvite:
+      type: object
+      properties:
+        id: { type: string }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        hostName: { type: string }
+        startsAt: { type: string, format: date-time }
+        creditsCost: { type: integer }
+        status: { type: string }
+        joinUrl: { type: string }
+
+    ReferralTree:
+      type: object
+      description: The caller's downline. Rates and money come from the configuration and the ledger, in that order, so this cannot flatter a referrer.
+      properties:
+        code: { type: string }
+        ratesPercent:
+          type: array
+          items: { type: integer }
+        levels:
+          type: array
+          items:
+            type: object
+            properties:
+              level: { type: integer }
+              ratePercent: { type: integer }
+              referrals: { type: integer }
+              qualified: { type: integer }
+              commissionMinor: { type: integer }
+              members:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    displayName: { type: string }
+                    initials: { type: string }
+                    joinedAt: { type: string, format: date-time }
+                    qualified: { type: boolean }
+        totalReferrals: { type: integer }
+        totalCommissionMinor: { type: integer }
 
     Readiness:
       type: object

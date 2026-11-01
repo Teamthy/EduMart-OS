@@ -33,6 +33,8 @@ export default function PathwayStep() {
 
   async function next() {
     const draft: SignupDraft = {
+      // Pathway comes before the account step, which asks what kind of account this is.
+      accountType: "student",
       examPathwayKey: "",
       examPathwayId: selected,
       subjectIds: [],

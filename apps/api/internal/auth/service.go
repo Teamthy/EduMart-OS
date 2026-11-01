@@ -75,9 +75,12 @@ type User struct {
 	OnboardingDone bool     `json:"onboardingComplete"`
 	Roles          []string `json:"roles"`
 	Subjects       []string `json:"subjectIds"`
-	Phone          *string  `json:"phone"`
-	EmailVerified  bool     `json:"emailVerified"`
-	PhoneVerified  bool     `json:"phoneVerified"`
+	// AccountType is the signup intent: student, tutor or institution. Read it as "what onboarding was
+	// offered", never as "what this account may do".
+	AccountType   string  `json:"accountType"`
+	Phone         *string `json:"phone"`
+	EmailVerified bool    `json:"emailVerified"`
+	PhoneVerified bool    `json:"phoneVerified"`
 	// Suspended marks an account a moderator has switched off. Status carries the same fact for callers
 	// that only read the raw field; this one exists so a client does not have to know the vocabulary.
 	Suspended       bool   `json:"suspended"`
@@ -185,17 +188,20 @@ func NormalizeEmail(email string) string { return strings.ToLower(strings.TrimSp
 
 // RegisterInput is the payload of the signup wizard's final step.
 type RegisterInput struct {
-	DisplayName    string   `json:"displayName"`
-	Email          string   `json:"email"`
-	Password       string   `json:"password"`
-	ExamPathwayID  *string  `json:"examPathwayId"`
-	TargetDate     *string  `json:"targetDate"`
-	SubjectIDs     []string `json:"subjectIds"`
-	DailyMinutes   int      `json:"dailyMinutes"`
-	ReferralCode   string   `json:"referralCode"`
-	Timezone       string   `json:"timezone"`
-	Client         string   `json:"client"`
-	OnboardingStep int      `json:"onboardingStep"`
+	DisplayName   string   `json:"displayName"`
+	Email         string   `json:"email"`
+	Password      string   `json:"password"`
+	ExamPathwayID *string  `json:"examPathwayId"`
+	TargetDate    *string  `json:"targetDate"`
+	SubjectIDs    []string `json:"subjectIds"`
+	DailyMinutes  int      `json:"dailyMinutes"`
+	// AccountType is what kind of account the person says they are creating: student, tutor or institution.
+	// It is stored as intent and grants nothing — see the comment on ValidateRegister.
+	AccountType    string `json:"accountType"`
+	ReferralCode   string `json:"referralCode"`
+	Timezone       string `json:"timezone"`
+	Client         string `json:"client"`
+	OnboardingStep int    `json:"onboardingStep"`
 }
 
 // ValidateRegister performs field-level validation shared by web and mobile clients.
@@ -213,7 +219,26 @@ func ValidateRegister(in RegisterInput) []httpx.FieldError {
 	if in.DailyMinutes < 0 || in.DailyMinutes > 480 {
 		errs = append(errs, httpx.FieldError{Field: "dailyMinutes", Message: "Choose between 0 and 480 minutes."})
 	}
+	if in.AccountType != "" && !ValidAccountType(in.AccountType) {
+		errs = append(errs, httpx.FieldError{Field: "accountType",
+			Message: "Choose a student, tutor or institution account."})
+	}
 	return errs
+}
+
+// AccountTypes are the three things a person can sign up as. They exist to route onboarding, not to grant
+// authority: an account that says "institution" still has to pass organisation verification, and one that says
+// "tutor" still has to be invited to an organisation before it can teach inside it.
+var AccountTypes = []string{"student", "tutor", "institution"}
+
+// ValidAccountType reports whether the value is one of the recognised account types.
+func ValidAccountType(value string) bool {
+	for _, candidate := range AccountTypes {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // Session is what a successful authentication returns to the client.
@@ -248,6 +273,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, userAgent stri
 		return nil, err
 	}
 
+	accountType := strings.TrimSpace(in.AccountType)
+	if accountType == "" {
+		accountType = "student"
+	}
+
 	userID := store.NewID()
 	now := store.Now()
 	timezone := in.Timezone
@@ -267,10 +297,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, userAgent stri
 	err = s.db.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO users (id, email_normalized, password_hash, display_name, status, exam_pathway_id,
-				target_date, timezone, daily_minutes, onboarding_step, onboarding_done_at, created_at, updated_at)
-			VALUES (?,?,?,?,'active',?,?,?,?,?,?,?,?)`,
+				target_date, timezone, daily_minutes, onboarding_step, onboarding_done_at, account_type,
+				created_at, updated_at)
+			VALUES (?,?,?,?,'active',?,?,?,?,?,?,?,?,?)`,
 			userID, email, hash, strings.TrimSpace(in.DisplayName), in.ExamPathwayID, in.TargetDate,
-			timezone, daily, onboardingStep, done, now, now); err != nil {
+			timezone, daily, onboardingStep, done, accountType, now, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO role_assignments (id, user_id, role, scope) VALUES (?,?,?,'global')`,
@@ -432,11 +463,12 @@ func (s *Service) UserByID(ctx context.Context, userID string) (*User, error) {
 	err := s.db.DB.QueryRowContext(ctx, `
 		SELECT id, email_normalized, display_name, status, exam_pathway_id, target_date, timezone,
 		       daily_minutes, onboarding_step, onboarding_done_at, created_at,
-		       phone_e164, email_verified_at, phone_verified_at, suspended_at, suspended_reason
+		       phone_e164, email_verified_at, phone_verified_at, suspended_at, suspended_reason,
+		       account_type
 		  FROM users WHERE id = ?`, userID).Scan(
 		&user.ID, &email, &display, &status, &pathwayID, &targetDate, &timezone,
 		&daily, &onboardingStep, &doneAt, &createdAt, &phone, &emailVerified, &phoneVerified,
-		&suspendedAt, &suspendedReason)
+		&suspendedAt, &suspendedReason, &user.AccountType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, httpx.NewError(httpx.CodeUnauthenticated, "Please sign in to continue.")
 	}

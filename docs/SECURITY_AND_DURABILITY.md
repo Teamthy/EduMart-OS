@@ -184,6 +184,40 @@ Two defects surfaced only by running it, which is the argument for running it:
 - **Sign-out with an expired access cookie revoked nothing.** The handler looked only for the access token;
   with only the refresh cookie present it cleared a cookie and left the chain alive.
 
+## Live classes: what the server can and cannot see
+
+| Asset | Where it lives | Who can read it | Residual risk |
+| --- | --- | --- | --- |
+| Audio and video | Never reaches the API; peer-to-peer under DTLS-SRTP | The participants only | A peer with a compromised browser can record what it displays. That is true of every video call; the control is that the *server* never holds a copy and there is no recording feature to misfile |
+| Whiteboard strokes | `virtual_class_board_events`, opaque ciphertext under a room key held by participants | Anyone seated in the class, who still needs the key | Key distribution is out of band (WebRTC data channel). A participant who shares the key shares the board; owner: API/web |
+| SDP and ICE candidates | `virtual_class_signals`, pruned after 10 minutes | Members of that class, or the sender's target | They disclose participants' IP addresses to each other. Unavoidable for a direct connection without a relay; a TURN server hides them from peers but not from the relay operator |
+| Who attended and for how long | `virtual_class_attendees`, `virtual_class_sessions` | The host, via the attendance report | Attendance is personal data; it is retained with the class, not indefinitely. Owner: API |
+| Signup account type | `users.account_type` | The account itself and administrators | It is *intent*, not authority: an `institution` account holds no organisation until it is verified and approved |
+
+Two rules are enforced rather than documented, and both have negative tests: **a learner cannot start, end, price
+or read the attendance of somebody else's class** (`TestOnlyTheHostRunsTheRoom`), and **an outsider can neither
+read nor inject into a room's signalling channel** (`TestSignallingRelayIsTargetedAndMemberOnly`). The board
+endpoint refuses anything that is not base64 ciphertext, because a server that can store plaintext can also be
+compelled to hand it over.
+
+The remaining honest gap: there is **no TURN relay deployed**, so two peers behind symmetric NAT cannot connect,
+and **no SFU**, so a room is 6–8 people. Neither is a security hole; both are limits that a client is told about
+rather than left to discover.
+
+### Referral commission across levels
+
+Commission now walks the chain: one ledger row per level with its own rate and idempotency key, at most
+`EDUMART_REFERRAL_RATES` deep. Three controls keep it from becoming a payout bug:
+
+- **Idempotency per level, per order** — a retried provider callback cannot pay a level twice;
+- **A cycle guard** — the walk refuses to revisit a user, so a data fix-up that closes a loop cannot pay around it
+  forever (`TestReferralCyclePaysNothingTwice`);
+- **A level-aware reversal** — a refund reverses every level proportionally, keyed per refund and level, so a
+  half refund cannot leave the upper levels whole (`TestRefundReversesEveryLevel`).
+
+The tree endpoint shows first names and initials only: a referral tree is progress reporting, not a contact
+export.
+
 ## Backup, restore and the honest gaps
 
 See [`BACKUP_AND_RECOVERY.md`](./BACKUP_AND_RECOVERY.md) for the full picture. In short: consistent

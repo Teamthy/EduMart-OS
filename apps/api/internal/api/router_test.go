@@ -32,6 +32,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/seed"
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
+	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
 )
 
 const webhookSecret = "test_webhook_secret"
@@ -49,6 +50,9 @@ type harness struct {
 	// shop is the commerce service behind the router, so a test can swap the refund provider for a fake
 	// that answers slowly, refuses, or fails ambiguously.
 	shop *commerce.Service
+	// rewards is the ledger service, so a test can ask it to qualify an order a second time and prove the
+	// second call is a no-op rather than trusting the HTTP path to be the only caller.
+	rewards *rewards.Service
 	// courier is the durable delivery service, so a test can drive the retry sweep and inspect what
 	// happened to a message after the first attempt failed.
 	courier *notify.Service
@@ -99,6 +103,7 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 	mail := notify.NewRecorder()
 	clock := &testClock{at: time.Now().UTC()}
 	courier := notify.NewService(db, mail, logger).WithClock(clock.Now)
+	rewardsService := rewards.New(db)
 	shop := commerce.New(db, "sandbox", webhookSecret).WithNotifier(courier).WithLogger(logger)
 	config := api.Config{
 		AllowedOrigins:  []string{"http://localhost:3000"},
@@ -114,19 +119,24 @@ func newHarnessWithConfig(t *testing.T, tweak func(*api.Config)) *harness {
 		Exams:    assessment.New(db),
 		Classes:  classroom.New(db),
 		Shop:     shop,
-		Rewards:  rewards.New(db),
+		Rewards:  rewardsService,
 		Insights: insights.New(db),
 		Staff:    admin.New(db),
 		Signup:   signup.New(db),
 		Orgs:     orgs.New(db).WithNotifier(courier, "http://localhost:3000"),
 		Notifier: courier,
 		Finder:   search.New(db),
-		Logger:   logger,
-		Config:   config,
+		Live: virtualclass.New(db, virtualclass.Config{
+			WebURL:     "http://localhost:3000",
+			ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
+		}),
+		Logger: logger,
+		Config: config,
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier, clock: clock, shop: shop}
+	return &harness{t: t, server: server, router: router, store: db, mail: mail, courier: courier,
+		clock: clock, shop: shop, rewards: rewardsService}
 }
 
 func (h *harness) do(method, path, token string, body any) (int, map[string]any) {

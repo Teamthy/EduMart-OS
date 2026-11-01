@@ -66,7 +66,23 @@ export const SIGNUP_STEPS: readonly SignupStep[] = [
 
 export const TOTAL_SIGNUP_STEPS = SIGNUP_STEPS.length;
 
+/**
+ * What kind of account the person is creating.
+ *
+ * This is intent, not authority. It routes onboarding — an institution gets the organisation setup path, a tutor
+ * gets the invitation path — and it never grants a role: organisation admins are approved by a platform
+ * administrator, and teachers are invited by an organisation owner.
+ */
+export type AccountType = "student" | "tutor" | "institution";
+
+export const ACCOUNT_TYPES: { value: AccountType; label: string; description: string }[] = [
+  { value: "student", label: "Student", description: "Preparing for an exam. Practise, take mocks, track progress." },
+  { value: "tutor", label: "Tutor", description: "Teach learners — solo, or inside a school that invites you." },
+  { value: "institution", label: "Institution", description: "Run classes for a school or centre. Verified before it goes live." },
+];
+
 export interface SignupDraft {
+  accountType: AccountType;
   examPathwayKey: string;
   examPathwayId: string;
   subjectIds: string[];
@@ -83,6 +99,7 @@ export function emptyDraft(timezone = "Africa/Lagos"): SignupDraft {
   const target = new Date();
   target.setDate(target.getDate() + 60);
   return {
+    accountType: "student",
     examPathwayKey: "",
     examPathwayId: "",
     subjectIds: [],
@@ -142,6 +159,9 @@ export function validateStep(step: SignupStepId, draft: SignupDraft): SignupErro
     if (!EMAIL_PATTERN.test(draft.email.trim())) {
       errors.email = "Enter a valid email address.";
     }
+    if (!ACCOUNT_TYPES.some((option) => option.value === draft.accountType)) {
+      errors.accountType = "Choose the kind of account you're creating.";
+    }
     if (draft.password.length < 8) {
       errors.password = "Use at least 8 characters.";
     } else if (!/[a-zA-Z]/.test(draft.password) || !/[0-9]/.test(draft.password)) {
@@ -178,6 +198,7 @@ export function previousStep(current: SignupStepId): SignupStepId | null {
 /** Payload for POST /v1/auth/register. */
 export function toRegisterPayload(draft: SignupDraft) {
   return {
+    accountType: draft.accountType,
     displayName: draft.displayName.trim(),
     email: draft.email.trim().toLowerCase(),
     password: draft.password,

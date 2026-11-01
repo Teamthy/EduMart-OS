@@ -1,7 +1,8 @@
-import type { SignupDraft } from "@edumart/shared";
+import type { AccountType, SignupDraft } from "@edumart/shared";
 
 /** Server representation of the wizard answers (subset that matters pre-account). */
 export type Draft = {
+  accountType?: AccountType;
   examPathwayId?: string;
   examPathwayKey?: string;
   subjectIds?: string[];
@@ -14,6 +15,7 @@ export type Draft = {
 
 export function draftToForm(draft: Draft | null): SignupDraft {
   return {
+    accountType: draft?.accountType ?? "student",
     examPathwayKey: draft?.examPathwayKey ?? "",
     examPathwayId: draft?.examPathwayId ?? "",
     subjectIds: draft?.subjectIds ?? [],
