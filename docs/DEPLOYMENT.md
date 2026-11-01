@@ -280,6 +280,44 @@ The CI job `Container images` builds both images, starts them on one Docker netw
 reaches the API **by name** (what a Service does in-cluster), and then: renders a page, proxies `/v1`,
 expects a 401 through the proxy, and requires the session cookie to survive the hop.
 
+## Vercel: the web app only
+
+The web app is deployed to Vercel as project `edumart-os` (team `teamthy`), linked to `Teamthy/EduMart-OS`
+and building **`main`**. The settings are not defaults, and each one earns its place:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Root Directory | `apps/web` | The Next.js app lives in a workspace, not at the repo root |
+| Install Command | `cd ../.. && npm ci` | `@edumart/shared` and the root `package.json` workspaces are two levels up |
+| Build Command | `cd ../.. && npm run build --workspace @edumart/web` | `next build` must run through the workspace so `transpilePackages` resolves |
+| Framework | Next.js | — |
+| `EDUMART_API_URL` | **must be set** to a reachable API origin | Read per request by `lib/api-proxy.ts` and `lib/server-api.ts` |
+
+**The Go API cannot be deployed to Vercel.** It is not a limitation of effort: the server needs a process
+that outlives a request, and Vercel's functions do not provide one.
+
+- `apps/api` links `mattn/go-sqlite3` (cgo) for the single-binary mode; Vercel's Go runtime is not the
+  build target this repository compiles for, and the container images (not functions) are what CI proves.
+- The 50-seat class room is an in-process WebRTC SFU plus a TURN server holding long-lived UDP/TCP sockets
+  and per-user ephemeral credentials (`internal/media`). Serverless functions cannot accept that traffic.
+- Live rooms, whiteboards and synchronised exams hold WebSocket state across minutes; a function instance
+  is frozen between invocations.
+
+So a Vercel deployment of `apps/web` is a **frontend**, and it is only as useful as the `EDUMART_API_URL` it
+points at. With that variable unset, the deployment still renders: public pages treat an unreachable API as
+"signed out" (`getCurrentUser` returns `null` for a transport failure, tested in
+`apps/web/tests/session.test.ts`) and every `/v1/*` call answers `503` with the proxy's own error envelope.
+Sign-in, signup, wallet, classes and exams all need a real API host — a VPS, Fly, Render, or the k8s
+manifests in `infra/k8s`.
+
+### What the first production deployment showed
+
+- Build: 2m04s, 19 static pages, `READY`, promoted to `edumart-os.vercel.app`.
+- `output: "standalone"` is in `next.config.ts` for the container image; Vercel ignores it and uses its own
+  output, so one config serves both without a conditional.
+- The workspace install has to reach **outside** the root directory. Vercel clones the whole repository, so
+  `cd ../..` works there; a client-only upload of `apps/web` would not build.
+
 ## Session lifetime in a deployment
 
 | Variable | Default | Meaning |
@@ -336,9 +374,11 @@ will be, and each step is either proven or marked.
 
 ## What is still missing, and is not claimed
 
-- **No staging environment.** Nothing has ever been deployed to a host. The rehearsal proves the *schema and
-  binary* transition; it proves nothing about DNS, TLS, a real load balancer, secrets management, or an
-  orchestrator performing the rolling restart it rehearses.
+- **No staging environment, and only the web app is hosted.** `apps/web` runs on Vercel (above); **the Go
+  API does not run anywhere yet**, so the hosted site has no backend until `EDUMART_API_URL` names a real
+  host. Nothing has exercised a deployment of the API. The rehearsal proves the *schema and binary*
+  transition; it proves nothing about DNS, TLS, a real load balancer, secrets management, or an orchestrator
+  performing the rolling restart it rehearses.
 - **Images, but no registry.** Both `apps/api/Dockerfile` and `apps/web/Dockerfile` build and run as
   non-root in CI, together, against PostgreSQL. Nothing is pushed to a registry, nothing is signed, there is
   no SBOM and no image scanning step; the mobile app is not containerised at all.
