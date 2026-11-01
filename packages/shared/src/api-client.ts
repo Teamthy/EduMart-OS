@@ -35,9 +35,11 @@ import type {
   StudyPlan,
   Subject,
   SupportCase,
+  Topup,
   Topic,
   User,
   VerificationIssued,
+  Wallet,
 } from "./types";
 
 export class ApiError extends Error {
@@ -205,8 +207,22 @@ export class ApiClient {
     this.put<{ plan: StudyPlan }>("/v1/study-plan", input);
 
   // ── assessment ────────────────────────────────────────────────────────
-  startPractice = (input: { subjectId: string; topicIds?: string[]; count?: number; difficulty?: string }) =>
-    this.post<{ session: AssessmentSessionView }>("/v1/practice-sessions", input);
+  /**
+   * Start a practice or simulated session. Selection is one dimension — a subject (optionally narrowed to topics),
+   * a class, an exam body, or `mixed` — and the two modes differ in the rules the server applies: practice is
+   * untimed and correctable, simulation is clocked and final.
+   */
+  startPractice = (input: {
+    mode?: "practice" | "simulation";
+    subjectId?: string;
+    topicIds?: string[];
+    classId?: string;
+    examBody?: string;
+    mixed?: boolean;
+    count?: number;
+    difficulty?: string;
+    durationMinutes?: number;
+  }) => this.post<{ session: AssessmentSessionView }>("/v1/practice-sessions", input);
   startDefinition = (definitionId: string) =>
     this.post<{ session: AssessmentSessionView }>(`/v1/assessment-definitions/${definitionId}/sessions`);
   session = (id: string) => this.get<{ session: AssessmentSessionView }>(`/v1/assessment-sessions/${id}`);
@@ -257,6 +273,15 @@ export class ApiClient {
   orders = () => this.get<{ orders: Order[] }>("/v1/orders");
   library = () => this.get<{ products: Product[] }>("/v1/library");
   simulatePayment = (orderId: string) => this.post<{ order: Order }>(`/v1/orders/${orderId}/simulate-payment`);
+
+  // ── wallet ────────────────────────────────────────────────────────────
+  wallet = () => this.get<{ wallet: Wallet }>("/v1/wallet");
+  /** `amountMinor` is kobo and is the only amount field: one unit means no 100x mistake. Minimum 20000. */
+  startTopup = (amountMinor: number) =>
+    this.post<{ topup: Topup }>("/v1/wallet/topups", { amountMinor });
+  /** Sandbox settle path; 403 where the deployment does not allow self-confirmed payments. */
+  confirmTopup = (id: string) =>
+    this.post<{ topup: Topup; wallet: Wallet }>(`/v1/wallet/topups/${id}/confirm`);
   /**
    * Return money on an order, in full or in part.
    *

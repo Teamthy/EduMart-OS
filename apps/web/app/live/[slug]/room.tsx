@@ -20,6 +20,8 @@ import {
   liveDiscountCodes,
   liveIce,
   liveRoster,
+  liveRequests,
+  decideRequest,
   pollSignals,
   postSignal,
   leaveLiveClass,
@@ -71,6 +73,12 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   const [room, setRoom] = useState<LiveClass>(initial);
   const [seats, setSeats] = useState<StageSeat[]>([]);
   const [joined, setJoined] = useState(false);
+  // A request is not a seat. `waiting` means the class requires approval and the host has not decided yet, so
+  // there is no media, no board and no roster — only a screen that says so and can ask again.
+  const [waiting, setWaiting] = useState(initial.admissionStatus === "pending");
+  // The host's queue. Kept apart from `seats` because a pending request is not in the room.
+  const [requests, setRequests] = useState<StageSeat[]>([]);
+  const [deciding, setDeciding] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [discountCode, setDiscountCode] = useState("");
@@ -231,9 +239,17 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
       setJoining(true);
       setError(null);
       try {
-        const { class: joinedClass } = await joinLiveClass(room.id, code);
-        setRoom(joinedClass);
-        setJoined(true);
+        const outcome = await joinLiveClass(room.id, code);
+        setRoom(outcome.class);
+        // 202 comes back as `pending`: the server has queued a request, not granted a seat. Treating that as a
+        // join would negotiate media for a room the learner is not in.
+        if (outcome.pending) {
+          setWaiting(true);
+          setJoined(false);
+        } else {
+          setWaiting(false);
+          setJoined(true);
+        }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not join.");
       } finally {
@@ -261,6 +277,44 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
       // A failed poll is not worth a banner; the next tick has it.
     }
   }, [room.id]);
+
+  // The host's waiting room. Polled rather than pushed, for the same reason presence is: one interval is
+  // simpler to reason about than a socket that has to survive a laptop lid.
+  const refreshRequests = useCallback(async () => {
+    if (!isHost) return;
+    try {
+      const { requests: queue } = await liveRequests(room.id);
+      setRequests(queue);
+    } catch {
+      // A host whose poll failed still has the roster; the next tick has the queue.
+    }
+  }, [isHost, room.id]);
+
+  useEffect(() => {
+    if (!isHost || !joined) return;
+    void refreshRequests();
+    const timer = window.setInterval(() => void refreshRequests(), 8_000);
+    return () => window.clearInterval(timer);
+  }, [isHost, joined, refreshRequests]);
+
+  const decide = useCallback(
+    async (userId: string, decision: "accept" | "reject") => {
+      setDeciding(userId);
+      setError(null);
+      try {
+        await decideRequest(room.id, userId, decision);
+        // The server answers with the whole roster, so the queue and the room cannot disagree afterwards.
+        setRequests((queue) => queue.filter((request) => request.userId !== userId));
+        await refreshRoster();
+        setNotice(decision === "accept" ? "Learner admitted." : "Request declined.");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "That decision did not go through.");
+      } finally {
+        setDeciding(null);
+      }
+    },
+    [refreshRoster, room.id],
+  );
 
   useEffect(() => {
     if (!joined) return;
@@ -711,7 +765,26 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
       {error ? <Alert tone="error" title="Something went wrong">{error}</Alert> : null}
       {notice ? <Alert tone="success">{notice}</Alert> : null}
 
-      {!joined ? (
+      {!joined && waiting ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Waiting for the host</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Your request to join <strong>{room.title}</strong> has been sent. The host decides who comes in, so
+              this page will open the room as soon as they accept. Nothing has been charged.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              If you were charged for a seat before, that charge still stands — a request is only charged when the
+              host accepts it.
+            </p>
+            <Button type="button" variant="outline" disabled={joining} onClick={() => void join()}>
+              {joining ? "Checking…" : "Check again"}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : !joined ? (
         <Card>
           <CardHeader>
             <CardTitle>Take a seat</CardTitle>
@@ -722,6 +795,11 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
                 ? `This class costs ${room.creditsCost} credits. A discount code goes here.`
                 : "This class is free, and closes 45 minutes after it starts."}
             </p>
+            {room.admission === "approval" ? (
+              <p className="text-sm text-muted-foreground">
+                The host approves each request, so joining sends one and you wait here until they answer.
+              </p>
+            ) : null}
             <p className="text-sm text-muted-foreground">
               {room.capacity} seats, six of them on stage. You can watch, listen and chat from any seat; the host
               promotes speakers.
@@ -745,6 +823,63 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
           </CardContent>
         </Card>
       ) : (
+        <div className="space-y-4">
+          {isHost ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>
+                  Waiting to join{requests.length > 0 ? ` (${requests.length})` : ""}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {requests.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Nobody is waiting. {room.admission === "approval" ? "Requests appear here as learners knock." : "This class lets learners in as soon as they pay."}
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {requests.map((request) => (
+                      <li
+                        key={request.userId}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+                      >
+                        <span className="flex items-center gap-2 text-sm font-medium">
+                          <span
+                            aria-hidden="true"
+                            className="grid size-7 place-items-center rounded-full text-[11px] font-bold text-white"
+                            style={{ backgroundColor: request.avatar?.color ?? "#4B5563" }}
+                          >
+                            {request.avatar?.initials ?? "?"}
+                          </span>
+                          {request.displayName}
+                        </span>
+                        <span className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={deciding === request.userId}
+                            onClick={() => void decide(request.userId, "accept")}
+                          >
+                            Admit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={deciding === request.userId}
+                            onClick={() => void decide(request.userId, "reject")}
+                          >
+                            Decline
+                          </Button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
+
         <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
           <div className="space-y-3">
             <div className="grid gap-2 sm:grid-cols-3">
@@ -995,6 +1130,7 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
               </Card>
             ) : null}
           </aside>
+        </div>
         </div>
       )}
     </div>

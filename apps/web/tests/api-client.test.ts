@@ -195,3 +195,41 @@ describe("Institutions", () => {
     expect(init?.method).toBe("DELETE");
   });
 });
+
+describe("wallet and practice contract", () => {
+  it("sends a top-up as kobo and nothing else", async () => {
+    const { fetchImpl, client } = clientWith({ status: 201, json: { topup: { id: "t1", points: 20 } } });
+
+    await client.startTopup(20000);
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/v1/wallet/topups");
+    // One field, one unit: naira never crosses the wire, so a 100x mistake cannot be made by sending the wrong key.
+    expect(JSON.parse(String(init.body))).toEqual({ amountMinor: 20000 });
+  });
+
+  it("confirms a top-up by id, because the provider's reference is not the wallet's", async () => {
+    const { fetchImpl, client } = clientWith({ json: { topup: { id: "t1" }, wallet: { balance: 20 } } });
+
+    const { wallet } = await client.confirmTopup("t1");
+
+    const [url] = fetchImpl.mock.calls[0] as [string];
+    expect(url).toBe("http://api.test/v1/wallet/topups/t1/confirm");
+    expect(wallet.balance).toBe(20);
+  });
+
+  it("carries the practice mode and the simulation clock", async () => {
+    const { fetchImpl, client } = clientWith({ status: 201, json: { session: { session_id: "s1", mode: "simulation" } } });
+
+    await client.startPractice({ mode: "simulation", examBody: "jamb", count: 40, durationMinutes: 45 });
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/v1/practice-sessions");
+    expect(JSON.parse(String(init.body))).toEqual({
+      mode: "simulation",
+      examBody: "jamb",
+      count: 40,
+      durationMinutes: 45,
+    });
+  });
+});

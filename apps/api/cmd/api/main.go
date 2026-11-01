@@ -40,6 +40,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/signup"
 	"github.com/teamthy/edumart/apps/api/internal/store"
 	"github.com/teamthy/edumart/apps/api/internal/virtualclass"
+	"github.com/teamthy/edumart/apps/api/internal/wallet"
 )
 
 // version is the release identity, set at build time:
@@ -192,6 +193,9 @@ func main() {
 		defer relayService.Close()
 	}
 
+	allowSandboxPay := env("EDUMART_ALLOW_SANDBOX_PAYMENTS", "true") == "true"
+	nairaPerPoint := envInt("EDUMART_NAIRA_PER_POINT", wallet.DefaultNairaPerPoint)
+
 	liveService := virtualclass.New(db, virtualclass.Config{
 		WebURL: webURL,
 		// Static iceServers still come first, so a deployment that points at a hosted TURN service keeps
@@ -201,14 +205,19 @@ func main() {
 	}).WithMedia(forwarder)
 
 	router := api.NewRouter(api.Deps{
-		Store:    db,
-		Auth:     authService,
-		Items:    content.New(db),
-		Exams:    appEngine,
-		Classes:  classroom.New(db),
-		Shop:     shop,
-		Rewards:  rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
-		Live:     liveService,
+		Store:   db,
+		Auth:    authService,
+		Items:   content.New(db),
+		Exams:   appEngine,
+		Classes: classroom.New(db),
+		Shop:    shop,
+		Rewards: rewards.New(db).WithRates(parseRates(env("EDUMART_REFERRAL_RATES", ""))),
+		Live:    liveService,
+		Wallet: wallet.New(db, wallet.Config{
+			NairaPerPoint: nairaPerPoint,
+			Sandbox:       allowSandboxPay,
+			Logger:        logger,
+		}),
 		Insights: insights.New(db),
 		// A sitting is an exam-shaped assessment definition, so the exam layer sits on the engine rather
 		// than beside it: one scorer, one deadline rule, one snapshot.
@@ -223,7 +232,7 @@ func main() {
 		Logger:   logger,
 		Config: api.Config{
 			AllowedOrigins:    splitList(env("EDUMART_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")),
-			AllowSandboxPay:   env("EDUMART_ALLOW_SANDBOX_PAYMENTS", "true") == "true",
+			AllowSandboxPay:   allowSandboxPay,
 			SandboxWebhookKey: env("EDUMART_WEBHOOK_SECRET", "dev_sandbox_webhook_secret"),
 			// Opt-in: believing X-Forwarded-For without a proxy in front means any caller can pick
 			// their own rate-limit bucket, and guessing a password becomes a matter of a loop.
@@ -412,6 +421,15 @@ func number(raw string) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
 		return 0
+	}
+	return value
+}
+
+// envInt reads a positive whole number, falling back rather than starting with a nonsense rate.
+func envInt(key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || value <= 0 {
+		return fallback
 	}
 	return value
 }

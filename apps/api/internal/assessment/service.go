@@ -59,8 +59,60 @@ func New(db *store.Store) *Service { return &Service{DB: db} }
 
 // ─────────────────────────── question selection ───────────────────────────
 
+// Selection is *what* to draw questions from. A learner who picks a subject and narrows to two topics is using
+// two filters that compose; picking two different sources is ambiguous and is refused rather than guessed.
+type Selection struct {
+	SubjectID  string
+	TopicIDs   []string
+	ClassID    string
+	ExamBody   string
+	Mixed      bool
+	Difficulty string
+}
+
+// selectionClause turns a Selection into SQL. It returns an error rather than an empty clause when nothing was
+// chosen, because a silent no-filter draw is how a learner asks for "Fractions" and gets trigonometry.
+func selectionClause(in Selection) (string, []any, error) {
+	clause := strings.Builder{}
+	args := []any{}
+	switch {
+	case in.ClassID != "":
+		// "My class's questions" is honestly the questions the class's own published assessments use, so
+		// practice revises exactly what the class is doing.
+		clause.WriteString(" AND qv.id IN (" +
+			"SELECT ai.question_version_id FROM assessment_items ai" +
+			"  JOIN assessment_definitions ad ON ad.id = ai.definition_id" +
+			" WHERE ad.class_id = ? AND ad.status = 'published')")
+		args = append(args, in.ClassID)
+	case in.ExamBody != "":
+		clause.WriteString(" AND q.subject_id IN (" +
+			"SELECT sj.id FROM subjects sj JOIN exam_pathways ep ON ep.id = sj.exam_pathway_id" +
+			" WHERE UPPER(ep.body) = UPPER(?) OR UPPER(ep.key) = UPPER(?))")
+		args = append(args, in.ExamBody, in.ExamBody)
+	case in.Mixed:
+		// Nothing to add: every approved question is in scope.
+	case in.SubjectID != "":
+		clause.WriteString(" AND q.subject_id = ?")
+		args = append(args, in.SubjectID)
+	default:
+		return "", nil, httpx.Validation([]httpx.FieldError{{Field: "selection",
+			Message: "Choose a subject, topics, a class, an exam body, or mixed practice."}})
+	}
+	if len(in.TopicIDs) > 0 {
+		clause.WriteString(" AND q.topic_id IN (?" + strings.Repeat(",?", len(in.TopicIDs)-1) + ")")
+		for _, id := range in.TopicIDs {
+			args = append(args, id)
+		}
+	}
+	if in.Difficulty != "" && in.Difficulty != "all" {
+		clause.WriteString(" AND q.difficulty = ?")
+		args = append(args, in.Difficulty)
+	}
+	return clause.String(), args, nil
+}
+
 // publishedQuestions selects approved, published questions for a draw.
-func (s *Service) publishedQuestions(ctx context.Context, subjectID string, topicIDs []string, difficulty string, limit int, seed string) ([]domain.SnapQuestion, error) {
+func (s *Service) publishedQuestions(ctx context.Context, in Selection, limit int, seed string) ([]domain.SnapQuestion, error) {
 	query := strings.Builder{}
 	query.WriteString(`
 		SELECT qv.id, qv.question_id, qv.stem, qv.options_json, qv.answer_option_id, qv.explanation,
@@ -70,21 +122,11 @@ func (s *Service) publishedQuestions(ctx context.Context, subjectID string, topi
 		  JOIN subjects sj ON sj.id = q.subject_id
 		  LEFT JOIN topics t ON t.id = q.topic_id
 		 WHERE qv.review_state = 'approved' AND qv.published_at IS NOT NULL AND q.status = 'published'`)
-	args := []any{}
-	if subjectID != "" {
-		query.WriteString(" AND q.subject_id = ?")
-		args = append(args, subjectID)
+	clause, args, err := selectionClause(in)
+	if err != nil {
+		return nil, err
 	}
-	if len(topicIDs) > 0 {
-		query.WriteString(" AND q.topic_id IN (?" + strings.Repeat(",?", len(topicIDs)-1) + ")")
-		for _, id := range topicIDs {
-			args = append(args, id)
-		}
-	}
-	if difficulty != "" && difficulty != "all" {
-		query.WriteString(" AND q.difficulty = ?")
-		args = append(args, difficulty)
-	}
+	query.WriteString(clause)
 
 	rows, err := s.DB.DB.QueryContext(ctx, query.String(), args...)
 	if err != nil {
@@ -120,29 +162,181 @@ func (s *Service) publishedQuestions(ctx context.Context, subjectID string, topi
 	return shuffled, nil
 }
 
-// StartPractice creates an untimed practice attempt with a generous server deadline.
-func (s *Service) StartPractice(ctx context.Context, userID, subjectID string, topicIDs []string, count int, difficulty string) (*Session, error) {
-	if subjectID == "" {
-		return nil, httpx.Validation([]httpx.FieldError{{Field: "subjectId", Message: "Choose a subject."}})
+// Practice modes. They are two different things a learner can want, not two labels on the same behaviour:
+//
+//   - ModePractice is *real practice*: revise, take your time, see the answers afterwards, correct a mis-tap.
+//   - ModeSimulation is *the exam, simulated*: a fixed paper drawn once, a hard clock, one shot, no corrections,
+//     answers and explanations only after you submit. Sitting it should feel like the real thing, so the rules
+//     are enforced by the server rather than by a timer in the browser.
+const (
+	ModePractice   = "practice"
+	ModeSimulation = "simulation"
+
+	// practiceWindow is how long an untimed attempt may stay open before it is swept. It is generous, not a
+	// deadline the learner is meant to notice. It is a Duration because Add() with an untyped constant adds
+	// nanoseconds — a mistake that made practice expire in microseconds.
+	practiceWindow = 4 * time.Hour
+	// simulationDefaultMinutes and simulationDefaultCount are the shape of a simulated paper when the learner
+	// does not choose one: 45 minutes, 40 questions — roughly one standard objective paper.
+	simulationDefaultMinutes = 45
+	simulationDefaultCount   = 40
+	// simulationMaxMinutes bounds what a client may ask for, so "simulation" cannot become "untimed".
+	simulationMaxMinutes = 240
+	// simulationMaxCount bounds the paper: above this it is no longer an exam anyone could sit.
+	simulationMaxCount = 100
+	// practiceMaxCount is the practice ceiling. Practice is drilling, not endurance.
+	practiceMaxCount = 40
+)
+
+// PracticeInput is one request to start a session. It is the same shape for both modes because the difference is
+// in the rules applied, not in the fields accepted.
+type PracticeInput struct {
+	// Mode is "practice" (default) or "simulation".
+	Mode string `json:"mode"`
+	// Selection: exactly one dimension, or Mixed for "surprise me".
+	SubjectID  string   `json:"subjectId"`
+	TopicIDs   []string `json:"topicIds"`
+	ClassID    string   `json:"classId"`
+	ExamBody   string   `json:"examBody"`
+	Mixed      bool     `json:"mixed"`
+	Difficulty string   `json:"difficulty"`
+	Count      int      `json:"count"`
+	// DurationMinutes applies to simulation only; practice ignores it.
+	DurationMinutes int `json:"durationMinutes"`
+}
+
+// StartPractice creates an attempt from a selection, in one of the two modes.
+func (s *Service) StartPractice(ctx context.Context, userID string, in PracticeInput) (*Session, error) {
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	if mode == "" {
+		mode = ModePractice
 	}
-	if count <= 0 {
-		count = 10
-	}
-	if count > 40 {
-		count = 40
+	if mode != ModePractice && mode != ModeSimulation {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "mode",
+			Message: "Choose practice or simulation."}})
 	}
 
-	questions, err := s.publishedQuestions(ctx, subjectID, topicIDs, difficulty, count,
-		userID+":"+store.Now()+":"+subjectID)
+	selection := Selection{
+		SubjectID:  strings.TrimSpace(in.SubjectID),
+		TopicIDs:   in.TopicIDs,
+		ClassID:    strings.TrimSpace(in.ClassID),
+		ExamBody:   strings.TrimSpace(in.ExamBody),
+		Mixed:      in.Mixed,
+		Difficulty: in.Difficulty,
+	}
+	fields := []httpx.FieldError{}
+	// More than one dimension is ambiguous: "this subject but that class" could mean either and guessing would
+	// show a learner the wrong questions. Mixed is exclusive for the same reason.
+	dimensions := 0
+	for _, set := range []bool{selection.SubjectID != "", len(selection.TopicIDs) > 0,
+		selection.ClassID != "", selection.ExamBody != ""} {
+		if set {
+			dimensions++
+		}
+	}
+	if selection.Mixed && dimensions > 0 {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "mixed",
+			Message: "Mixed practice cannot be combined with a subject, topics, a class or an exam body."}})
+	}
+	if dimensions > 1 {
+		// Topics narrow a subject, so subject + topics is one dimension used well; anything else is a mistake.
+		if selection.SubjectID == "" || len(selection.TopicIDs) == 0 || dimensions > 2 {
+			return nil, httpx.Validation([]httpx.FieldError{{Field: "selection",
+				Message: "Pick one source: a subject, a class, an exam body, or mixed."}})
+		}
+	}
+	if dimensions == 0 && !selection.Mixed {
+		return nil, httpx.Validation([]httpx.FieldError{{Field: "selection",
+			Message: "Choose a subject, a class, an exam body, or mixed practice."}})
+	}
+
+	// A class's paper is only for people in the class. The check is here, not in the UI.
+	if selection.ClassID != "" {
+		var role string
+		err := s.DB.DB.QueryRowContext(ctx, `SELECT role FROM class_memberships
+			WHERE class_id = ? AND user_id = ? AND status = 'active'`,
+			selection.ClassID, userID).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, httpx.NewError(httpx.CodeForbidden, "You are not a member of that class.")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// An exam body that does not exist is a typo, not an empty paper: say so instead of drawing nothing.
+	if selection.ExamBody != "" {
+		var exists int
+		if err := s.DB.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM exam_pathways
+			WHERE UPPER(body) = UPPER(?) OR UPPER(key) = UPPER(?)`,
+			selection.ExamBody, selection.ExamBody).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if exists == 0 {
+			return nil, httpx.Validation([]httpx.FieldError{{Field: "examBody",
+				Message: "That exam body is not one we have questions for yet."}})
+		}
+	}
+
+	count := in.Count
+	deadline := time.Now().UTC().Add(practiceWindow)
+	if mode == ModeSimulation {
+		minutes := in.DurationMinutes
+		if minutes <= 0 {
+			minutes = simulationDefaultMinutes
+		}
+		if minutes < 5 || minutes > simulationMaxMinutes {
+			fields = append(fields, httpx.FieldError{Field: "durationMinutes",
+				Message: fmt.Sprintf("A simulated paper runs for 5 to %d minutes.", simulationMaxMinutes)})
+		}
+		if count <= 0 {
+			count = simulationDefaultCount
+		}
+		if count > simulationMaxCount {
+			count = simulationMaxCount
+		}
+		deadline = time.Now().UTC().Add(time.Duration(minutes) * time.Minute)
+	} else {
+		if count <= 0 {
+			count = 10
+		}
+		if count > practiceMaxCount {
+			count = practiceMaxCount
+		}
+	}
+	if len(fields) > 0 {
+		return nil, httpx.Validation(fields)
+	}
+
+	// The seed decides the paper and its order:
+	//
+	//   - practice: fresh every time, because drilling the same ten questions in the same order teaches the
+	//     order rather than the subject;
+	//   - simulation: derived only from the caller and the selection, so re-sitting the same simulated paper
+	//     gives the same paper. That is what makes "exact exam simulation" mean something — the paper is fixed,
+	//     and the person's own clock is the only thing that changes.
+	seed := userID + ":" + mode + ":" + selection.SubjectID + selection.ClassID + selection.ExamBody +
+		strings.Join(selection.TopicIDs, ",")
+	if mode == ModePractice {
+		seed += ":" + store.Now()
+	}
+	questions, err := s.publishedQuestions(ctx, selection, count, seed)
 	if err != nil {
 		return nil, err
 	}
 	if len(questions) == 0 {
 		return nil, httpx.NewError(httpx.CodeNotFound, "No approved questions are available for that selection yet.")
 	}
+	if mode == ModeSimulation {
+		// Options are permuted per candidate as well, so two people on the same paper cannot compare screen
+		// positions. The answer is carried by option id, not by position, so scoring is unaffected.
+		for index := range questions {
+			questions[index].Options = domain.SeededShuffle(questions[index].Options,
+				userID+":"+questions[index].QvID)
+		}
+	}
 
 	started := time.Now().UTC()
-	deadline := domain.DeadlineAt(started, 4*60*60) // practice stays bounded so an abandoned tab cannot linger
 	sessionID := store.NewID()
 	snapshot := Snapshot{Policy: domain.PolicyV1, Questions: questions}
 	raw, err := json.Marshal(snapshot)
@@ -150,11 +344,16 @@ func (s *Service) StartPractice(ctx context.Context, userID, subjectID string, t
 		return nil, err
 	}
 
+	var classID any
+	if selection.ClassID != "" {
+		classID = selection.ClassID
+	}
 	if _, err := s.DB.DB.ExecContext(ctx, `
 		INSERT INTO assessment_sessions (id, user_id, definition_id, class_id, mode, attempt_no, status,
 			started_at, deadline_at, snapshot_json, created_at)
-		VALUES (?,?,NULL,NULL,'practice',1,'in_progress',?,?,?,?)`,
-		sessionID, userID, store.TS(started), store.TS(deadline), string(raw), store.Now()); err != nil {
+		VALUES (?,?,NULL,?,?,1,'in_progress',?,?,?,?)`,
+		sessionID, userID, classID, mode, store.TS(started), store.TS(deadline), string(raw),
+		store.Now()); err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, sessionID)
@@ -791,6 +990,7 @@ func (s *Service) ViewFor(ctx context.Context, session *Session, includeAnswers 
 		DefinitionID:     session.DefinitionID,
 		Questions:        make([]QuestionView, 0, len(session.Snapshot.Questions)),
 		ResultReleased:   false,
+		QuestionCount:    len(session.Snapshot.Questions),
 		RemainingSeconds: domain.RemainingSeconds(session.DeadlineAt, now),
 	}
 	if session.SubmittedAt != nil {

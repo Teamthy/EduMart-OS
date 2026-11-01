@@ -7,7 +7,10 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with fifty-seat rooms, synchronised exams and consistency: media is now forwarded by an in-process
+Last updated with admission control, rechargeable credits and practice/simulation modes: a host can now run a
+waiting room and charge only on acceptance, money can become credits at a ₦200 floor with an idempotent settle,
+and practice has split into untimed revision and a clocked exam simulation. The previous update added fifty-seat
+rooms, synchronised exams and consistency: media is now forwarded by an in-process
 media server instead of meshed, so a room holds 50 people (six on stage) and a free class is capped at 45
 minutes on the server; exams are sittings with one paper, one window, a per-candidate permutation and a
 server-recorded start, submit and score; and a learner's streak is derived from activity rather than counted.
@@ -28,7 +31,7 @@ survive.
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
-| 6 | API platform and contracts | Done | 100 routes, contract checked in CI (every router path must be documented or the gate fails) |
+| 6 | API platform and contracts | Done | 114 routes, contract checked in CI (every router path must be documented or the gate fails) |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, and **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **No device-level 2FA, no IP/geo risk signals** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
@@ -44,7 +47,7 @@ survive.
 | 19 | Classrooms and assignments | Partial | Classes, rosters, assignments, and now unguessable codes that expire in 30 days and can be reissued in one click (revoking the old one); no usage limits on institution invitations |
 | 20 | Institutions and administration | Partial | Creation, membership, invitations, an approval queue with refusal and audit all work; **no institution dashboards, data export, retention rules or console** |
 | 21 | Digital library and publications | Partial | Catalogue + entitlements; **no publisher onboarding, no versions** |
-| 22 | Commerce and payments | Partial | Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
+| 22 | Commerce and payments | Partial | Credits can now be **bought**: `POST /v1/wallet/topups` (kobo, ₦200 floor, rate stored per row) with an idempotent settle into the points ledger — provider wiring for top-ups is still the sandbox path. Refunds and reconciliation are append-only **and now move money**: a provider adapter with a pending/succeeded/failed/needs-review lifecycle, Paystack's signed webhook normalised into the same path; **no disputes or chargebacks, no scheduled reconciliation job** |
 | 23 | Rewards and referrals | Partial | Two ledgers, dedupe, attribution, and **commission that walks the whole referral chain**: `referral_level` on every ledger row, 10/3/1% by default (`EDUMART_REFERRAL_RATES`), a per-level idempotency key, a cycle guard, a level-aware refund reversal, and `GET /v1/referrals/tree`; refunds now reverse commission proportionally; **no payouts** |
 | 24 | Notifications | Partial | Durable queue, retries, SMTP, per-message records, and now scheduled reminders (study nudge, deadline warning) that survive restarts, never double-send and withdraw themselves when the reason disappears; **no SMS/push, no unsubscribe or quiet hours** |
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
@@ -60,12 +63,30 @@ and a **fifty-seat room with a six-seat stage** all work and are covered by test
 an **embedded TURN relay** issues each participant an ephemeral credential so a symmetric NAT can still reach
 the forwarder, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app opens the
 invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
-them on the clock. See
+them on the clock. A host can now run a **waiting room**: an `approval` class queues every learner as a request
+(`202`, no seat, no charge), refuses the roster, board, stage and signalling with a `403` that says why, and
+charges only when the host accepts — under the same row lock as a direct join, so accepts cannot oversell the
+last seat. Still missing: promotions of a pending learner in bulk, and any notification when a request arrives (the
+host's room polls). See
 [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
 
 Synchronised exams are **Partial**: one paper, one window, the same duration for everybody, a per-candidate
 permutation, and a server-recorded start, submission and score — but there is no proctoring and no scheduled
 result release. See [`EXAMS.md`](./EXAMS.md).
+
+Practice is now two products rather than one: **real practice** (untimed, fresh draw, answers and explanations
+after submitting, corrections allowed) and **exact exam simulation** (a fixed paper, a hard server clock of 5–240
+minutes, options permuted per candidate, no corrections afterwards). Selection is one dimension — subject
+(optionally narrowed to topics), class, exam body (WAEC/NECO/JAMB/Post-UTME), or `mixed` — and the two sources are
+refused when combined rather than guessed. Both modes score through the same engine. Still missing: per-topic
+adaptive difficulty, and no separate "simulation" history view.
+
+Wallet recharges are **Partial**: `POST /v1/wallet/topups` takes kobo with a **₦200 floor**, `GET /v1/wallet`
+reports the balance from the append-only ledger, and crediting is idempotent per top-up (`topup:<id>`), so a
+duplicated provider callback pays once. **What is not built: a live payment-provider adapter for top-ups.** The
+settle path is the same sandbox switch the order flow uses (`POST /v1/wallet/topups/{id}/confirm`, registered only
+when `EDUMART_ALLOW_SANDBOX_PAYMENTS` is on); a real deployment still needs the provider's webhook mapped onto
+`wallet.Confirm` before it can take card money for credits, and there is no refund path for top-ups.
 
 **Nine of thirty phases are done or effectively done**, and Phase 29 is now partially done: the system has
 been measured under load and its invariants proved to survive it. The remaining work is real, not polish. Phase 8 and Phase 20 are now partially done: the model exists and is enforced, the reports do

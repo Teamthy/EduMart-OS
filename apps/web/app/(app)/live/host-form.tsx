@@ -18,6 +18,9 @@ export function HostClassForm() {
   const [creditsCost, setCreditsCost] = useState(0);
   // The room carries fifty people; the input starts there because that is the number the forwarder is built for.
   const [capacity, setCapacity] = useState(50);
+  // Who decides who comes in. `approval` is a waiting room: each learner knocks, the host admits or declines,
+  // and a request costs nothing until it is accepted.
+  const [admission, setAdmission] = useState<"open" | "approval">("open");
   // A free session is capped at 45 minutes by the server. The form follows the price so the limit is visible
   // before the request rather than as a 400 after it.
   const [durationMinutes, setDurationMinutes] = useState(45);
@@ -41,6 +44,7 @@ export function HostClassForm() {
           creditsCost,
           capacity,
           durationMinutes,
+          admission,
           // The input is local time; the API stores UTC. Sending a Date-derived ISO string keeps the
           // conversion in one place instead of hoping the server's zone matches the host's.
           startsAt: new Date(startsAt).toISOString(),
@@ -103,6 +107,43 @@ export function HostClassForm() {
           <Input id="capacity" type="number" min={2} max={50} value={capacity} onChange={(event) => setCapacity(Number(event.target.value))} />
         </Field>
       </div>
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Who lets people in?</legend>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {([
+            {
+              value: "open" as const,
+              title: "Anyone with a seat",
+              blurb: "Learners join as soon as they pay or tap join.",
+            },
+            {
+              value: "approval" as const,
+              title: "I approve each learner",
+              blurb: "A waiting room: you admit or decline, and nobody is charged until you accept.",
+            },
+          ]).map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={admission === option.value}
+              onClick={() => setAdmission(option.value)}
+              className={
+                admission === option.value
+                  ? "rounded-lg border border-primary bg-secondary px-4 py-3 text-left"
+                  : "rounded-lg border border-border bg-card px-4 py-3 text-left"
+              }
+            >
+              <span className="block text-sm font-semibold">{option.title}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{option.blurb}</span>
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          This is fixed when the class is created: flipping a room to approval mid-lesson would turn out learners who
+          are already inside.
+        </p>
+      </fieldset>
 
       <Field
         id="creditsCost"

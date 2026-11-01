@@ -54,9 +54,14 @@ type Class struct {
 	// JoinURL is the unique link a host sends to learners. Stable per class.
 	JoinURL string `json:"joinUrl"`
 	// Role is the caller's relationship to the class: host, attendee, or none.
-	Role      string  `json:"role"`
-	CreatedAt string  `json:"createdAt"`
-	EndedAt   *string `json:"endedAt"`
+	Role string `json:"role"`
+	// Admission is "open" or "approval": whether the link is the door or the host is.
+	Admission string `json:"admission"`
+	// AdmissionStatus is where the caller stands: admitted, pending or rejected. Empty for someone who has not
+	// asked. It is not the class's lifecycle Status above — this one belongs to one person.
+	AdmissionStatus string  `json:"admissionStatus"`
+	CreatedAt       string  `json:"createdAt"`
+	EndedAt         *string `json:"endedAt"`
 }
 
 // Attendee is a roster row, including the avatar the room renders.
@@ -78,6 +83,9 @@ type Attendee struct {
 	// StageSlot is the stage position the attendee publishes into, or -1. It is server-assigned: a client
 	// asking for slot 3 is asking.
 	StageSlot int `json:"stageSlot"`
+	// Status is "admitted", "pending" or "rejected". A pending row is a request, not a seat: it is listed for
+	// the host to decide on and hidden from everybody else.
+	Status string `json:"status"`
 }
 
 // Avatar is what the room draws for someone who has no photograph: initials and a stable colour, both derived
@@ -201,6 +209,22 @@ const presenceWindow = 75 * time.Second
 // and they contain the peers' IP addresses.
 const signalRetention = 10 * time.Minute
 
+// Admission is the policy on the door of a class.
+const (
+	// AdmissionOpen is the original behaviour: anyone with the link gets a seat.
+	AdmissionOpen = "open"
+	// AdmissionApproval makes joining a request. The host accepts or rejects, and until they do the learner is
+	// outside: no seat, no media, no board, no signalling.
+	AdmissionApproval = "approval"
+)
+
+// Attendance status is where one person stands under the policy.
+const (
+	JoinPending  = "pending"
+	JoinAdmitted = "admitted"
+	JoinRejected = "rejected"
+)
+
 // slugAlphabet excludes characters that are read aloud badly. A join link is copied and pasted far more often
 // than typed, but the fallback is a person reading it out.
 const slugAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -228,6 +252,9 @@ type CreateInput struct {
 	Capacity        int     `json:"capacity"`
 	StartsAt        string  `json:"startsAt"`
 	DurationMinutes int     `json:"durationMinutes"`
+	// Admission is "open" (default) or "approval". A host who prices a class usually wants to see who is
+	// coming; a host running a free public clinic usually does not.
+	Admission string `json:"admission"`
 }
 
 // Create schedules a class. Any signed-in account can host — a student running a revision session is as valid
@@ -267,6 +294,13 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput) (*C
 		fields = append(fields, httpx.FieldError{Field: "durationMinutes",
 			Message: fmt.Sprintf("A free class runs for at most %d minutes. Set a credit price to run longer.", FreeSessionMinutes)})
 	}
+	if in.Admission == "" {
+		in.Admission = AdmissionOpen
+	}
+	if in.Admission != AdmissionOpen && in.Admission != AdmissionApproval {
+		fields = append(fields, httpx.FieldError{Field: "admission",
+			Message: "Admission is either open or approval."})
+	}
 	starts, err := time.Parse(time.RFC3339, strings.TrimSpace(in.StartsAt))
 	if err != nil {
 		fields = append(fields, httpx.FieldError{Field: "startsAt", Message: "Give a start time in RFC 3339."})
@@ -286,10 +320,11 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput) (*C
 		_, err := s.db.DB.ExecContext(ctx, `
 			INSERT INTO virtual_classes
 			  (id, host_user_id, slug, title, description, subject_id, credits_cost, capacity, status,
-			   starts_at, duration_minutes, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			   starts_at, duration_minutes, created_at, updated_at, admission)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			id, hostID, slug, title, strings.TrimSpace(in.Description), in.SubjectID, in.CreditsCost,
-			in.Capacity, StatusScheduled, store.TS(starts), in.DurationMinutes, store.Now(), store.Now())
+			in.Capacity, StatusScheduled, store.TS(starts), in.DurationMinutes, store.Now(), store.Now(),
+			in.Admission)
 		if err == nil {
 			if _, counterErr := s.db.DB.ExecContext(ctx,
 				`INSERT INTO virtual_class_counters (class_id, board_seq, signal_seq) VALUES (?,0,0)
@@ -311,7 +346,8 @@ const classColumns = `
 	c.id, c.slug, c.title, c.description, c.subject_id, c.credits_cost, c.capacity, c.status,
 	c.starts_at, c.duration_minutes, c.host_user_id,
 	COALESCE(u.display_name, 'A host'), c.created_at, c.ended_at,
-	(SELECT COUNT(*) FROM virtual_class_attendees a WHERE a.class_id = c.id)`
+	(SELECT COUNT(*) FROM virtual_class_attendees a WHERE a.class_id = c.id AND a.status = 'admitted'),
+	c.admission`
 
 func (s *Service) scanClass(scan func(...any) error) (*Class, error) {
 	var class Class
@@ -319,7 +355,7 @@ func (s *Service) scanClass(scan func(...any) error) (*Class, error) {
 	var endedAt sql.NullString
 	if err := scan(&class.ID, &class.Slug, &class.Title, &class.Description, &subjectID, &class.CreditsCost,
 		&class.Capacity, &class.Status, &class.StartsAt, &class.DurationMinutes, &class.HostUserID,
-		&class.HostName, &class.CreatedAt, &endedAt, &class.Attendees); err != nil {
+		&class.HostName, &class.CreatedAt, &endedAt, &class.Attendees, &class.Admission); err != nil {
 		return nil, err
 	}
 	if subjectID.Valid {
@@ -346,7 +382,25 @@ func (s *Service) Get(ctx context.Context, idOrSlug, viewerID string) (*Class, e
 		return nil, err
 	}
 	class.Role = s.roleOf(ctx, class.ID, viewerID)
+	class.AdmissionStatus = s.admissionStatus(ctx, class.ID, viewerID, class.Role)
 	return class, nil
+}
+
+// admissionStatus is where one caller stands under the class's policy: the host is always admitted, an attendee
+// row says the rest, and somebody who has never knocked has no status at all.
+func (s *Service) admissionStatus(ctx context.Context, classID, userID, role string) string {
+	if role == "host" {
+		return JoinAdmitted
+	}
+	if userID == "" {
+		return ""
+	}
+	var status string
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT status FROM virtual_class_attendees
+		WHERE class_id = ? AND user_id = ?`, classID, userID).Scan(&status); err != nil {
+		return ""
+	}
+	return status
 }
 
 func (s *Service) roleOf(ctx context.Context, classID, userID string) string {
@@ -363,7 +417,8 @@ func (s *Service) roleOf(ctx context.Context, classID, userID string) string {
 	}
 	var role string
 	err := s.db.DB.QueryRowContext(ctx, `SELECT role FROM virtual_class_attendees
-		WHERE class_id = ? AND user_id = ? AND left_at IS NULL`, classID, userID).Scan(&role)
+		WHERE class_id = ? AND user_id = ? AND left_at IS NULL AND status = ?`,
+		classID, userID, JoinAdmitted).Scan(&role)
 	if err == nil {
 		return role
 	}
@@ -439,6 +494,11 @@ type JoinResult struct {
 	CreditsSpent    int       `json:"creditsSpent"`
 	DiscountApplied int       `json:"discountApplied"`
 	AlreadyJoined   bool      `json:"alreadyJoined"`
+	// Pending is true when the class requires approval and this call created (or found) a request instead of a
+	// seat. Nothing has been charged and nothing is visible: no media, no board, no signalling.
+	Pending bool `json:"pending"`
+	// AdmissionStatus is the caller's standing after this call: admitted or pending.
+	AdmissionStatus string `json:"admissionStatus"`
 }
 
 // Join seats a learner, charging credits only when the class is not free and no full discount applies.
@@ -463,10 +523,11 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 			status      string
 			creditsCost int
 			capacity    int
+			admission   string
 		)
-		if err := tx.QueryRowContext(ctx, `SELECT host_user_id, status, credits_cost, capacity
+		if err := tx.QueryRowContext(ctx, `SELECT host_user_id, status, credits_cost, capacity, admission
 			FROM virtual_classes WHERE id = ?`+lockSuffix(s.db.Driver), classID).
-			Scan(&hostID, &status, &creditsCost, &capacity); err != nil {
+			Scan(&hostID, &status, &creditsCost, &capacity, &admission); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return httpx.NewError(httpx.CodeNotFound, "That class does not exist.")
 			}
@@ -476,12 +537,22 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 			return httpx.NewError(httpx.CodeConflict, "That class has already finished.")
 		}
 
-		// Idempotent: a learner who is already seated pays nothing and gets the same answer.
-		var existingID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM virtual_class_attendees
-			WHERE class_id = ? AND user_id = ?`, classID, userID).Scan(&existingID)
+		// Idempotent: a learner who is already seated pays nothing and gets the same answer. Someone whose
+		// request was declined is told so rather than silently queued again — a rejection the learner can
+		// retry at will is not a decision, it is a delay.
+		var (
+			existingID     string
+			existingStatus string
+		)
+		err := tx.QueryRowContext(ctx, `SELECT id, status FROM virtual_class_attendees
+			WHERE class_id = ? AND user_id = ?`, classID, userID).Scan(&existingID, &existingStatus)
 		if err == nil {
-			result.AlreadyJoined = true
+			result.AlreadyJoined = existingStatus == JoinAdmitted
+			result.AdmissionStatus = existingStatus
+			if existingStatus == JoinRejected {
+				return httpx.NewError(httpx.CodeForbidden, "The host declined this request.")
+			}
+			result.Pending = existingStatus == JoinPending
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -496,12 +567,30 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 		if capacity > 0 {
 			var seated int
 			if err := tx.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM virtual_class_attendees WHERE class_id = ?`, classID).Scan(&seated); err != nil {
+				`SELECT COUNT(*) FROM virtual_class_attendees WHERE class_id = ? AND status = ?`,
+				classID, JoinAdmitted).Scan(&seated); err != nil {
 				return err
 			}
 			if seated >= capacity {
 				return httpx.NewError(httpx.CodeConflict, "This class is full.")
 			}
+		}
+
+		// A class that requires approval takes a request here, not a payment: charging for a seat the host may
+		// refuse would mean refunding every decline, and a refund is a worse experience than a request.
+		if admission == AdmissionApproval && hostID != userID {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO virtual_class_attendees
+				(id, class_id, user_id, role, session_id, payment_method, credits_paid, discount_code,
+				 joined_at, last_seen_at, stage_role, stage_slot, status)
+				VALUES (?,?,?,?,NULL,'pending',0,?,?,?,'audience',-1,?)`,
+				store.NewID(), classID, userID, "attendee", nullIfEmpty(strings.ToUpper(strings.TrimSpace(in.DiscountCode))),
+				store.Now(), store.Now(), JoinPending); err != nil {
+				return err
+			}
+			result.Pending = true
+			result.AdmissionStatus = JoinPending
+			result.DiscountApplied = 0
+			return nil
 		}
 
 		price := creditsCost
@@ -610,6 +699,7 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 			return err
 		}
 		result.CreditsSpent = paid
+		result.AdmissionStatus = JoinAdmitted
 		return nil
 	})
 	if err != nil {
@@ -620,12 +710,155 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 		return nil, err
 	}
 	result.Class = class
+	if result.Pending {
+		// There is no attendee to describe: a request is not a seat. Calling attendee() here would refuse
+		// for lack of membership, which is exactly what the request is still waiting for.
+		return &result, nil
+	}
 	attendee, err := s.attendee(ctx, classID, userID)
 	if err != nil {
 		return nil, err
 	}
 	result.Attendee = attendee
 	return &result, nil
+}
+
+// Decide is the host answering one join request: accept it, or decline it.
+//
+// Accepting is where the money moves, not the request. A learner who asks to join a paid approval class is not
+// charged until the host says yes — the alternative is charging everybody who knocks and refunding every
+// decline, which is both a worse experience and a reconciliation problem.
+//
+// The decision is final in the sense that matters: an accepted request takes a seat under the same row lock as a
+// direct join, so two accepts cannot both take the last one; a declined request stays declined, and the learner
+// is told so rather than being quietly re-queued.
+func (s *Service) Decide(ctx context.Context, classID, hostID, userID, decision string) ([]Attendee, error) {
+	if err := s.requireHost(ctx, classID, hostID); err != nil {
+		return nil, err
+	}
+	if userID == hostID {
+		return nil, httpx.NewError(httpx.CodeConflict, "The host is already in the room.")
+	}
+	decision = strings.ToLower(strings.TrimSpace(decision))
+	if decision != "accept" && decision != "reject" {
+		return nil, httpx.Validation([]httpx.FieldError{{
+			Field: "decision", Message: "Decide accept or reject.",
+		}})
+	}
+	if err := s.requireOpen(ctx, classID); err != nil {
+		return nil, err
+	}
+
+	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		var (
+			creditsCost int
+			capacity    int
+		)
+		if err := tx.QueryRowContext(ctx, `SELECT credits_cost, capacity FROM virtual_classes WHERE id = ?`+
+			lockSuffix(s.db.Driver), classID).Scan(&creditsCost, &capacity); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return httpx.NewError(httpx.CodeNotFound, "That class does not exist.")
+			}
+			return err
+		}
+
+		var status string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM virtual_class_attendees
+			WHERE class_id = ? AND user_id = ?`, classID, userID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return httpx.NewError(httpx.CodeNotFound, "That learner has not asked to join.")
+			}
+			return err
+		}
+		if status == JoinAdmitted {
+			return nil
+		}
+		if status == JoinRejected && decision == "reject" {
+			return nil
+		}
+
+		if decision == "reject" {
+			_, err := tx.ExecContext(ctx, `UPDATE virtual_class_attendees SET status = ?, decided_at = ?
+				WHERE class_id = ? AND user_id = ?`, JoinRejected, store.Now(), classID, userID)
+			return err
+		}
+
+		if capacity <= 0 || capacity > MaxCapacity {
+			capacity = MaxCapacity
+		}
+		var seated int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM virtual_class_attendees WHERE class_id = ? AND status = ?`,
+			classID, JoinAdmitted).Scan(&seated); err != nil {
+			return err
+		}
+		if seated >= capacity {
+			return httpx.NewError(httpx.CodeConflict, "This class is full.")
+		}
+
+		paid := creditsCost
+		method := "free"
+		if paid > 0 {
+			method = "credits"
+			var balance int
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount),0) FROM points_ledger_entries
+				WHERE user_id = ?`, userID).Scan(&balance); err != nil {
+				return err
+			}
+			if balance < paid {
+				// The request stays pending: the host may choose to let them in anyway once they top up, and
+				// silently dropping it would look like the host refused them.
+				return httpx.NewError(httpx.CodeConflict,
+					fmt.Sprintf("This learner needs %d more credits to take the seat.", paid-balance))
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO points_ledger_entries
+				(id, user_id, amount, entry_type, source_type, source_id, rule_version, idempotency_key, note, created_at)
+				VALUES (?,?,?,'spend','virtual_class',?,'v1',?,'Joined a live class',?)
+				ON CONFLICT (idempotency_key) DO NOTHING`,
+				store.NewID(), userID, -paid, classID,
+				"credits:virtual-class:"+classID+":"+userID, store.Now()); err != nil {
+				return err
+			}
+		}
+
+		var sessionID sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM virtual_class_sessions
+			WHERE class_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`, classID).
+			Scan(&sessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE virtual_class_attendees
+			SET status = ?, decided_at = ?, session_id = NULL, payment_method = ?, credits_paid = ?,
+			    joined_at = ?, last_seen_at = ?, stage_role = 'audience', stage_slot = -1, left_at = NULL
+			WHERE class_id = ? AND user_id = ?`,
+			JoinAdmitted, store.Now(), method, paid, store.Now(), store.Now(), classID, userID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Roster(ctx, classID, hostID)
+}
+
+// Requests is the host's queue: who is waiting on a decision, oldest first.
+//
+// It is the same roster filtered to pending rows, so the host UI reads one list and the room's avatars, names and
+// avatars are already resolved.
+func (s *Service) Requests(ctx context.Context, classID, hostID string) ([]Attendee, error) {
+	if err := s.requireHost(ctx, classID, hostID); err != nil {
+		return nil, err
+	}
+	roster, err := s.Roster(ctx, classID, hostID)
+	if err != nil {
+		return nil, err
+	}
+	pending := []Attendee{}
+	for _, attendee := range roster {
+		if attendee.Status == JoinPending {
+			pending = append(pending, attendee)
+		}
+	}
+	return pending, nil
 }
 
 // nextSeq allocates the next value of a per-class counter inside a transaction.
@@ -882,10 +1115,18 @@ func (s *Service) requireHost(ctx context.Context, classID, userID string) error
 // read: the board, the roster and the signalling channel are not public just because the class is.
 func (s *Service) requireMember(ctx context.Context, classID, userID string) error {
 	role := s.roleOf(ctx, classID, userID)
-	if role == "" {
-		return httpx.NewError(httpx.CodeForbidden, "Join the class to take part in it.")
+	if role != "" {
+		return nil
 	}
-	return nil
+	// A pending request is a row without a seat. Saying which one it is matters: "join the class" is
+	// misleading advice to somebody who already asked and is waiting.
+	switch s.admissionStatus(ctx, classID, userID, "") {
+	case JoinPending:
+		return httpx.NewError(httpx.CodeForbidden, "Your request to join is waiting for the host.")
+	case JoinRejected:
+		return httpx.NewError(httpx.CodeForbidden, "The host declined this request.")
+	}
+	return httpx.NewError(httpx.CodeForbidden, "Join the class to take part in it.")
 }
 
 // Roster lists everyone in the class with their avatar and presence.
@@ -893,12 +1134,21 @@ func (s *Service) Roster(ctx context.Context, classID, userID string) ([]Attende
 	if err := s.requireMember(ctx, classID, userID); err != nil {
 		return nil, err
 	}
+	// Pending and rejected rows are the host's business: a learner should not be shown the names of people
+	// whose requests were declined, and should not be told who else is waiting.
+	role := s.roleOf(ctx, classID, userID)
+	where := " WHERE a.class_id = ? AND a.status = ?"
+	args := []any{classID, JoinAdmitted}
+	if role == "host" {
+		where = " WHERE a.class_id = ?"
+		args = []any{classID}
+	}
 	rows, err := s.db.DB.QueryContext(ctx, `
 		SELECT a.user_id, COALESCE(u.display_name, 'Learner'), a.role, a.payment_method, a.credits_paid,
-		       a.joined_at, a.left_at, a.last_seen_at, a.stage_role, a.stage_slot
-		  FROM virtual_class_attendees a LEFT JOIN users u ON u.id = a.user_id
-		 WHERE a.class_id = ?
-		 ORDER BY CASE a.role WHEN 'host' THEN 0 ELSE 1 END, a.joined_at ASC`, classID)
+		       a.joined_at, a.left_at, a.last_seen_at, a.stage_role, a.stage_slot, a.status
+		  FROM virtual_class_attendees a LEFT JOIN users u ON u.id = a.user_id`+where+`
+		 ORDER BY CASE a.status WHEN 'pending' THEN 1 ELSE 0 END,
+		          CASE a.role WHEN 'host' THEN 0 ELSE 1 END, a.joined_at ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -911,7 +1161,7 @@ func (s *Service) Roster(ctx context.Context, classID, userID string) ([]Attende
 		var lastSeen string
 		if err := rows.Scan(&attendee.UserID, &attendee.DisplayName, &attendee.Role, &attendee.Payment,
 			&attendee.CreditsPaid, &attendee.JoinedAt, &leftAt, &lastSeen, &attendee.StageRole,
-			&attendee.StageSlot); err != nil {
+			&attendee.StageSlot, &attendee.Status); err != nil {
 			return nil, err
 		}
 		if leftAt.Valid && leftAt.String != "" {
@@ -1521,7 +1771,47 @@ func (h *Handlers) Join(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// A request is accepted for processing, not seated. Saying 201/200 would be a lie a client would build a
+	// room on: it would negotiate media for a seat nobody has granted yet.
+	if result.Pending {
+		httpx.JSON(w, http.StatusAccepted, result)
+		return nil
+	}
 	httpx.JSON(w, http.StatusOK, result)
+	return nil
+}
+
+// Requests handles GET /v1/virtual-classes/{id}/requests: the host's admission queue.
+func (h *Handlers) Requests(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	pending, err := h.svc.Requests(r.Context(), classID(r), user.ID)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"requests": pending})
+	return nil
+}
+
+// Decide handles POST /v1/virtual-classes/{id}/requests/{userId}: accept or decline one request.
+func (h *Handlers) Decide(w http.ResponseWriter, r *http.Request) error {
+	user, err := auth.RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Decision string `json:"decision"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	roster, err := h.svc.Decide(r.Context(), classID(r), user.ID, chi.URLParam(r, "userId"), in.Decision)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"attendees": roster})
 	return nil
 }
 
@@ -1760,12 +2050,14 @@ func (h *Handlers) Resolve(w http.ResponseWriter, r *http.Request) error {
 		DurationMinutes int    `json:"durationMinutes"`
 		Status          string `json:"status"`
 		JoinURL         string `json:"joinUrl"`
+		// Admission tells a visitor what joining will do: take a seat, or send a request the host decides on.
+		Admission string `json:"admission"`
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"class": invite{
 		ID: class.ID, Slug: class.Slug, Title: class.Title, Description: class.Description,
 		HostName: class.HostName, StartsAt: class.StartsAt, CreditsCost: class.CreditsCost,
 		Capacity: class.Capacity, DurationMinutes: class.DurationMinutes,
-		Status: class.Status, JoinURL: class.JoinURL,
+		Status: class.Status, JoinURL: class.JoinURL, Admission: class.Admission,
 	}})
 	return nil
 }

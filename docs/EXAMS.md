@@ -57,6 +57,22 @@ unique index, so the many definitions without a slug do not collide). The link i
 closes, how long it lasts, how many questions — and nothing about the paper. A public endpoint that leaked
 question text would be a revision aid for exactly the wrong person.
 
+## Simulation is not a sitting
+
+"Exact exam simulation" (`POST /v1/practice-sessions` with `mode: "simulation"`) is deliberately a *different*
+feature from the synchronised sitting above, and the difference is worth stating so nobody builds the wrong one:
+
+| | Simulation | Sitting |
+| --- | --- | --- |
+| Others involved | none — you sit your own paper | everyone in the same window |
+| Paper | fixed per caller: the same selection returns the same paper | one paper for the cohort, permuted per candidate |
+| Clock | `durationMinutes`, 5–240 | fixed by the host, deadline `min(started+duration, endsAt)` |
+| Corrections | refused | refused |
+| Results | yours, immediately after submit | host sees everybody; release follows the sitting's policy |
+
+A simulation reuses the same snapshot, the same `domain.ScoreAttempt` and the same "no corrections" rule, which is
+what makes it a rehearsal rather than a mini-game: the only things it removes are the other people.
+
 ## What is not built
 
 - **No proctoring.** Nothing detects a second browser tab, and the honest statement is that this is a revision
