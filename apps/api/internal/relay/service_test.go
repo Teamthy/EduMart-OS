@@ -224,3 +224,104 @@ func rawCopy(b []byte) []byte {
 	copy(out, b)
 	return out
 }
+
+// newTCPRelay starts a relay with both transports, so a credential can be tried on the path a firewall permits.
+func newTCPRelay(t *testing.T) *Service {
+	t.Helper()
+	service, err := New(Config{
+		ListenUDP: "127.0.0.1:0",
+		ListenTCP: "127.0.0.1:0",
+		PublicIP:  "127.0.0.1",
+		Realm:     "edumart.test",
+		Secret:    testSecret,
+		TTL:       2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("start relay: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	return service
+}
+
+// allocateOverTCP performs the same allocation a browser on a UDP-blocking network does: a TCP connection to the
+// relay, then the TURN long-term credential exchange over it.
+func allocateOverTCP(t *testing.T, service *Service, username, password string) (net.PacketConn, error) {
+	t.Helper()
+	address := ""
+	for _, url := range service.URLs() {
+		if strings.Contains(url, "transport=tcp") {
+			address = strings.TrimPrefix(strings.TrimPrefix(url, "turn:"), "turns:")
+			address = strings.Split(address, "?")[0]
+		}
+	}
+	if address == "" {
+		t.Fatal("a relay with a TCP listener must advertise it")
+	}
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	// TURN over TCP is STUN framing on a stream, so the stream is adapted to the packet interface the client
+	// library speaks. This is what a browser does internally on a `?transport=tcp` URL.
+	client, err := turn.NewClient(&turn.ClientConfig{
+		TURNServerAddr: address,
+		Username:       username,
+		Password:       password,
+		Realm:          "edumart.test",
+		Conn:           turn.NewSTUNConn(conn),
+	})
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := client.Listen(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return client.Allocate()
+}
+
+// TestTheRelayAlsoSpeaksTCP: UDP is blocked on some networks, and a relay that only answers UDP leaves those
+// learners in a room where nobody can hear them. The same credential must work on the TCP path.
+func TestTheRelayAlsoSpeaksTCP(t *testing.T) {
+	service := newTCPRelay(t)
+
+	urls := service.URLs()
+	if len(urls) != 2 {
+		t.Fatalf("both transports must be advertised, got %v", urls)
+	}
+	if !strings.Contains(strings.Join(urls, " "), "?transport=tcp") {
+		t.Fatalf("the TCP endpoint must be advertised, got %v", urls)
+	}
+
+	username, password, _ := service.Credentials("user-tcp")
+	relayed, err := allocateOverTCP(t, service, username, password)
+	if err != nil {
+		t.Fatalf("allocation over TCP: %v", err)
+	}
+	defer relayed.Close()
+
+	// The credential is the gate on this path too, not only on UDP.
+	tampered := "A" + password[1:]
+	if password[0] == 'A' {
+		tampered = "B" + password[1:]
+	}
+	if _, err := allocateOverTCP(t, service, username, tampered); err == nil {
+		t.Fatal("the TCP listener accepted a password that does not match the secret")
+	}
+}
+
+// TestTLSWithoutAKeyIsRefused: half a TLS configuration would silently serve plaintext on a port every client
+// expects to encrypt, so it is refused at boot rather than discovered by a learner.
+func TestTLSWithoutAKeyIsRefused(t *testing.T) {
+	_, err := New(Config{
+		ListenUDP:   "127.0.0.1:0",
+		ListenTCP:   "127.0.0.1:0",
+		PublicIP:    "127.0.0.1",
+		Secret:      testSecret,
+		TLSCertFile: "/tmp/does-not-exist.crt",
+	})
+	if err == nil || !strings.Contains(err.Error(), "TLS") {
+		t.Fatalf("half a TLS configuration must be refused, got %v", err)
+	}
+}
