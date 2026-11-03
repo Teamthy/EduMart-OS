@@ -97,6 +97,9 @@ export function createMediaWorker(): Worker {
  * the worker derives its own media key from it, so the two nonce spaces stay apart.
  */
 export function handRoomKey(worker: Worker, raw: Uint8Array): void {
+  // A *copy*, transferred. The room key still lives in the page (the whiteboard needs it), so handing over the
+  // original buffer would detach it underneath the board. The copy is what makes the transfer safe — and a transfer
+  // rather than a structured clone is what keeps a second reachable copy from existing after this call.
   const copy = new Uint8Array(new ArrayBuffer(raw.byteLength));
   copy.set(raw);
   worker.postMessage({ type: "key", raw: copy.buffer }, [copy.buffer]);

@@ -167,7 +167,10 @@ describe("media end-to-end encryption", () => {
     const roomKeyBytes = roomKey();
 
     const sender = loadWorker();
-    sender.dispatch({ type: "key", raw: roomKeyBytes.buffer.slice(0) });
+    // A Uint8Array copy, not the underlying ArrayBuffer: this test realm's ArrayBuffer is not the one the crypto
+    // implementation checks against, and `importKey` refuses a buffer from another realm. The worker copies on its
+    // side too, for the same reason.
+    sender.dispatch({ type: "key", raw: new Uint8Array(roomKeyBytes) });
 
     const inbound = new TransformStream();
     const outbound = new TransformStream();
@@ -187,7 +190,7 @@ describe("media end-to-end encryption", () => {
 
     // A receiver holding the same room key opens it — the two independent worker instances agree on the framing.
     const receiver = loadWorker();
-    receiver.dispatch({ type: "key", raw: roomKeyBytes.buffer.slice(0) });
+    receiver.dispatch({ type: "key", raw: new Uint8Array(roomKeyBytes) });
     const decodeIn = new TransformStream();
     const decodeOut = new TransformStream();
     const writeSealed = decodeIn.writable.getWriter();

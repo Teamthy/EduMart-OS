@@ -54,7 +54,11 @@ const HKDF_INFO = "rtp-frame";
  * apart by construction.
  */
 async function importRoomKey(cryptoApi, raw) {
-  const base = await cryptoApi.subtle.importKey("raw", raw, "HKDF", false, ["deriveKey"]);
+  // Copied into this realm's own Uint8Array first. `importKey` rejects a buffer that came from another realm (it
+  // checks instanceof internally), and message payloads can legitimately arrive as one — a page's ArrayBuffer is not
+  // this worker's ArrayBuffer. The copy is 32 bytes and runs once per connection.
+  const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+  const base = await cryptoApi.subtle.importKey("raw", bytes, "HKDF", false, ["deriveKey"]);
   return cryptoApi.subtle.deriveKey(
     {
       name: "HKDF",
