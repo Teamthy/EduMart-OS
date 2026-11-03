@@ -75,7 +75,11 @@ describe("refreshSession", () => {
     ];
     globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(input), init: init ?? {} });
-      return new Response("{}", { status: 200, headers: setCookies.map((value) => ["set-cookie", value]) });
+      // A Headers object, not a pairs array: a Response may carry several `set-cookie` values, and only Headers
+      // models that (an array would collapse them into one comma-joined value the test then fails to read).
+      const headers = new Headers();
+      for (const value of setCookies) headers.append("set-cookie", value);
+      return new Response("{}", { status: 200, headers });
     }) as unknown as typeof fetch;
 
     const result = await refreshSession(requestWithCookies(`${REFRESH_COOKIE}=old-refresh`), "http://api:8080");
@@ -159,9 +163,11 @@ describe("rotate (the ordering that makes the middleware work)", () => {
       `${SESSION_COOKIE}=fresh; Path=/; HttpOnly; SameSite=Lax`,
       `${REFRESH_COOKIE}=fresh-refresh; Path=/v1/auth; HttpOnly; SameSite=Lax`,
     ];
-    globalThis.fetch = vi.fn(async () =>
-      new Response("{}", { status: 200, headers: setCookies.map((value) => ["set-cookie", value]) }),
-    ) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(async () => {
+      const headers = new Headers();
+      for (const value of setCookies) headers.append("set-cookie", value);
+      return new Response("{}", { status: 200, headers });
+    }) as unknown as typeof fetch;
 
     const result = await rotate(requestWithCookies(`${SESSION_COOKIE}=expired; ${REFRESH_COOKIE}=old`), "http://api:8080");
 
