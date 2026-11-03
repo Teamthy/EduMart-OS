@@ -66,6 +66,7 @@ export function Field({
   secureTextEntry,
   keyboardType,
   autoCapitalize,
+  autoComplete,
   hint,
 }: {
   label: string;
@@ -74,8 +75,11 @@ export function Field({
   placeholder?: string;
   error?: string;
   secureTextEntry?: boolean;
-  keyboardType?: "default" | "email-address" | "numeric";
+  keyboardType?: "default" | "email-address" | "numeric" | "number-pad";
   autoCapitalize?: "none" | "words" | "characters";
+  /** `one-time-code` lets iOS and Android offer the code from the notification, which is what makes a second step
+   * tolerable rather than a chore. */
+  autoComplete?: "off" | "one-time-code";
   hint?: string;
 }) {
   return (
@@ -89,6 +93,7 @@ export function Field({
         secureTextEntry={secureTextEntry}
         keyboardType={keyboardType}
         autoCapitalize={autoCapitalize}
+        autoComplete={autoComplete}
         accessibilityLabel={label}
         accessibilityHint={hint}
         style={[styles.input, error ? styles.inputError : null]}

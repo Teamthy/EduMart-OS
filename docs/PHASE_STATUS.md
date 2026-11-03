@@ -35,7 +35,7 @@ survive.
 | 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 114 routes, contract checked in CI (every router path must be documented or the gate fails) |
-| 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, and **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **No device-level 2FA, no IP/geo risk signals** |
+| 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **TOTP two-factor authentication** (authenticator app, ten single-use recovery codes, replay-guarded codes, a five-minute half-finished sign-in). **No WebAuthn/passkeys, no IP/geo risk signals, no per-role requirement** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
 | 10 | Student onboarding and profiles | Partial | Five-step wizard works; **verification is not a mandatory step** |
@@ -56,7 +56,7 @@ survive.
 | 25 | Analytics and reporting | Partial | Learner aggregates; no institution reports, no metric definitions |
 | 26 | Search and discovery | Partial | Prefix search across the catalogue and syllabus, public, with ranking that is identical on both engines and visibility re-checked against the source tables on every query; **no stemming, no typo tolerance, no question-bank search, no relevance evaluation** |
 | 27 | AI capabilities | Not started | Deliberately last, per the blueprint |
-| 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, and now **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency); **no 2FA, no alert delivery, no incident runbook** |
+| 28 | Security and resilience | Partial | Threat model with named residual risks, reachable-dependency scanning and secret scanning in CI, trusted-proxy fix, **`/metrics` with fourteen alert rules** (backups, reconciliation, webhooks, errors, latency) and **TOTP two-factor authentication** on every account; **no alert delivery, no incident runbook, no requirement that staff enrol** |
 | 29 | Performance and QA | Partial | **Measured, not assumed**: a load generator over the whole attempt lifecycle, capacity numbers on PostgreSQL (300 concurrent learners, 264 req/s, p95 8.5 ms, zero errors), seven invariants proved to hold afterwards in CI, and accessibility now gated on contrast and structure; **no device matrix, no screen-reader or keyboard-only pass, no production-sized dataset, no soak run** |
 | 30 | Pilot and launch | Not started | No staging, pilot, on-call or incident process |
 
@@ -64,8 +64,9 @@ Live classes are **Partial**: scheduling, credits-or-discount joining, capacity,
 an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report, a shareable link
 and a **fifty-seat room with a six-seat stage** all work and are covered by tests on both database engines — but
 an **embedded TURN relay** issues each participant an ephemeral credential so a symmetric NAT can still reach
-the forwarder, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app opens the
-invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
+the forwarder, audio and video are **end-to-end encrypted in the browser's encoded pipeline** wherever the browser
+exposes one (falling back to hop-by-hop with a badge that says so, and no per-sender frame authentication yet), and
+the mobile app opens the invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
 them on the clock. A host can now run a **waiting room**: an `approval` class queues every learner as a request
 (`202`, no seat, no charge), refuses the roster, board, stage and signalling with a `403` that says why, and
 charges only when the host accepts — under the same row lock as a direct join, so accepts cannot oversell the
@@ -351,12 +352,14 @@ surface that lists pending organisations, organisation-level billing, and SSO.
 | A free class is 45 minutes | create-time rule, `requireOpen` at the door, and a 60-second `CloseExpiredFree` sweep for the host who walks away | `TestFreeClassIsCappedAtFortyFiveMinutes`, `TestAFreeClassClosesItselfWithoutAnyoneKnocking` |
 | Consistency without a counter | `GET /v1/consistency`, derived from activity rows | `TestConsistencyIsDerivedFromActivity` |
 
-**What changed about the encryption claim, and why it had to.** A mesh cannot hold fifty people: every
-participant uploads one stream per peer. Media is now forwarded by an in-process media server
-(`pion/webrtc`), which means DTLS-SRTP protects each leg but the server is in the path — **hop by hop, not end to
-end**. The forwarder has no recording, no disk write and no egress, but that is a promise kept by the code rather
-than a property of the design, and [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) says so on the page its readers
-will look at. The whiteboard keeps its end-to-end property: its key travels in the join link's URL fragment,
+**What changed about the encryption claim, twice.** A mesh cannot hold fifty people: every participant uploads one
+stream per peer, so media is forwarded by an in-process media server (`pion/webrtc`) — which put the server in the
+path, hop by hop rather than end to end. That gap is now closed in the browser: frames are sealed with AES-GCM in a
+worker on the publisher's side and opened in each subscriber's (`apps/web/lib/live-media-e2ee.ts`,
+`apps/web/public/media-e2ee-worker.js`), so the forwarder copies ciphertext. Browsers with no pipeline hook fall
+back to DTLS-SRTP per hop, and the room's badge says which is in force;
+[`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) documents the frame format and what it does not cover (metadata,
+per-sender authentication). The whiteboard keeps its end-to-end property: its key travels in the join link's URL fragment,
 which no browser sends to a server, so it is *stronger* than the data-channel hand-off it replaced.
 
 ### Synchronised exams
@@ -703,7 +706,9 @@ names a metric the API does not emit. That check is the part that matters: an al
 metric does not error anywhere, it just never fires, and nothing looks more like a healthy system than a
 pager that is not connected to anything. See [`OBSERVABILITY.md`](./OBSERVABILITY.md).
 
-Not done, and not claimed: no device-level 2FA or risk-based sign-in for staff, no alert *delivery* (the
+Not done, and not claimed: no risk-based sign-in, no WebAuthn, and nothing *requires* staff to enrol a second
+factor — it is available to every account and enforced by policy rather than by the server. There is no alert
+*delivery* (the
 rules exist; routing them to a phone is deployment configuration), no monitoring of audit rows, so a refund
 or suspension spree is still visible only to someone reading the table, no WAF or bot protection, no
 incident-response runbook, and no dependency-update automation. Each is a named residual risk in the threat

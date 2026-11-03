@@ -145,6 +145,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionIssued"
+        "202":
+          description: |
+            The password was right and the account has a second factor. **This is not a failure and carries no
+            session**: the body holds a single-use token, valid five minutes and for five wrong codes, to present
+            with a code at `/v1/auth/two-factor/verify`. A client that treats this as an error tells the user
+            their password was wrong when it was not, and one that reads `token` as a session will 401 on the next
+            call.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TwoFactorChallenge" }
         "401":
           description: Invalid credentials
           content:
@@ -153,6 +163,190 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "429":
           $ref: "#/components/responses/RateLimited"
+
+  /v1/auth/two-factor/verify:
+    post:
+      tags: [identity]
+      summary: Finish a sign-in that owed a second factor
+      description: |
+        The second half of a sign-in. The token comes from the `202` of `/v1/auth/login`; the code is the six digits
+        from an authenticator app, or one of the recovery codes issued at enrolment.
+
+        - The token is **single-use** and identifies the sign-in, never the account: it cannot be pointed at a
+          different user.
+        - It dies after five minutes or five wrong codes, whichever comes first. Either way the password has to be
+          presented again, because a token that can be guessed at forever is a password with no rate limit.
+        - A code is **spent when it is used**. TOTP is valid for its whole 30-second step, so the last accepted step
+          is recorded and a second use of the same code is refused — `422 TWO_FACTOR_INVALID`, not a second session.
+        - Account status is re-read here. An account suspended in the minutes between password and code does not get
+          a session.
+      operationId: completeTwoFactorLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, code]
+              properties:
+                token: { type: string, description: From the `202` body of `/v1/auth/login` }
+                code:
+                  type: string
+                  description: Six digits, or a recovery code with or without its dashes
+                client: { type: string, enum: [web, mobile] }
+      responses:
+        "200":
+          description: Session issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionIssued" }
+        "401":
+          description: The pending token is unknown or expired (`TWO_FACTOR_REQUIRED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: The code was wrong, stale, or already used (`TWO_FACTOR_INVALID`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/me/two-factor:
+    get:
+      tags: [identity]
+      summary: Two-factor state for the caller
+      description: |
+        Three states, and the UI has to distinguish them: `enabled`, `pending` (a secret exists but no code has
+        confirmed it — an abandoned enrolment that must read as "not finished", not "off", or the user retries and
+        wonders why their secret changed), and neither.
+
+        The secret is never returned. A confirmed secret is a credential, and an endpoint that can display it is one
+        that leaks it to whoever is looking at an unlocked screen.
+      operationId: twoFactorStatus
+      responses:
+        "200":
+          description: Current state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  pending: { type: boolean }
+                  recovery_codes_remaining: { type: integer }
+                  confirmed_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/me/two-factor/begin:
+    post:
+      tags: [identity]
+      summary: Start enrolling an authenticator app
+      description: |
+        Mints a 160-bit secret and returns it once with an `otpauth://` provisioning URI. It gates nothing until a
+        code computed from it is confirmed — an unconfirmed secret that gated sign-in would be a self-inflicted
+        lockout for anyone who mis-scanned the code.
+
+        Calling it again replaces an unconfirmed secret, so a mis-scan is a retry rather than a support ticket. It
+        refuses over a **confirmed** one (`409`): re-enrolling a working factor is exactly what an attacker with a
+        stolen session would do to lock the owner out.
+      operationId: beginTwoFactor
+      responses:
+        "200":
+          description: Secret and provisioning URI, valid until confirmed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TwoFactorEnrolment" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: Two-factor authentication is already on
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/two-factor/confirm:
+    post:
+      tags: [identity]
+      summary: Turn two-factor on, and collect the recovery codes
+      description: |
+        The code proves the app holds the same secret the server does. On success the factor is live and ten
+        single-use recovery codes are returned — **here and only here**: they are stored hashed, so a database read
+        cannot produce them again, and a client that loses them has to re-enrol.
+
+        Confirming does not spend the code's time step. There is no session yet to protect at this point, and
+        burning the step would make a user who confirmed at second 29 of a window wait before they could sign in
+        with the phone in their hand.
+      operationId: confirmTwoFactor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Enabled; the recovery codes are in this response and nowhere else
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TwoFactorEnrolment" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: Nothing to confirm, or the factor is already on
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: The code is wrong (`TWO_FACTOR_INVALID`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/me/two-factor/disable:
+    post:
+      tags: [identity]
+      summary: Turn two-factor off
+      description: |
+        Requires the password **and** a current code. A session alone is what an attacker has after a compromise, and
+        disabling the factor is their first move; requiring both means the account owner is the only one who can.
+
+        Recovery codes are deleted with the factor. A code printed for a phone that was replaced must not outlive the
+        enrolment it belonged to.
+      operationId: disableTwoFactor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, writeOnly: true }
+                code: { type: string }
+      responses:
+        "200":
+          description: Disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: Two-factor authentication is not on
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: The code is wrong (`TWO_FACTOR_INVALID`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /v1/auth/logout:
     post:
@@ -3376,6 +3570,27 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    TwoFactorChallenge:
+      type: object
+      required: [two_factor_required, token, expires_at]
+      properties:
+        two_factor_required: { type: boolean, enum: [true] }
+        token: { type: string, description: Single-use, five minutes, identifies the sign-in and not the account }
+        expires_at: { type: string, format: date-time }
+        recovery_available: { type: boolean, description: Whether the account has unused recovery codes }
+        message: { type: string }
+
+    TwoFactorEnrolment:
+      type: object
+      properties:
+        secret: { type: string, description: Base32, shown once at enrolment and never again }
+        uri: { type: string, description: "`otpauth://totp/...` provisioning URI" }
+        recovery_codes:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Only populated by confirm, and only in that response
+
     SearchResult:
       type: object
       required: [type, id, title, href, score]

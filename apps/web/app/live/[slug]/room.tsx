@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Mic, MicOff, PhoneOff, PenLine, Eraser, Radio, Send, Square, Trash2, Users, Video, VideoOff } from "lucide-react";
+import { Copy, Lock, Mic, MicOff, PhoneOff, PenLine, Eraser, Radio, Send, Square, Trash2, Users, Video, VideoOff } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,15 @@ import {
   type StageSeat,
 } from "@/lib/live-api";
 import { createBoardKey, exportBoardKey, importBoardKey, openBoardEvent, sealBoardEvent, type BoardKey } from "@/lib/live-board";
+import {
+  attachReceiverEncryption,
+  attachSenderEncryption,
+  createMediaWorker,
+  describeDecryptFailures,
+  handRoomKey,
+  mediaE2EESupport,
+  type MediaEncryptionMode,
+} from "@/lib/live-media-e2ee";
 
 /** Six seats on the stage: the host plus five speakers. The media forwarder is built around this number. */
 const STAGE_SLOTS = 6;
@@ -87,6 +96,9 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [slotStreams, setSlotStreams] = useState<Record<number, MediaStream>>({});
   const [mediaState, setMediaState] = useState<"idle" | "connecting" | "live" | "unavailable">("idle");
+  // What protects the media, as this browser can actually do it. It is reported rather than assumed: a room where
+  // audio is hop-by-hop must not show an end-to-end badge.
+  const [mediaMode, setMediaMode] = useState<MediaEncryptionMode | null>(null);
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
 
@@ -106,6 +118,8 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   const mySlot = mySeat?.stageSlot ?? -1;
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  /** The encryption worker for the current connection. One per connection, terminated with it. */
+  const mediaWorkerRef = useRef<Worker | null>(null);
   const localsRef = useRef<MediaStream | null>(null);
   const closingRef = useRef(false);
   const signalCursorRef = useRef(0);
@@ -414,6 +428,10 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   const teardownMedia = useCallback(() => {
     peerRef.current?.close();
     peerRef.current = null;
+    // Terminating the worker drops the key with it: the next connection derives a fresh one from the room key.
+    mediaWorkerRef.current?.terminate();
+    mediaWorkerRef.current = null;
+    setMediaMode(null);
     setSlotStreams({});
     localsRef.current?.getTracks().forEach((track) => track.stop());
     localsRef.current = null;
@@ -438,6 +456,42 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
       const peer = new RTCPeerConnection({ iceServers });
       peerRef.current = peer;
 
+      // ── end-to-end encryption ──────────────────────────────────────────────────────────────────────────
+      // Set up before any transceiver is added, so the first frame that leaves or arrives is already encrypted.
+      // The key is the room key the board already uses; the worker derives its own media key from it, and the bytes
+      // are transferred into the worker scope so the page cannot read them back.
+      const support = mediaE2EESupport();
+      const roomKey = boardKeyRef.current;
+      let worker: Worker | null = null;
+      if (support.supported && roomKey) {
+        try {
+          worker = createMediaWorker();
+          worker.onmessage = (event: MessageEvent<{ type?: string; count?: number; message?: string }>) => {
+            const message = event.data ?? {};
+            if (message.type === "decrypt-failed" && typeof message.count === "number") {
+              setNotice(describeDecryptFailures(message.count));
+            }
+            if (message.type === "key-error" || message.type === "transform-error") {
+              // The pipeline is no longer protecting anything, so the badge must stop claiming it is.
+              setMediaMode("hop-by-hop");
+              setNotice("Media encryption stopped working in this browser. The room is now hop-by-hop encrypted.");
+            }
+          };
+          mediaWorkerRef.current = worker;
+          handRoomKey(worker, roomKey.raw);
+          setMediaMode("e2ee");
+        } catch {
+          worker = null;
+          // A worker that cannot start is a browser problem, not a reason to lose the class.
+          mediaWorkerRef.current = null;
+          setMediaMode("hop-by-hop");
+          setNotice(support.reason || "Media encryption is unavailable in this browser; the room is hop-by-hop encrypted.");
+        }
+      } else {
+        setMediaMode("hop-by-hop");
+        if (support.reason) setNotice(support.reason);
+      }
+
       const canPublish = publishingRef.current;
       if (canPublish) {
         try {
@@ -448,7 +502,11 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
           localsRef.current = stream;
           setLocalStream(stream);
           for (const track of stream.getTracks()) {
-            peer.addTransceiver(track, { direction: "sendonly", streams: [stream] });
+            const transceiver = peer.addTransceiver(track, { direction: "sendonly", streams: [stream] });
+            if (worker && !attachSenderEncryption(transceiver.sender, worker)) {
+              // A sender that cannot be encrypted must not leave the badge claiming otherwise.
+              setMediaMode("hop-by-hop");
+            }
           }
         } catch {
           // No camera or microphone: still connect as a publisher so the stage keeps its shape, and say why the
@@ -460,8 +518,14 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
       }
 
       for (let slot = 0; slot < STAGE_SLOTS; slot += 1) {
-        peer.addTransceiver("video", { direction: "recvonly" });
-        peer.addTransceiver("audio", { direction: "recvonly" });
+        for (const kind of ["video", "audio"] as const) {
+          const transceiver = peer.addTransceiver(kind, { direction: "recvonly" });
+          // Decryption is attached per receiver, before the first frame: a receiver whose transform arrives late
+          // shows a broken picture until it does, and none at all if it never does.
+          if (worker && !attachReceiverEncryption(transceiver.receiver, worker)) {
+            setMediaMode("hop-by-hop");
+          }
+        }
       }
 
       peer.ontrack = (event) => {
@@ -517,9 +581,11 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
     if (room.status === "ended") return;
     void connect();
     return () => teardownMedia();
-    // Reconnects when the stage role or slot changes, which is exactly when the answer must be rebuilt.
+    // Reconnects when the stage role or slot changes, which is exactly when the answer must be rebuilt — and when
+    // the room key arrives, because until it does there is nothing to encrypt with and the connection would be
+    // negotiated hop-by-hop for the rest of the class.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joined, mySeat?.stageRole, mySeat?.stageSlot, room.status]);
+  }, [joined, mySeat?.stageRole, mySeat?.stageSlot, room.status, keyReady]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -912,6 +978,20 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
                       ? "Media unavailable"
                       : "Not connected"}
               </Badge>
+              {mediaMode ? (
+                // The badge is the claim. It says "end-to-end" only when the frames really are encrypted in the
+                // pipeline, which differs per browser — a room of mixed browsers is honestly reported as mixed.
+                <Badge variant={mediaMode === "e2ee" ? "default" : "outline"}>
+                  {mediaMode === "e2ee" ? (
+                    <>
+                      <Lock aria-hidden="true" className="mr-1 size-3" />
+                      Audio and video end-to-end encrypted
+                    </>
+                  ) : (
+                    "Audio and video encrypted between each device and the server"
+                  )}
+                </Badge>
+              ) : null}
               {localStream ? (
                 <>
                   <Button

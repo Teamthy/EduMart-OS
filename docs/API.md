@@ -218,8 +218,10 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 
 A room holds **50 people**; the **six-seat stage** (host slot 0 plus five speaker slots) is what the media server
 forwards, so fifty people in a room never means fifty simultaneous video streams from one laptop. Audio and video
-travel hop by hop — browser → server → browser — so the honest claim is *encrypted in transit and forwarded by an
-SFU we run*, not end to end. Only the whiteboard is end-to-end encrypted.
+are sealed in the publisher's browser and opened in each subscriber's (`RTCRtpScriptTransform`, or
+`createEncodedStreams` where that is what the browser has), so the API and the forwarder carry ciphertext; a browser
+with neither hook falls back to DTLS-SRTP per hop and the room says so. The whiteboard and chat are end-to-end in
+every browser. See `docs/VIRTUAL_CLASSES.md` for the frame format and its limits.
 
 A class with `admission: "approval"` is a **waiting room**: a learner's join creates a `pending` attendance row — no
 seat, no charge — and the roster, board, stage and signalling all answer `403` (naming whether the request is

@@ -556,6 +556,21 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, client 
 	// digest can be upgraded. A failure here is logged and swallowed: the password was correct, and
 	// refusing the sign-in because a background upgrade did not land would punish the user for an
 	// internal problem.
+	// The second factor is checked *after* the password and before any session exists. Order matters: a wrong
+	// password must not tell an attacker that this account has 2FA turned on, and a right password must not hand
+	// out a session that the factor then has to take back.
+	enabled, err := s.TwoFactorEnabled(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if enabled {
+		token, err := s.createPendingSignIn(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		return nil, &SignInError{Token: token, ExpiresAt: time.Now().Add(PendingSignInTTL), RecoveryHint: true}
+	}
+
 	if NeedsRehash(hash) {
 		if upgraded, rehashErr := hashPasswordChecked(password); rehashErr == nil {
 			if _, err := s.db.DB.ExecContext(ctx,
@@ -567,6 +582,40 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, client 
 	}
 
 	return s.CreateSession(ctx, userID, userAgent, client)
+}
+
+// CompleteLogin finishes a sign-in that owed a second factor: it checks the code and issues the session.
+//
+// The pending token is spent on success and after five wrong codes. The user id comes from the pending row, never
+// from the request, so a token cannot be redirected at another account.
+func (s *Service) CompleteLogin(ctx context.Context, token, code, userAgent, client string) (*Session, error) {
+	pending, err := s.loadPendingSignIn(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.verifySecondFactor(ctx, pending.UserID, code); err != nil {
+		var apiErr *httpx.Error
+		if errors.As(err, &apiErr) && apiErr.Code == CodeTwoFactorInvalid {
+			if recordErr := s.recordPendingFailure(ctx, token, pending.Attempts); recordErr != nil {
+				s.log().Warn("two-factor attempt counter failed", "error", recordErr.Error())
+			}
+		}
+		return nil, err
+	}
+
+	// The account status is re-read at this point rather than trusted from the pending row: an account suspended in
+	// the five minutes between password and code must not receive a session.
+	var status string
+	if err := s.db.DB.QueryRowContext(ctx, `SELECT status FROM users WHERE id = ?`, pending.UserID).Scan(&status); err != nil {
+		return nil, err
+	}
+	if status != StatusActive {
+		return nil, httpx.NewError(httpx.CodeForbidden, "This account is not active. Contact support.")
+	}
+	if _, err := s.db.DB.ExecContext(ctx, `DELETE FROM pending_signins WHERE id = ?`, hashToken(token)); err != nil {
+		return nil, err
+	}
+	return s.CreateSession(ctx, pending.UserID, userAgent, client)
 }
 
 // RequestPasswordReset issues a single-use token. The caller never learns whether the address exists.

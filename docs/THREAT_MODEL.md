@@ -155,7 +155,7 @@ Each of these is real, known, and owned. None is closed by this document.
 | --- | --- | --- | --- | --- | --- |
 | R1 | **Payments still run through the sandbox; refunds do not.** A refund adapter exists (Paystack, with its callbacks verified), but taking a payment through the live provider is not wired, and the adapter has never run against the live API from this repository | High | A real launch could take money through a path nobody has exercised, and a refund could fail in a way only a fake server has ever tested | Backend lead | Sandbox payments are off by default in production config; refunds carry a lifecycle that refuses to guess at an ambiguous outcome, and every unresolved refund is reported and pages |
 | R2 | **Rate limiting is in-process.** A second instance has its own windows; a restart clears them | Medium | Limits are per-instance, so horizontal scaling weakens them | Platform lead | Single-instance deployment; the limiter is behind one method so a shared store can replace it |
-| R3 | **No device-level 2FA or risk signals** on staff accounts | High | One phished finance password is a refund and reconciliation authority | Security lead | Role separation, audit trail on every money movement, session revocation, short-lived access tokens |
+| R3 | **No risk signals, and no requirement to enrol 2FA**, on staff accounts | Medium | One phished finance password is a refund and reconciliation authority *on an account that has not enrolled*. TOTP two-factor authentication ships (authenticator app, recovery codes, replay-guarded codes), so the mitigation is available; the residual risk is that it is optional | Security lead | Role separation, audit trail on every money movement, session revocation, short-lived access tokens, TOTP 2FA |
 | R4 | **No staging environment**, so deploy and rollback are unproven | High | The first real deploy is also the first rehearsal | Release lead | Restore drill and CI cover data recovery; a rollback rehearsal is Phase 4's remaining gate |
 | R5 | **Backups exist and are drilled, but nothing watches them** | Medium | A backup job that has been failing for three weeks looks exactly like one that works; encryption at rest is delegated to the volume, and there is no cross-region copy | Platform lead | Nightly schedule with `--verify` and off-site mirroring, retention that cannot delete the newest copy, and a PITR drill that deletes the cluster first (`docs/BACKUP_AND_RECOVERY.md`) |
 | R6 | **No data export or deletion workflow**; retention rules unsigned | High (NDPA) | A data-subject request cannot be honoured systematically | Product + legal | Data minimisation: no card data, no location, no device identifiers |
@@ -189,7 +189,8 @@ A threat model ages. These are the events that invalidate it, each of which requ
 
 - A live payment provider adapter (changes R1 completely, and adds a new callback surface).
 - Any multi-instance deployment (invalidates R2's mitigation).
-- Staff accounts gaining new privileges, or 2FA arriving (R3).
+- Staff accounts gaining new privileges, or 2FA becoming **mandatory** for staff (R3 — the factor itself has
+  shipped; requiring it is the remaining step).
 - A staging environment and a rehearsed rollback (R4).
 - Scheduled backups and PITR — now in place, drilled, and alerted on via the backup heartbeat; what would change this is encryption at rest or a cross-region copy,
   encryption at rest with a key we manage, or cross-region replication.

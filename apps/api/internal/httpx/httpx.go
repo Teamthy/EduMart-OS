@@ -48,7 +48,15 @@ const (
 	// revoked. It is distinct from UNAUTHENTICATED because retrying cannot help: the client must send
 	// the user back to sign-in, and silently retrying would hide the one signal that matters.
 	CodeSessionReused ErrorCode = "SESSION_REUSED"
-	CodeInternal      ErrorCode = "INTERNAL_ERROR"
+
+	// CodeTwoFactorRequired means the password was accepted and a second factor is owed. It is deliberately not
+	// UNAUTHENTICATED: nothing was wrong with what the caller sent, and a client that shows "wrong password" is
+	// mistelling the one thing the user needs to know.
+	CodeTwoFactorRequired ErrorCode = "TWO_FACTOR_REQUIRED"
+	// CodeTwoFactorInvalid means a code was presented and refused — wrong digits, a step that has expired, or a code
+	// already used. Distinct from the above so a form can say "that code is not right" rather than "sign in again".
+	CodeTwoFactorInvalid ErrorCode = "TWO_FACTOR_INVALID"
+	CodeInternal         ErrorCode = "INTERNAL_ERROR"
 )
 
 var statusFor = map[ErrorCode]int{
@@ -61,6 +69,11 @@ var statusFor = map[ErrorCode]int{
 	CodeSessionExpired:   http.StatusConflict,
 	CodeSessionClosed:    http.StatusConflict,
 	CodeRateLimited:      http.StatusTooManyRequests,
+	// 428: well-formed, and the caller is not authenticated *enough*. A password alone is a precondition once a
+	// second factor is on, not a credential.
+	CodeTwoFactorRequired: http.StatusPreconditionRequired,
+	// 422: the request was understood and a value in it was not acceptable.
+	CodeTwoFactorInvalid: http.StatusUnprocessableEntity,
 	CodePaymentPending:   http.StatusConflict,
 	CodeEmailUnverified:  http.StatusForbidden,
 	CodeJoinCodeExpired:  http.StatusGone,

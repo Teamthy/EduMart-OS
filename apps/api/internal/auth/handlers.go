@@ -336,6 +336,18 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	session, err := h.svc.Login(r.Context(), in.Email, in.Password, r.UserAgent(), in.Client)
+	if owed := (*SignInError)(nil); errors.As(err, &owed) {
+		// 202, not an error: the password was right and nothing went wrong. The body carries a short-lived token and
+		// no session — a client that shows "wrong password" here would be lying to someone who typed it correctly.
+		httpx.JSON(w, http.StatusAccepted, map[string]any{
+			"two_factor_required": true,
+			"token":               owed.Token,
+			"expires_at":          owed.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"recovery_available":  owed.RecoveryHint,
+			"message":             "Enter the code from your authenticator app.",
+		})
+		return nil
+	}
 	if err != nil {
 		// Counted without the address or the password, and without distinguishing "no such account" from
 		// "wrong password": the metric must not become the membership oracle the response refuses to be.
@@ -581,4 +593,118 @@ func itoa(v int) string {
 		v /= 10
 	}
 	return digits
+}
+
+// CompleteLogin handles POST /v1/auth/two-factor/verify: the second half of a sign-in that owed a factor.
+//
+// The response is the ordinary session response, so a client that handles login handles this too. The pending token
+// is the only thing that identifies the account — the body cannot name a user — and it is spent on success.
+func (h *Handlers) CompleteLogin(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		Token  string `json:"token"`
+		Code   string `json:"code"`
+		Client string `json:"client"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.Token) == "" || strings.TrimSpace(in.Code) == "" {
+		return httpx.Validation([]httpx.FieldError{
+			{Field: "code", Message: "Enter the code from your authenticator app."},
+		})
+	}
+
+	limiter, ok := r.Context().Value(limiterKey{}).(*httpx.Limiter)
+	if ok {
+		// Keyed on the pending token rather than the IP: an attacker with a stolen password should not be able to
+		// spread guesses across addresses, and a shared campus NAT should not spend everyone's budget.
+		if allowed, retry := limiter.Allow("two-factor:"+hashToken(in.Token), 10, 5*time.Minute); !allowed {
+			w.Header().Set("Retry-After", itoa(retry))
+			return httpx.NewError(httpx.CodeRateLimited, "Too many codes tried. Wait a moment and try again.")
+		}
+	}
+
+	session, err := h.svc.CompleteLogin(r.Context(), in.Token, in.Code, r.UserAgent(), in.Client)
+	if err != nil {
+		if h.platform != nil && !isRateLimit(err) {
+			h.platform.LoginFailure()
+		}
+		return err
+	}
+	h.sessionResponse(w, r, http.StatusOK, session, wantsCookies(in.Client), map[string]any{"next": nextRoute(session.User)})
+	return nil
+}
+
+// TwoFactorStatus handles GET /v1/me/two-factor.
+func (h *Handlers) TwoFactorStatus(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	status, err := h.svc.TwoFactorStatus(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, status)
+	return nil
+}
+
+// BeginTwoFactor handles POST /v1/me/two-factor/begin: mint a secret and a QR payload.
+func (h *Handlers) BeginTwoFactor(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	enrolment, err := h.svc.BeginTwoFactor(r.Context(), user.ID, user.Email)
+	if err != nil {
+		return err
+	}
+	// The secret is in this body and nowhere else. No `cache-control: no-store` is not enough on its own, but it
+	// stops an intermediary keeping a copy of a credential that is only meant to be shown once.
+	w.Header().Set("cache-control", "no-store")
+	httpx.JSON(w, http.StatusOK, enrolment)
+	return nil
+}
+
+// ConfirmTwoFactor handles POST /v1/me/two-factor/confirm: the code proves the app works, and the recovery codes are
+// returned here and only here.
+func (h *Handlers) ConfirmTwoFactor(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Code string `json:"code"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	enrolment, err := h.svc.ConfirmTwoFactor(r.Context(), user.ID, in.Code)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("cache-control", "no-store")
+	httpx.JSON(w, http.StatusOK, enrolment)
+	return nil
+}
+
+// DisableTwoFactor handles POST /v1/me/two-factor/disable. Password and a live code are both required: a session
+// alone is what an attacker has after a compromise, and turning the factor off is their first move.
+func (h *Handlers) DisableTwoFactor(w http.ResponseWriter, r *http.Request) error {
+	user, err := RequireUser(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		return err
+	}
+	if err := h.svc.DisableTwoFactor(r.Context(), user.ID, in.Password, in.Code); err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"enabled": false})
+	return nil
 }

@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/session";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SettingsForm } from "./settings-form";
 import { VerificationCard } from "./verification-card";
+import { TwoFactorCard } from "./two-factor-card";
 import type { Pathway, Subject } from "@edumart/shared";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -26,6 +27,8 @@ export default async function SettingsPage() {
       </header>
 
       <VerificationCard user={user} />
+
+      <TwoFactorCard />
 
       <SettingsForm user={user} subjects={subjects} pathways={pathways} />
 

@@ -16,6 +16,8 @@ export type ErrorCode =
   | "RATE_LIMITED"
   | "PAYMENT_PENDING"
   | "EMAIL_NOT_VERIFIED"
+  | "TWO_FACTOR_REQUIRED"
+  | "TWO_FACTOR_INVALID"
   | "INTERNAL_ERROR";
 
 export interface FieldError {
@@ -155,6 +157,45 @@ export interface SessionResponse {
    */
   refresh_token?: string;
   refresh_expires_at?: string;
+}
+
+/**
+ * What a correct password returns when the account has a second factor. It is not an error: the password was right,
+ * and this is the token to present with a code. The union with {@link SessionResponse} is what makes a caller handle
+ * the branch — a client that assumes a session here crashes on the one account that matters.
+ */
+export interface TwoFactorChallenge {
+  two_factor_required: true;
+  /** Opaque, single-use, valid for five minutes. It identifies the sign-in, never the account. */
+  token: string;
+  expires_at: string;
+  /** True when the account has unused recovery codes, so the form can offer that path. */
+  recovery_available: boolean;
+  message: string;
+}
+
+/** The result of `POST /v1/auth/login`: a session, or the challenge that stands in front of one. */
+export type LoginOutcome = SessionResponse | TwoFactorChallenge;
+
+/** Whether a login response is a challenge rather than a session. */
+export function isTwoFactorChallenge(result: LoginOutcome): result is TwoFactorChallenge {
+  return (result as TwoFactorChallenge).two_factor_required === true;
+}
+
+/** The caller's two-factor state. Deliberately never carries the secret. */
+export interface TwoFactorStatus {
+  enabled: boolean;
+  /** A secret exists but no code has confirmed it: show "finish setting up", not "off". */
+  pending: boolean;
+  recovery_codes_remaining: number;
+  confirmed_at?: string;
+}
+
+/** What enrolment returns: the secret, the QR payload, and — at confirmation only — the recovery codes. */
+export interface TwoFactorEnrolment {
+  secret: string;
+  uri: string;
+  recovery_codes: string[] | null;
 }
 
 // ── taxonomy ──────────────────────────────────────────────────────────────

@@ -46,10 +46,12 @@ The room is therefore forwarded by a media server (`apps/api/internal/media`, bu
 
 What that costs, stated plainly:
 
-- **Media is encrypted hop by hop, not end to end.** DTLS-SRTP protects participant → server and server →
-  participant, but the server terminates both legs, so it can see the media. It does not record, and there is no
-  code path that could, but that is a promise kept by the code rather than a property of the architecture. The
-  whiteboard and chat keep their end-to-end property, because neither goes through the forwarder.
+- **Media is end-to-end encrypted in the browsers that can encrypt in the pipeline**, and hop-by-hop elsewhere.
+  Audio and video frames are sealed in the sender's browser and opened in each receiver's
+  (`apps/web/lib/live-media-e2ee.ts` + `public/media-e2ee-worker.js`), so the forwarder copies ciphertext. Where
+  a browser offers no pipeline hook, DTLS-SRTP still protects each leg and the server *could* see the payload —
+  and the room's badge says which of the two is in force rather than showing a padlock that means nothing. The
+  whiteboard and chat were already end-to-end and still are.
 - **Uplink.** A full class with six publishers is roughly 6 × 400 kbit/s ≈ 2.4 Mbit/s of viewer downlink, and
   the server needs that per viewer in egress.
 - **The stage is six seats, not fifty.** Fifty connections at 400 kbit/s each is more than a phone's downlink;
@@ -201,6 +203,46 @@ STUN alone connects most home networks. It cannot connect a network that blocks 
 symmetric NAT: the forwarder's address is unreachable and no direct path exists. Without a relay those learners
 join the room, appear in the roster, and hear nothing — which is why the relay is part of the feature rather
 than an operator's optional extra.
+
+### End-to-end media encryption
+
+The forwarder is why a room holds fifty people, and it is also why audio and video were, for a while, the one part
+of a class the server could read. That is now closed in the encoded pipeline, in the browser:
+
+```
+publisher's microphone ─► encoder ─► [ worker: AES-GCM ] ─► DTLS-SRTP ─► forwarder
+                                                                          │  (copies ciphertext)
+subscriber's speaker  ◄─ decoder ◄─ [ worker: AES-GCM ] ◄─ DTLS-SRTP ◄────┘
+```
+
+Three decisions are worth stating, because each is a way this goes wrong:
+
+1. **A worker holds the key, not the page.** Frames are only reachable through `RTCRtpScriptTransform` (or, on a
+   Chromium build without it, `createEncodedStreams`), and both run on the worker side. The room key is
+   **transferred** into that worker and imported as a non-extractable `CryptoKey`, so no page script can read it
+   back. A key held on the main thread would be reachable by any injected script on the page.
+2. **The media key is derived, not reused.** HKDF-SHA256 with a distinct salt and info turns the room key into a
+   media key. The board already encrypts under that same room key with its own 12-byte nonces; two uses of one key
+   with independent nonce spaces is the collision that breaks AES-GCM.
+3. **A failed tag costs one frame, never the call.** A frame that cannot be authenticated is dropped and counted.
+   A transform that threw would tear the pipeline down and never recover, so a single corrupt packet would end the
+   audio for the rest of the class — the wrong failure by a wide margin. Batches of failures are reported to the
+   room, which says what that usually means: somebody is in the room without this class's key.
+
+The frame format is `[0x01][12-byte random IV][AES-GCM ciphertext‖tag]`. A fresh random IV per frame, because a
+reused nonce under GCM leaks the XOR of two plaintexts; random 96-bit IVs are safe to about 2^32 frames, and a
+fifty-seat room tops out near 1,350 frames a second. The RTP header stays in the clear — the server needs SSRC,
+sequence number and timestamps to route packets, and SRTP protects those per hop — so what the server loses is the
+ability to read the *payload*, not the ability to deliver it.
+
+The key travels the way the board key always has: created in the host's browser, put in the join link's URL
+fragment, which no browser ever sends to a server. A participant without the fragment can still join, watch the
+roster and send chat, but hears and sees nothing decrypted — and the room tells them why.
+
+**What this does not cover**: a browser with neither pipeline hook falls back to hop-by-hop and the badge says so;
+metadata (who is in the room, when they spoke, packet sizes and timing) is still visible to the server; a
+participant who holds the key can always record what they can see; and there is no per-sender authentication, so a
+key holder could inject frames — the room's admission control, not the cipher, is what keeps strangers out.
 
 ### The embedded relay
 

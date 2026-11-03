@@ -1,14 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-import type { User } from "@edumart/shared";
+import { isTwoFactorChallenge } from "@edumart/shared";
+import type { SessionResponse, User } from "@edumart/shared";
 
 import { api, rotateSession, tokenStore } from "./api";
+
+/** What a sign-in attempt produced: a session in the app, or a challenge that still owes a code. */
+export type SignInOutcome = { twoFactor: false } | { twoFactor: true; token: string };
 
 interface AuthState {
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<SignInOutcome>;
+  /** Finish a challenge from {@link signIn} with the code from an authenticator app, or a recovery code. */
+  completeSignIn: (challenge: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -50,16 +56,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // adoptSession stores both halves of the pair. Storing only the access token would make an hourly token an hourly
+  // sign-in, because the app would have nothing to rotate.
+  const adoptSession = useCallback(async (session: SessionResponse) => {
+    await tokenStore.set(session.token);
+    if (session.refresh_token) await tokenStore.setRefresh(session.refresh_token);
+    setUser(session.user);
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const session = await api.login(email, password, "mobile");
-    await tokenStore.set(session.token);
-    // Both halves of the pair, or the app can never rotate and an hourly token becomes an hourly sign-in.
-    if (session.refresh_token) await tokenStore.setRefresh(session.refresh_token);
-    setUser(session.user);
+  /**
+   * Sign in. An account with a second factor gets a challenge back rather than a session, so the caller either lands
+   * in the app or receives `{ twoFactor: true }` and shows the code screen. Returning a value rather than throwing is
+   * deliberate: nothing failed, and an error banner would tell the person their password was wrong when it was right.
+   */
+  const signIn = useCallback(async (email: string, password: string): Promise<{ twoFactor: true; token: string } | { twoFactor: false }> => {
+    const result = await api.login(email, password, "mobile");
+    if (isTwoFactorChallenge(result)) {
+      return { twoFactor: true, token: result.token };
+    }
+    await adoptSession(result);
+    return { twoFactor: false };
+  }, []);
+
+  /** Second half of a sign-in that owed a factor. Same adoption path once the code is accepted. */
+  const completeSignIn = useCallback(async (challenge: string, code: string) => {
+    const session = await api.completeLogin(challenge, code.trim(), "mobile");
+    await adoptSession(session);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -71,7 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const value = useMemo(() => ({ user, loading, signIn, signOut, refresh }), [user, loading, signIn, signOut, refresh]);
+  const value = useMemo(
+    () => ({ user, loading, signIn, completeSignIn, signOut, refresh }),
+    [user, loading, signIn, completeSignIn, signOut, refresh],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
