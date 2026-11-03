@@ -11,14 +11,22 @@
 // This package is that server. Each participant holds **one** peer connection to it. Publishers upload one
 // stream; the forwarder copies the packets to every subscriber that wants them.
 //
-// # The honest change to the encryption story
+// # Where encryption stands
 //
-// Media is DTLS-SRTP encrypted on both hops — participant → server, server → participant — but the server
-// terminates it, so this is **hop-by-hop, not end-to-end**. That is the real cost of a 50-seat room, and it is
-// stated rather than hidden: with a forwarding unit in the path, the machine can see the media, so "the server
-// cannot record" stops being a mathematical fact and becomes a policy this code keeps (there is no recording
-// path, no disk write and no egress). Whiteboard strokes and chat remain end-to-end encrypted and the media
-// server never sees them.
+// DTLS-SRTP protects both hops — participant → server, server → participant — but this process terminates them,
+// so on its own that is **hop-by-hop** encryption, and a forwarding unit in the path can see the payload. What keeps
+// it end-to-end is the client: frames arrive already sealed by the publisher's browser (`RTCRtpScriptTransform` /
+// `createEncodedStreams`, see apps/web/lib/live-media-e2ee.ts) and this package copies ciphertext without ever
+// encrypting or decrypting it. The framing is opaque here on purpose — this code must not need to know the format
+// for the guarantee to hold.
+//
+// So two statements stay true at once, and both are worth keeping honest:
+//
+//   - This server does not record, has no disk write path and no egress. That is a policy the code keeps.
+//   - A participant whose browser offers no pipeline hook is hop-by-hop encrypted, and the room says so. The
+//     guarantee is a property of the client, not of this process; assuming it here would be the lie.
+//
+// Whiteboard strokes and chat remain end-to-end encrypted and this server never sees them.
 //
 // # Why the layout is fixed
 //

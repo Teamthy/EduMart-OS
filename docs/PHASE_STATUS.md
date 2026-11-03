@@ -64,8 +64,9 @@ Live classes are **Partial**: scheduling, credits-or-discount joining, capacity,
 an encrypted whiteboard with ordered replay, a targeted signalling relay, an attendance report, a shareable link
 and a **fifty-seat room with a six-seat stage** all work and are covered by tests on both database engines — but
 an **embedded TURN relay** issues each participant an ephemeral credential so a symmetric NAT can still reach
-the forwarder, the media forwarder makes media hop-by-hop rather than end-to-end, and the mobile app opens the
-invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
+the forwarder, audio and video are **end-to-end encrypted in the browser's encoded pipeline** wherever the browser
+exposes one (falling back to hop-by-hop with a badge that says so, and no per-sender frame authentication yet), and
+the mobile app opens the invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
 them on the clock. A host can now run a **waiting room**: an `approval` class queues every learner as a request
 (`202`, no seat, no charge), refuses the roster, board, stage and signalling with a `403` that says why, and
 charges only when the host accepts — under the same row lock as a direct join, so accepts cannot oversell the
@@ -351,12 +352,14 @@ surface that lists pending organisations, organisation-level billing, and SSO.
 | A free class is 45 minutes | create-time rule, `requireOpen` at the door, and a 60-second `CloseExpiredFree` sweep for the host who walks away | `TestFreeClassIsCappedAtFortyFiveMinutes`, `TestAFreeClassClosesItselfWithoutAnyoneKnocking` |
 | Consistency without a counter | `GET /v1/consistency`, derived from activity rows | `TestConsistencyIsDerivedFromActivity` |
 
-**What changed about the encryption claim, and why it had to.** A mesh cannot hold fifty people: every
-participant uploads one stream per peer. Media is now forwarded by an in-process media server
-(`pion/webrtc`), which means DTLS-SRTP protects each leg but the server is in the path — **hop by hop, not end to
-end**. The forwarder has no recording, no disk write and no egress, but that is a promise kept by the code rather
-than a property of the design, and [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) says so on the page its readers
-will look at. The whiteboard keeps its end-to-end property: its key travels in the join link's URL fragment,
+**What changed about the encryption claim, twice.** A mesh cannot hold fifty people: every participant uploads one
+stream per peer, so media is forwarded by an in-process media server (`pion/webrtc`) — which put the server in the
+path, hop by hop rather than end to end. That gap is now closed in the browser: frames are sealed with AES-GCM in a
+worker on the publisher's side and opened in each subscriber's (`apps/web/lib/live-media-e2ee.ts`,
+`apps/web/public/media-e2ee-worker.js`), so the forwarder copies ciphertext. Browsers with no pipeline hook fall
+back to DTLS-SRTP per hop, and the room's badge says which is in force;
+[`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) documents the frame format and what it does not cover (metadata,
+per-sender authentication). The whiteboard keeps its end-to-end property: its key travels in the join link's URL fragment,
 which no browser sends to a server, so it is *stronger* than the data-channel hand-off it replaced.
 
 ### Synchronised exams

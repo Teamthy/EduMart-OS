@@ -212,12 +212,17 @@ Reachability has a relay. `internal/relay` runs a TURN server in the API process
 - the relay is **off** unless the secret exists, because an unauthenticated TURN server is an open proxy paid for
   by the operator.
 
-What that does not fix: a relayed connection is still terminated by our forwarder, so media stays **hop-by-hop**
-encrypted rather than end-to-end. A participant who blocks UDP entirely is served by the relay's TCP endpoint
-(`?transport=tcp`, `turns:` when a certificate is configured), which is the same process and the same credentials. The room now holds **50 people** because media is forwarded by an in-process media
-server rather than meshed — which changes what "encrypted" means for audio and video: DTLS-SRTP protects each
-leg, but the server terminates both, so media is **hop-by-hop** encrypted. The forwarder records nothing and has
-no write path, and the whiteboard and chat keep their end-to-end property (the board key travels in the link's
+What that does not fix: participants still depend on a forwarder we run, so **metadata** — who joined, when they
+spoke, how many bytes and at what rate — remains visible to the server even when the payload is not. Per-sender
+authentication of encrypted frames is not implemented: a participant who holds the room key can inject frames, and
+admission control rather than the cipher is what keeps strangers out. A participant who blocks UDP entirely is
+served by the relay's TCP endpoint (`?transport=tcp`, `turns:` when a certificate is configured), which is the same
+process and the same credentials. The room now holds **50 people** because media is forwarded by an in-process media
+server rather than meshed. Media is **end-to-end encrypted in the encoded pipeline** wherever the browser exposes
+one (`RTCRtpScriptTransform`, or `createEncodedStreams`): frames are sealed with AES-GCM in the publisher's worker
+and opened in each subscriber's, so the forwarder copies ciphertext, and the room badge reports hop-by-hop where a
+browser cannot do it. The forwarder records nothing and has no write path, and the whiteboard and chat keep their
+end-to-end property (the board key travels in the link's
 URL fragment, which is never sent to a server). Neither limit is a security hole, and both are stated in the UI
 and in [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md) rather than left for a client to discover.
 
