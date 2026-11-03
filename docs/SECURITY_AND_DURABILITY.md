@@ -107,6 +107,9 @@ and `TestStudentCannotAdministerInstitutionClasses`, plus the institution sectio
 
 Implemented:
 
+- Two-factor authentication with TOTP: a 160-bit secret, constant-time comparison, a ±1-step window, a recorded
+  step that makes a code single-use, and ten single-use recovery codes stored as hashes — `internal/auth/totp.go`,
+  `internal/auth/twofactor.go`.
 - Password hashing with Argon2id (m=19456 KiB, t=2, p=1, per-password salt, constant-time comparison) —
   `internal/auth/password.go`. Legacy PBKDF2 digests still verify and are upgraded on the next sign-in.
 - Opaque session tokens, server-side revocation on logout and on password reset.
@@ -164,10 +167,21 @@ changing an authorization rule, a money path or the rate limiter.
 | Reuse detection | Whole *family* revoked (`SESSION_REUSED`) past a 20s grace window | Revoking only the replayed row would leave the thief with a live refresh token while the victim is quietly signed out |
 | Sign-out | Revokes the family, by access token **or** by refresh cookie, and clears both cookies at their own paths | "Sign out this device" has to end the chain, or it is advice rather than a control. Clearing at the wrong path is a no-op, and an expired access cookie must not make sign-out a no-op too |
 | Suspension | Revokes sessions in the same transaction; the refresh path re-checks account status | A chain must not outlive the account's standing |
+| Second factor | **TOTP** (RFC 6238), 160-bit secret, ±1 step of drift, code steps recorded so a code is spent when used, ten single-use recovery codes stored as a per-user hash | A password is the secret people reuse and paste into phishing pages. Six digits typed 30 seconds apart is the difference between a phished password and a broken-in account |
+| Half-finished sign-in | A `pending_signins` row: random token, five minutes, five wrong codes, single use, **never a session** | The password was right and nothing is wrong; but a token that grants an endpoint is a credential, so it grants none. Five minutes is longer than typing six digits and shorter than a stolen token is useful |
+| Turning the factor off | Password **and** a live code; recovery codes deleted with the factor | A session alone is what an attacker has after a compromise, and disabling the factor is their first move. A code printed for a phone that was replaced must not outlive the enrolment |
 
-Two things this does not do, and they are the honest gaps: there is no device-level second factor, and no
-risk signal (new country, impossible travel) that would prompt for re-authentication. The rotation model
-makes a *leaked token* detectable; it does nothing about a *guessed password* on a fresh device.
+What two-factor authentication still does not do, said plainly:
+
+- **Nothing requires it.** It is available on every account and enforced at sign-in once enabled, but a staff
+  account that never enrols is protected by its password alone. Making it mandatory for finance and platform
+  administrators is policy and a check in the sign-in path, and is the next step rather than a shipped property.
+- **It is one factor type.** No WebAuthn/passkeys, so there is no phishing-resistant option; a convincing proxy
+  page can still relay a password *and* a code in real time.
+- **`/v1/me/two-factor/disable` is the recovery path for a lost phone**, which is why it demands both the password and
+  a code. Someone who has lost the phone *and* the recovery codes needs support, and that route runs through a
+  `platform_admin` with an audit trail rather than through a self-service reset.
+- No risk signal (new country, impossible travel) prompts for re-authentication, and there is no idle timeout.
 
 **The gap that closed here was not in the server.** Rotation, single-use tokens and reuse detection were
 implemented and tested, and no client used them: the web kept a seven-day access cookie and the Expo app kept

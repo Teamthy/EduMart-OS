@@ -126,7 +126,15 @@ function pipe(transformer, cryptoApi, operation, derive) {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        await ready;
+        // A key that never arrived (a corrupt link, a browser that dropped the message) must cost frames, not the
+        // pipeline: closing here would end audio and video for the rest of the call on a recoverable fault, and the
+        // main thread would have nothing to report beyond "it stopped".
+        try {
+          await ready;
+        } catch {
+          state.failures += 1;
+          continue;
+        }
         try {
           if (operation === "encode") {
             writer.write(await encryptFrame(cryptoApi, state.key, value));

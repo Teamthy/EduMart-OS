@@ -161,6 +161,9 @@ func NewRouter(d Deps) http.Handler {
 			g.Use(limiter.Limit("auth", 30, time.Minute))
 			g.Post("/auth/register", wrap(authHandlers.Register))
 			g.Post("/auth/login", wrap(authHandlers.Login))
+			// The second half of a sign-in that owed a second factor. It lives inside the auth budget because it
+			// is a credential check like any other.
+			g.Post("/auth/two-factor/verify", wrap(authHandlers.CompleteLogin))
 			g.Post("/auth/logout", wrap(authHandlers.Logout))
 			// Refresh is inside the rate-limited group on purpose: it is the one endpoint an attacker
 			// with a stolen token would hammer.
@@ -183,6 +186,12 @@ func NewRouter(d Deps) http.Handler {
 		v1.Get("/me/sessions", wrap(authHandlers.Sessions))
 		v1.Delete("/me/sessions/{id}", wrap(authHandlers.RevokeSession))
 		v1.Patch("/me", wrap(authHandlers.UpdateMe))
+		// Two-factor: status and enrolment are scoped to the caller. Disabling needs the password *and* a live code,
+		// so a stolen session cannot quietly remove the factor.
+		v1.Get("/me/two-factor", wrap(authHandlers.TwoFactorStatus))
+		v1.Post("/me/two-factor/begin", wrap(authHandlers.BeginTwoFactor))
+		v1.Post("/me/two-factor/confirm", wrap(authHandlers.ConfirmTwoFactor))
+		v1.Post("/me/two-factor/disable", wrap(authHandlers.DisableTwoFactor))
 
 		// ── taxonomy (public: needed before an account exists) ───────────
 		v1.Get("/exam-pathways", wrap(contentHandlers.Pathways))

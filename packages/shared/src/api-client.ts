@@ -25,6 +25,9 @@ import type {
   RewardsSummary,
   SaveAnswerResult,
   SessionResponse,
+  LoginOutcome,
+  TwoFactorStatus,
+  TwoFactorEnrolment,
   Organization,
   OrganizationMember,
   OrganizationReport,
@@ -156,8 +159,21 @@ export class ApiClient {
 
   // ── identity ──────────────────────────────────────────────────────────
   register = (input: unknown) => this.post<SessionResponse>("/v1/auth/register", input);
+  /**
+   * Sign in. The result is a session *or* a challenge: an account with a second factor returns the challenge, and the
+   * caller must present it to {@link completeLogin}. Typing the union rather than casting is the point — the branch is
+   * not optional.
+   */
   login = (email: string, password: string, client: "web" | "mobile" = "web") =>
-    this.post<SessionResponse>("/v1/auth/login", { email, password, client });
+    this.post<LoginOutcome>("/v1/auth/login", { email, password, client });
+  /** Second half of a sign-in that owed a factor: the challenge token and the code from the app (or a recovery code). */
+  completeLogin = (token: string, code: string, client: "web" | "mobile" = "web") =>
+    this.post<SessionResponse>("/v1/auth/two-factor/verify", { token, code, client });
+  twoFactorStatus = () => this.get<TwoFactorStatus>("/v1/me/two-factor");
+  beginTwoFactor = () => this.post<TwoFactorEnrolment>("/v1/me/two-factor/begin");
+  confirmTwoFactor = (code: string) => this.post<TwoFactorEnrolment>("/v1/me/two-factor/confirm", { code });
+  disableTwoFactor = (password: string, code: string) =>
+    this.post<{ enabled: boolean }>("/v1/me/two-factor/disable", { password, code });
   logout = () => this.post<{ signedOut: boolean }>("/v1/auth/logout");
   me = () => this.get<{ user: User }>("/v1/me");
   updateMe = (input: unknown) => this.patch<{ user: User }>("/v1/me", input);

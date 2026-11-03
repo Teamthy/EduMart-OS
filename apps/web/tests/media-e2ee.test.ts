@@ -142,6 +142,27 @@ describe("media end-to-end encryption", () => {
   });
 
   it("carries a frame from one worker to another, and a frame it cannot open costs only that frame", async () => {
+    // Reads one frame, or fails with what the worker said about itself. A bare timeout after a pipeline bug says
+    // "something hung"; this says which line of the worker objected, which is the difference between a five-minute fix
+    // and an afternoon.
+    const nextFrame = async (
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      worker: { posted: unknown[] },
+      what: string,
+    ) => {
+      const outcome = await Promise.race([
+        reader.read().then((result) => ({ result })),
+        new Promise<{ timeout: true }>((resolve) => setTimeout(() => resolve({ timeout: true }), 2000)),
+      ]);
+      if ("timeout" in outcome) {
+        throw new Error(`${what}: no frame arrived. The worker reported: ${JSON.stringify(worker.posted)}`);
+      }
+      if (outcome.result.done) {
+        throw new Error(`${what}: the pipeline closed. The worker reported: ${JSON.stringify(worker.posted)}`);
+      }
+      return outcome.result.value as Uint8Array;
+    };
+
     // One room key, shared the way the room shares it: through the link, into both workers.
     const roomKeyBytes = roomKey();
 
@@ -160,9 +181,7 @@ describe("media end-to-end encryption", () => {
     });
 
     await write.write(frame("frame one"));
-    const pumped = await read.read();
-    expect(pumped.done).toBe(false);
-    const sealed = pumped.value as Uint8Array;
+    const sealed = await nextFrame(read, sender, "sender, first frame");
     // The frame left the sender encrypted: this is the property the media server depends on.
     expect(new TextDecoder().decode(sealed)).not.toContain("frame one");
 
@@ -181,16 +200,14 @@ describe("media end-to-end encryption", () => {
     });
 
     await writeSealed.write(sealed);
-    const opened = await readPlain.read();
-    expect(opened.done).toBe(false);
-    expect(new TextDecoder().decode(opened.value as Uint8Array)).toBe("frame one");
+    const opened = await nextFrame(readPlain, receiver, "receiver, a sealed frame");
+    expect(new TextDecoder().decode(opened)).toBe("frame one");
 
     // A frame nobody sealed is dropped, and the pipeline keeps going: one lost frame, not a dead call.
     await writeSealed.write(frame("not a sealed frame at all").data);
     await write.write(frame("frame two"));
-    const second = await read.read();
-    await writeSealed.write(second.value as Uint8Array);
-    const recovered = await readPlain.read();
-    expect(new TextDecoder().decode(recovered.value as Uint8Array)).toBe("frame two");
+    await writeSealed.write(await nextFrame(read, sender, "sender, second frame"));
+    const recovered = await nextFrame(readPlain, receiver, "receiver, after a dropped frame");
+    expect(new TextDecoder().decode(recovered)).toBe("frame two");
   });
 });
