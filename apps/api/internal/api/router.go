@@ -224,6 +224,10 @@ func NewRouter(d Deps) http.Handler {
 			// Integrity signals are the candidate's own browser reporting on itself. Recording is scoped to
 			// the caller's in-progress attempt; the host reads the tallies in the exam report.
 			g.Post("/assessment-sessions/{id}/integrity", wrap(assessmentHandlers.RecordIntegrity))
+			// A proctor's warning is only proctoring if the candidate can see it was received; these two
+			// routes are how the runner polls and how it acknowledges.
+			g.Get("/assessment-sessions/{id}/warnings", wrap(examHandlers.Warnings))
+			g.Post("/assessment-sessions/{id}/warnings/{warningId}/acknowledge", wrap(examHandlers.Acknowledge))
 		})
 
 		// ── institutions ─────────────────────────────────────────────────
@@ -368,6 +372,13 @@ func NewRouter(d Deps) http.Handler {
 			g.Get("/exams/{id}", wrap(examHandlers.Get))
 			g.Post("/exams/{id}/start", wrap(examHandlers.Start))
 			g.Get("/exams/{id}/results", wrap(examHandlers.Results))
+			// Proctoring is the part of a sitting that happens while it is open: a host watching every
+			// attempt, speaking to one candidate, and annulling an attempt with a reason attached. The two
+			// candidate-side routes are on the assessment group below, where the attempt lives.
+			g.Get("/exams/{id}/proctor", wrap(examHandlers.Desk))
+			g.Post("/exams/{id}/proctor/warnings", wrap(examHandlers.Warn))
+			g.Post("/exams/{id}/proctor/void", wrap(examHandlers.Void))
+			g.Post("/exams/{id}/proctor/reopen", wrap(examHandlers.Reopen))
 		})
 
 		// ── consistency ──────────────────────────────────────────────────

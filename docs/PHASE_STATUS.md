@@ -7,10 +7,13 @@ Nothing here is a projection, and a phase is never "done" because its screens ex
 **Legend** — **Done**: implemented and covered by a test or CI check. **Partial**: real code works but
 the phase's exit gate is not met. **Not started**: nothing beyond scaffolding or design.
 
-Last updated with a live recharge provider and exam integrity signals: a top-up now opens a real hosted checkout
-and settles only on a signed provider webhook, and a candidate's browser reports lost focus, pasted text and
-dropped network to the attempt, which the host's sitting report shows beside the score. Nothing here is video
-proctoring, and the docs say so. Previous update — admission control, rechargeable credits and practice/simulation modes: a host can now run a
+Last updated with proctoring: a host can now watch a sitting while it is open — progress, attention signals and
+when the server last heard from each attempt — warn one candidate with a message the server writes from its own
+tally, annul an attempt with a reason the engine then enforces, and reopen it if that was a mistake. Every
+intervention is a row in the action log and in `audit_logs`. It is not identity verification and not a lockdown
+browser, and the docs say exactly that. Previous update — a live recharge provider and exam integrity signals: a
+top-up opens a real hosted checkout and settles only on a signed provider webhook, and a candidate's browser
+reports lost focus, pasted text and dropped network to the attempt. Previous update — admission control, rechargeable credits and practice/simulation modes: a host can now run a
 waiting room and charge only on acceptance, money can become credits at a ₦200 floor with an idempotent settle,
 and practice has split into untimed revision and a clocked exam simulation. The previous update added fifty-seat
 rooms, synchronised exams and consistency: media is now forwarded by an in-process
@@ -34,7 +37,7 @@ survive.
 | 3 | Repository and developer environment | Done | — |
 | 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
-| 6 | API platform and contracts | Done | 114 routes, contract checked in CI (every router path must be documented or the gate fails) |
+| 6 | API platform and contracts | Done | 134 routes, contract checked in CI (every router path must be documented or the gate fails, and the spec itself must parse) |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **TOTP two-factor authentication** (authenticator app, ten single-use recovery codes, replay-guarded codes, a five-minute half-finished sign-in). **No WebAuthn/passkeys, no IP/geo risk signals, no per-role requirement** |
 | 8 | Authorization and multi-tenancy | Partial | Organisations, memberships, invitations, approval and audit events exist, and classes can belong to an institution; **no org-scoped reporting, suspension or ownership transfer** |
 | 9 | Design system and shells | Partial | Tokens and components shared; contrast and structure now **measured in CI** (seven shipped contrast failures and two landmark defects found and fixed); **no screen-reader or keyboard-only verification** |
@@ -77,8 +80,11 @@ host's room polls). See
 [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
 
 Synchronised exams are **Partial**: one paper, one window, the same duration for everybody, a per-candidate
-permutation, and a server-recorded start, submission and score — but there is no proctoring and no scheduled
-result release. See [`EXAMS.md`](./EXAMS.md).
+permutation, a server-recorded start, submission and score, and **proctoring while the paper is open** — a desk of
+every attempt, warnings whose text the server composes from its own records, and an annul that the engine enforces,
+with a reopen for the mistake and an audit row for both. What is still missing: identity verification (there is no
+media session in a sitting), a lockdown browser, and a scheduled result release. See
+[`EXAMS.md`](./EXAMS.md).
 
 Practice is now two products rather than one: **real practice** (untimed, fresh draw, answers and explanations
 after submitting, corrections allowed) and **exact exam simulation** (a fixed paper, a hard server clock of 5–240
@@ -379,7 +385,14 @@ path — see [`EXAMS.md`](./EXAMS.md).
 | A result belongs to its owner | attempt scoping and host-only report | same two tests (`403` / not `200`) |
 | The host does not sit their own paper | start path | `TestExamIsOnePaperForEverybodyInADifferentOrder` |
 
-Not built: proctoring, and a scheduled result release (the schema supports it; there is no UI).
+Proctored: `GET /v1/exams/{id}/proctor` is the sitting while it is open — progress, signal counts, last heard
+from — and the host can warn one candidate (two of the three warning kinds composed by the server from its own
+records), annul an attempt with a reason, and reopen it while the window is still open. All three are enforced,
+not displayed: a voided attempt refuses answers and signals, and every intervention is a row in
+`exam_proctor_actions` and `audit_logs`. What it is not: identity verification or a lockdown browser — a sitting
+has no media session, so nothing here says who is at the keyboard, and the docs say so.
+
+Not built: a scheduled result release (the schema supports it; there is no UI).
 
 ### Phase 19 — Classrooms and assignments · Partial
 

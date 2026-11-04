@@ -47,8 +47,12 @@ attempt. Approval is one-way through the API and is audited.
 | `assessment_responses` | Current answer per question version, `answer_version`, `client_sequence`, awarded points |
 | `idempotency_records` | Replay protection for mutating endpoints |
 | `topic_performance` | Derived mastery counters (rebuildable) |
+| `exam_integrity_events` | What the candidate's browser reported about attention: kind, the client's claimed time and the server's receipt time, both kept |
+| `exam_proctor_warnings` | One warning to one attempt: kind (`attention` / `time` / `notice`), the text the candidate reads, and when it was acknowledged |
+| `exam_proctor_actions` | Every intervention — `warn`, `void`, `reopen` — with the actor, the reason and the moment. Mirrored into `audit_logs` |
 
-Statuses: `in_progress → submitted | expired | cancelled`. Terminal states never reopen.
+Statuses: `in_progress → submitted | expired | cancelled | voided`. Terminal states never reopen, and `voided` is a
+status of its own rather than `cancelled`: an attempt a proctor annulled has to stay visible in the host's report.
 
 ## Commerce
 

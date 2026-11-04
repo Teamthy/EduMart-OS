@@ -10,13 +10,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   LiveApiError,
+  acknowledgeWarning,
   examResults,
   saveAnswer,
+  sessionWarnings,
   startExam,
   submitAttempt,
   type AttemptView,
   type Exam,
   type ExamCandidate,
+  type ProctorWarning,
 } from "@/lib/live-api";
 
 interface Props {
@@ -44,6 +47,7 @@ export function ExamRoom({ exam }: Props) {
   );
 
   const inProgress = attempt?.status === "in_progress";
+  const [warnings, setWarnings] = useState<ProctorWarning[]>([]);
 
   const start = useCallback(async () => {
     setBusy(true);
@@ -76,6 +80,28 @@ export function ExamRoom({ exam }: Props) {
       setBusy(false);
     }
   }, [attempt]);
+
+  // A proctor's warning has to reach the candidate, not just the log. Polling while the paper is open is the
+  // cheapest way to do that without a second transport: a warning is rare, and eight seconds is well inside the
+  // time an invigilator's message is useful for.
+  useEffect(() => {
+    if (!inProgress || !attempt) return;
+    let live = true;
+    const poll = async () => {
+      try {
+        const { warnings: received } = await sessionWarnings(attempt.session_id);
+        if (live) setWarnings(received);
+      } catch {
+        // A dropped poll is not an event: the next one carries the same warnings.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 8_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [inProgress, attempt]);
 
   useEffect(() => {
     if (!inProgress) return;
@@ -116,6 +142,20 @@ export function ExamRoom({ exam }: Props) {
     [attempt],
   );
 
+  // Only warnings nobody has acknowledged block the paper. A warning already read is history, and re-showing it
+  // on every reload would train candidates to dismiss the banner without reading it.
+  const unread = useMemo(() => warnings.filter((warning) => warning.acknowledgedAt === null), [warnings]);
+
+  async function acknowledge(warningId: string) {
+    if (!attempt) return;
+    try {
+      const { warning } = await acknowledgeWarning(attempt.session_id, warningId);
+      setWarnings((current) => current.map((item) => (item.id === warning.id ? warning : item)));
+    } catch (caught) {
+      setError(caught instanceof LiveApiError ? caught.message : "Could not confirm that you read it.");
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -140,6 +180,30 @@ export function ExamRoom({ exam }: Props) {
       </Card>
 
       {error ? <Alert tone="error" title="Something went wrong">{error}</Alert> : null}
+
+      {unread.map((warning) => (
+        <Alert key={warning.id} tone="warning" title="Message from the proctor">
+          <div className="space-y-2">
+            <p>{warning.note}</p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void acknowledge(warning.id)}
+            >
+              I have read this
+            </Button>
+          </div>
+        </Alert>
+      ))}
+
+      {attempt?.status === "voided" ? (
+        <Alert tone="error" title="This attempt was annulled">
+          A proctor ended this attempt during the sitting. Your answers are kept with the attempt, and it is
+          recorded as annulled rather than handed in. Ask your host if you think that was a mistake — they can
+          reopen it while the sitting is still open.
+        </Alert>
+      ) : null}
 
       {submitted ? (
         <Card>

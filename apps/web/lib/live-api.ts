@@ -398,6 +398,110 @@ export async function examResults(idOrSlug: string) {
   return call<{ candidates: ExamCandidate[] }>(`/exams/${encodeURIComponent(idOrSlug)}/results`);
 }
 
+// ── proctoring ───────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The proctor's desk and the two things a proctor can do to a live attempt.
+ *
+ * The console is a poller, not a socket. A sitting is fifty rows that change a few times a minute, and a second
+ * transport (SSE or a WebSocket) would be a second thing to authenticate, reconnect and get wrong for a view no
+ * faster than this one — three seconds is inside the time it takes a person to read a row.
+ */
+export interface ProctorWarning {
+  id: string;
+  sessionId: string;
+  kind: "attention" | "time" | "notice";
+  note: string;
+  issuedAt: string;
+  acknowledgedAt: string | null;
+}
+
+export interface ProctorCandidate {
+  sessionId: string;
+  userId: string;
+  displayName: string;
+  status: "in_progress" | "submitted" | "expired" | "cancelled" | "voided";
+  startedAt: string;
+  deadlineAt: string;
+  submittedAt: string | null;
+  remainingSeconds: number;
+  answered: number;
+  questions: number;
+  integrity: { signals: number; focusLost: number; pasted: number; copied: number; lastAt: string | null } | null;
+  /** The latest of the last saved answer, the last reported signal, and the start. */
+  lastSeenAt: string | null;
+  warnings: number;
+  unreadWarnings: number;
+  lastWarning: ProctorWarning | null;
+  voidReason: string | null;
+  voidedBy: string | null;
+}
+
+export interface ProctorSitting {
+  examId: string;
+  title: string;
+  slug: string;
+  open: boolean;
+  startsAt: string;
+  endsAt: string;
+  secondsUntilClose: number;
+  serverTime: string;
+  candidates: number;
+  inProgress: number;
+  submitted: number;
+  voided: number;
+  flagged: number;
+  unreadWarnings: number;
+}
+
+export interface ProctorDesk {
+  sitting: ProctorSitting;
+  candidates: ProctorCandidate[];
+  actions: { id: string; sessionId: string; action: "warn" | "void" | "reopen"; reason: string; actorName: string; occurredAt: string }[];
+}
+
+export async function proctorDesk(examId: string) {
+  return call<ProctorDesk>(`/exams/${encodeURIComponent(examId)}/proctor`);
+}
+
+export async function sendProctorWarning(
+  examId: string,
+  input: { sessionIds: string[]; kind: ProctorWarning["kind"]; note?: string },
+) {
+  return call<{ issued: number; warnings: ProctorWarning[] }>(
+    `/exams/${encodeURIComponent(examId)}/proctor/warnings`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export async function voidAttempt(examId: string, sessionId: string, reason: string) {
+  return call<{ candidate: ProctorCandidate }>(`/exams/${encodeURIComponent(examId)}/proctor/void`, {
+    method: "POST",
+    body: JSON.stringify({ sessionId, reason }),
+  });
+}
+
+export async function reopenAttempt(examId: string, sessionId: string, reason?: string) {
+  return call<{ candidate: ProctorCandidate }>(`/exams/${encodeURIComponent(examId)}/proctor/reopen`, {
+    method: "POST",
+    body: JSON.stringify({ sessionId, ...(reason ? { reason } : {}) }),
+  });
+}
+
+/** What the candidate's own runner polls while the paper is open. */
+export async function sessionWarnings(sessionId: string) {
+  return call<{ unread: number; warnings: ProctorWarning[] }>(
+    `/assessment-sessions/${encodeURIComponent(sessionId)}/warnings`,
+  );
+}
+
+export async function acknowledgeWarning(sessionId: string, warningId: string) {
+  return call<{ warning: ProctorWarning }>(
+    `/assessment-sessions/${encodeURIComponent(sessionId)}/warnings/${encodeURIComponent(warningId)}/acknowledge`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
 export async function saveAnswer(sessionId: string, qvId: string, selectedOptionId: string) {
   return call<Record<string, unknown>>(
     `/assessment-sessions/${encodeURIComponent(sessionId)}/responses/${encodeURIComponent(qvId)}`,

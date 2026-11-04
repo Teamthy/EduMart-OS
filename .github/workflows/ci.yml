@@ -304,6 +304,20 @@ jobs:
           done
           python3 scripts/recording-lifecycle.py --base http://localhost:8083 --media-dir /tmp/ci-media --retention-seconds 1
           kill "$(cat /tmp/recording-api.pid)" 2>/dev/null || true
+      - name: Verify proctoring a sitting (SQLite, real process, real database)
+        # Proctoring is all verbs: watch, warn, annul, undo — and the point of each is that it is enforced rather
+        # than displayed. This backs a fresh binary with its own SQLite file, seeds the paper the way a reviewer
+        # would (there is no authoring route in this build), drives the whole sequence over HTTP, and then reads
+        # `exam_proctor_actions` and `audit_logs` directly, because "audited" is a claim about rows.
+        run: |
+          EDUMART_DSN=/tmp/ci-proctor.db PORT=8086 EDUMART_SEED=true /tmp/edumart-api > /tmp/proctor-api.log 2>&1 &
+          echo $! > /tmp/proctor-api.pid
+          for attempt in $(seq 1 40); do
+            curl -fsS http://localhost:8086/readyz > /dev/null && break
+            sleep 1
+          done
+          python3 scripts/proctor-lifecycle.py --base http://localhost:8086 --db /tmp/ci-proctor.db
+          kill "$(cat /tmp/proctor-api.pid)" 2>/dev/null || true
       - name: Stop API
         if: always()
         run: kill "$(cat /tmp/api.pid)" || true

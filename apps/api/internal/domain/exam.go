@@ -14,6 +14,10 @@ var (
 	ErrSessionClosed    = errors.New("this attempt is already closed")
 	ErrSessionExpired   = errors.New("the deadline has passed for this attempt")
 	ErrSessionCancelled = errors.New("this attempt was cancelled")
+	// ErrSessionVoided is distinct from cancelled on purpose. A cancelled attempt is one the candidate walked
+	// away from; a voided attempt is one a proctor annulled during the sitting, and the two mean different
+	// things to whoever reads the record.
+	ErrSessionVoided = errors.New("this attempt was annulled by a proctor")
 )
 
 // SessionStatus is the server-owned lifecycle of an attempt. Terminal states never reopen.
@@ -24,11 +28,14 @@ const (
 	StatusSubmitted  SessionStatus = "submitted"
 	StatusExpired    SessionStatus = "expired"
 	StatusCancelled  SessionStatus = "cancelled"
+	// StatusVoided is terminal: a proctor annulled the attempt mid-sitting. It is not 'cancelled' because the
+	// host's report must keep showing the attempt, and it is not 'submitted' because nothing was handed in.
+	StatusVoided SessionStatus = "voided"
 )
 
 // IsTerminal reports whether the attempt can no longer change.
 func (s SessionStatus) IsTerminal() bool {
-	return s == StatusSubmitted || s == StatusExpired || s == StatusCancelled
+	return s == StatusSubmitted || s == StatusExpired || s == StatusCancelled || s == StatusVoided
 }
 
 // DeadlineAt is derived from server time plus duration, never from client input.
@@ -41,6 +48,8 @@ func CanAcceptAnswer(status SessionStatus, deadline time.Time, now time.Time) er
 	switch {
 	case status == StatusCancelled:
 		return ErrSessionCancelled
+	case status == StatusVoided:
+		return ErrSessionVoided
 	case status.IsTerminal():
 		return ErrSessionClosed
 	case now.After(deadline.Add(GraceWindow)):
