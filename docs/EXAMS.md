@@ -98,14 +98,66 @@ Four rules make the record worth reading:
 4. **It never blocks answering.** Reporting is best-effort in the runner: a failed telemetry call is swallowed, so
    a learner never loses a question because a signal did not send.
 
-What it is **not**: video proctoring. Nothing here proves who was at the keyboard, and a client that lies leaves
-no trace. It is evidence a host weighs — six lost-tab events beside a clean score is a different result from a
-clean score with none — and the report paints the tally rather than deciding for them.
+A signal is evidence, not a verdict: six lost-tab events beside a clean score is a different result from a clean
+score with none, and the tally is painted rather than decided. But a report arrives after the paper, and by then
+nothing can be done about it. That is what the proctor's desk is for.
+
+## Proctoring: watching, speaking, annulling
+
+A proctor is somebody who can act **while the sitting is open**. Four verbs, and nothing else is offered:
+
+| Verb | Route | What it does |
+| --- | --- | --- |
+| **Watch** | `GET /v1/exams/{id}/proctor` | Every attempt in the sitting: progress, signal counts, the latest of (last saved answer, last reported signal, start), warnings sent and unread, and the intervention log. Host only |
+| **Speak** | `POST /v1/exams/{id}/proctor/warnings` | One warning to explicit session ids. `attention` and `time` are composed by the server from the attempt's own tally and remaining seconds; `notice` carries the host's words (3–250 chars) |
+| **Annul** | `POST /v1/exams/{id}/proctor/void` | Sets the attempt to terminal `voided`, with a required reason. The engine then refuses answers, signals and submission |
+| **Undo** | `POST /v1/exams/{id}/proctor/reopen` | Reverses a void while the sitting is open and the attempt's own deadline has not passed, and logs that it did |
+
+The candidate's side is two routes: `GET /v1/assessment-sessions/{id}/warnings` (polled by the runner every eight
+seconds while the paper is open) and `POST .../warnings/{warningId}/acknowledge`. An unread warning is a
+non-dismissible banner over the paper — the acknowledgement is what clears it, and the host's desk shows that it
+was read.
+
+Four decisions are what make this proctoring rather than a dashboard:
+
+1. **Two of the three warning kinds are written by the server.** `attention` says "your attempt has recorded 2
+   signals the proctor can see: the tab left the paper 2 times". A host cannot send a candidate a punishment no
+   table supports, because the sentence is composed from the table.
+2. **`voided` is its own terminal status**, not `cancelled`. An annulled attempt is a different fact from one the
+   candidate walked away from, so it stays in the host's report — with the actor and the reason — instead of
+   disappearing from it. The action log (`exam_proctor_actions`) and `audit_logs` both get a row.
+3. **Nothing is automatic.** There is no threshold, no score and no rule that annuls a paper. A person presses the
+   button and their user id is written next to the decision, because an algorithm that fails a candidate produces
+   an appeal nobody can answer.
+4. **A warning is not a punishment.** It is a message that can be read, acknowledged and argued with, and its
+   effect on the record is that the host knows it arrived.
+
+What proctoring here is **not**:
+
+- **Not identity verification.** A sitting has no media session — it is a browser and a deadline — so nothing in
+  this feature can say who is at the keyboard. There is no webcam capture, no ID check and no keystroke
+  biometrics, and a modified client can under-report its own signals. The desk shows what the candidate's browser
+  reported beside what the server recorded; the judgement belongs to the person in front of it.
+- **Not a lockdown browser.** The runner does not block other applications, second screens or a phone under the
+  desk. It records attention and lets a proctor intervene.
+- **Not a reason on the candidate's screen.** The void reason is written for the report and the audit trail. The
+  candidate is told their attempt was annulled and that the host can reopen it while the sitting is still open.
+
+### Proved, not asserted
+
+| Claim | Where it is checked |
+| --- | --- |
+| The desk shows the server's numbers, and only the host may read it | `TestProctorWatchesSpeaksAndAnnuls`, `scripts/proctor-lifecycle.py` step 1 |
+| A warning quotes the attempt's own tally; a closed or foreign attempt is refused | same test / script step 2 |
+| Reading a warning is a fact the desk can see, and acknowledging twice does not move it | same test / script step 3 |
+| A void is enforced by the engine (answers `409`, signals `409`), not by the UI | same test / script step 4 |
+| A void is reversible while the sitting is open, and a submitted paper is never voidable | `TestProctorCannotAnnulAHandedInPaper` |
+| Every intervention is a row in the action log *and* in `audit_logs` | same test / script step 5 (reads the database) |
 
 ## What is not built
 
-- **No proctoring of identity.** Integrity signals record attention, not who was sitting the paper: there is no
-  webcam capture, no ID check and no keystroke biometrics, and a modified client can under-report.
+- **No proctoring of identity.** Proctoring here is a host watching, warning and annulling; it is not a webcam
+  check, an ID check or keystroke biometrics, and a modified client can under-report its own signals.
 - **No A/V recording of a sitting.** Class recordings exist (a host can capture a live class, sealed in the browser),
   but a sitting is not a room: there is no media session to capture, so the integrity record stays data — signals the
   candidate's own browser reported — rather than video. Recording a candidate's camera would be a different feature

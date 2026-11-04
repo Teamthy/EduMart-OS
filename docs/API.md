@@ -249,6 +249,19 @@ See [`VIRTUAL_CLASSES.md`](./VIRTUAL_CLASSES.md).
 | `GET` | `/exams/{id}` | The sitting as the caller may see it: the paper only while open, and the caller's own attempt |
 | `POST` | `/exams/{id}/start` | Opens the caller's attempt inside the window and returns it as an assessment session — questions, deadline, no answer keys. Hosts cannot sit their own sitting |
 | `GET` | `/exams/{id}/results` | Host-only, end to end: per candidate status, start, submit, deadline, score, and seconds still accepted |
+| `GET` | `/exams/{id}/proctor` | Host-only desk: every attempt while the sitting is open — progress, signals, when the server last heard from them, warnings unread, and the intervention log. Six queries however many candidates are sitting |
+| `POST` | `/exams/{id}/proctor/warnings` | `{sessionIds, kind, note}`. Three kinds: `attention` and `time` are **composed by the server** from the attempt's own tally and remaining seconds; `notice` carries the host's words (3–250 chars). Explicit ids, never a broadcast. A closed attempt is refused with `409` — a warning after the paper is not proctoring |
+| `POST` | `/exams/{id}/proctor/void` | `{sessionId, reason}`. Sets the attempt to terminal `voided` — its own status, not `cancelled`, so the report keeps showing it. The engine then refuses answers, signals and submission. Only an attempt still in progress can be annulled |
+| `POST` | `/exams/{id}/proctor/reopen` | `{sessionId, reason}`. Undoes a void while the sitting is open and the attempt's own deadline has not passed, and logs that it did. Un-submitting is not offered |
+| `GET` | `/assessment-sessions/{id}/warnings` | The candidate's own warnings, newest first, with `unread`. This is what the runner polls |
+| `POST` | `/assessment-sessions/{id}/warnings/{warningId}/acknowledge` | Idempotent, and it never overwrites: the first acknowledgement is the fact, and a second call returns the same instant |
+
+Proctoring is a person, and the API only ever gives them two powers. **A warning is not a punishment**: it is a
+message the candidate can read, acknowledge and argue with, and two of its three kinds quote a number the server
+already holds. **A void is not silent**: the actor, the reason and the moment are written to
+`exam_proctor_actions` and to the audit log, and the attempt leaves the report as `voided` rather than
+disappearing from it. Nothing annuls a paper on its own — there is no threshold, no score, no automatic action —
+because an algorithm that fails a candidate produces an appeal nobody can answer.
 
 `{id}` accepts either the exam id or its slug, so a shared link resolves without a lookup first. Answering and
 submitting deliberately reuse the assessment engine rather than growing a second one: candidates write responses

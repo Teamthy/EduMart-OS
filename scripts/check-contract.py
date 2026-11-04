@@ -22,6 +22,25 @@ ROUTER = ROOT / "apps" / "api" / "internal" / "api" / "router.go"
 METHODS = {"get", "post", "put", "patch", "delete"}
 
 
+def check_parses():
+    """Refuse a spec that is not valid YAML.
+
+    The path comparison below is a text scan on purpose — it needs no dependency and it can point at the exact
+    line it disagrees with. But a text scan happily reads a document nobody can parse: two unquoted scalars
+    containing a colon, and an accidentally spliced parameter block, both sat in this file while this gate
+    reported success. A contract that no client can generate from is not a contract.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - CI installs PyYAML for the manifest check already
+        return []
+    try:
+        yaml.safe_load(SPEC.read_text())
+    except yaml.YAMLError as error:
+        return [f"packages/contracts/openapi.yaml does not parse: {error}"]
+    return []
+
+
 def spec_routes(text):
     """Collect (method, path) from the `paths:` block using indentation."""
     routes = set()
@@ -77,6 +96,12 @@ def normalise(path):
 
 
 def main():
+    problems = check_parses()
+    if problems:
+        for problem in problems:
+            print(problem)
+        return 1
+
     spec = spec_routes(SPEC.read_text())
     router = router_routes(ROUTER.read_text())
 
