@@ -76,6 +76,49 @@ export interface LiveClass {
   admission: "open" | "approval";
   /** Where the caller stands: admitted, pending, rejected, or empty if they have never knocked. */
   admissionStatus: "admitted" | "pending" | "rejected" | "";
+  /**
+   * The class's live or most recent recording, if it has one. It rides in this payload so the room can say "this is
+   * being recorded" without a second request a client could skip.
+   */
+  recording: RecordingNotice | null;
+}
+
+/** The part of a recording every client needs to know. */
+export interface RecordingNotice {
+  id: string;
+  /** `recording` while capturing, then `sealing`, `ready` or `failed`. */
+  status: string;
+  /** The day the bytes are erased, fixed when the recording started. */
+  retainUntil: string;
+}
+
+/** One uploaded, sealed chunk. */
+export interface RecordingSegment {
+  id: string;
+  seq: number;
+  uploadedBy: string;
+  bytes: number;
+  sha256: string;
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface RecordingDetail {
+  id: string;
+  classId: string;
+  status: string;
+  chunks: number;
+  bytes: number;
+  durationMs: number;
+  retainUntil: string;
+  createdAt: string;
+  completedAt: string | null;
+  failureReason: string | null;
+  segments: RecordingSegment[];
+  /** Who was told and said so. The recorder mixes only these people. */
+  acknowledgedUserIds: string[];
+  /** Gaps in the recorder's sequence: a file with a hole should say so rather than play as if it were whole. */
+  missingSeqs: number[];
 }
 
 export interface StageSeat {
@@ -452,6 +495,46 @@ export async function confirmTopup(id: string) {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+// ── recordings ──────────────────────────────────────────────────────────────────────────────────
+
+/** Turn capture on. Host only, and only once the class is live. */
+export async function startRecording(classId: string) {
+  return call<{ recording: RecordingDetail }>(`/virtual-classes/${classId}/recording`, { method: "POST" });
+}
+
+/** Say that you were told the class is being recorded. Until this, the recorder does not put you in the file. */
+export async function acknowledgeRecording(classId: string) {
+  return call<{ acknowledged: boolean; acknowledgedCount: number }>(
+    `/virtual-classes/${classId}/recording/acknowledge`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** The newest recording, with its segments. Members of the class only. */
+export async function getRecording(classId: string) {
+  return call<{ recording: RecordingDetail }>(`/virtual-classes/${classId}/recording`);
+}
+
+/** Finish the file. Host only. */
+export async function completeRecording(classId: string) {
+  return call<{ recording: RecordingDetail }>(`/virtual-classes/${classId}/recording/complete`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+/** Erase the recording and its bytes. Host only, and immediate. */
+export async function deleteRecording(classId: string) {
+  return call<{ deleted: boolean; objectsRemoved: number }>(`/virtual-classes/${classId}/recording`, {
+    method: "DELETE",
+  });
+}
+
+/** Direct URL for one sealed chunk, for the player to fetch with the session cookie. */
+export function recordingSegmentUrl(classId: string, segmentId: string) {
+  return `/v1/virtual-classes/${classId}/recording/segments/${segmentId}`;
 }
 
 // ── practice selection ──────────────────────────────────────────────────────────────────────────

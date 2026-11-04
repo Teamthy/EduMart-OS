@@ -138,8 +138,9 @@ export default async function JoinPage({ params }: { params: Promise<{ slug: str
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <CalendarClock aria-hidden="true" className="size-3" />
-        Audio and video are forwarded by the class's media server — encrypted hop by hop, so a fifty-seat room
-        works. Whiteboard strokes are encrypted in the browser end to end.
+        Audio, video and whiteboard strokes are encrypted in the browser, so the fifty-seat media server forwards
+        ciphertext it cannot read. The key travels in the part of the link after the #, which no browser sends to a
+        server.
       </p>
     </main>
   );

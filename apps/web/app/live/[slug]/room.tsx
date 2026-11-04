@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Lock, Mic, MicOff, PhoneOff, PenLine, Eraser, Radio, Send, Square, Trash2, Users, Video, VideoOff } from "lucide-react";
+import { Circle, Copy, Lock, Mic, MicOff, PhoneOff, PenLine, Eraser, Radio, Send, Square, Trash2, Users, Video, VideoOff } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,18 +21,21 @@ import {
   liveIce,
   liveRoster,
   liveRequests,
+  acknowledgeRecording,
   decideRequest,
   pollSignals,
   postSignal,
   leaveLiveClass,
   setStage,
   startLiveClass,
+  startRecording,
   type AttendanceRow,
   type BoardEventRow,
   type LiveClass,
   type StageSeat,
 } from "@/lib/live-api";
 import { createBoardKey, exportBoardKey, importBoardKey, openBoardEvent, sealBoardEvent, type BoardKey } from "@/lib/live-board";
+import { StageRecorder, createRecordingUploader, recorderSupport } from "@/lib/live-recorder";
 import {
   attachReceiverEncryption,
   attachSenderEncryption,
@@ -112,7 +115,21 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   const [attendance, setAttendance] = useState<AttendanceRow[] | null>(null);
   const [codes, setCodes] = useState<{ code: string; percentOff: number; uses: number; maxUses: number }[]>([]);
 
+  // ── recording ────────────────────────────────────────────────────────────────────────────────
+  // Three different facts, and the UI must not blur them: whether the class is being recorded, whether *this person*
+  // has been told and said so, and whether this browser is the one doing the recording.
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [recorderState, setRecorderState] = useState<"off" | "starting" | "recording" | "stopping">("off");
+  const [recorderProgress, setRecorderProgress] = useState<{ chunks: number; bytes: number; failed: number } | null>(null);
+  // The recording page needs the same URL fragment the room was opened with, or it has no key and can only say so.
+  const [classLinkFragment, setClassLinkFragment] = useState("");
+  const [consentIds, setConsentIds] = useState<string[]>([]);
+  const recorderRef = useRef<StageRecorder | null>(null);
+
   const isHost = room.role === "host";
+  // The class is being captured right now — as opposed to having a finished recording, which is a different thing.
+  const recordingLive = room.recording?.status === "recording";
   const mySeat = seats.find((seat) => seat.userId === viewerId);
   const publishing = mySeat ? mySeat.stageRole !== "audience" : false;
   const mySlot = mySeat?.stageSlot ?? -1;
@@ -137,6 +154,11 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
   useEffect(() => {
     joinedRef.current = joined;
   }, [joined]);
+
+  // Read once, on mount, from the client only: a fragment is never part of a server request.
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash) setClassLinkFragment(window.location.hash);
+  }, []);
   useEffect(() => {
     publishingRef.current = publishing;
   }, [publishing]);
@@ -660,6 +682,109 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
     void publishStroke(wipe);
   }
 
+  // ── recording ────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Start capturing. Host only, and it is two steps that must happen in this order: the server records that capture is
+   * happening (so every join in the payload says so), then this browser starts composing.
+   *
+   * The compose step is handed the acknowledged ids, not everybody's stream, because that set is the consent control:
+   * somebody who was not told is not drawn, so they are not in the file.
+   */
+  const beginRecording = useCallback(async () => {
+    setRecordingBusy(true);
+    setError(null);
+    try {
+      const support = recorderSupport();
+      if (!support.supported) {
+        setError(support.reason);
+        return;
+      }
+      if (!boardKeyRef.current) {
+        setError("The room key is not available in this tab, so a recording could not be encrypted. Open the host's join link.");
+        return;
+      }
+      const { recording } = await startRecording(room.id);
+      setRoom((current) => ({ ...current, recording: { id: recording.id, status: recording.status, retainUntil: recording.retainUntil } }));
+      // Everyone the server knows was told. The recorder mixes only these people.
+      const allowed = recording.acknowledgedUserIds ?? [viewerId];
+      setConsentIds(allowed);
+
+      const streams = [
+        ...(localStream ? [{ userId: viewerId, stream: localStream, label: `${viewerName} (you)` }] : []),
+        ...Object.entries(slotStreams).map(([slot, stream]) => {
+          const seat = seats.find((candidate) => candidate.stageSlot === Number(slot));
+          return {
+            userId: seat?.userId ?? `slot-${slot}`,
+            stream,
+            label: seat?.displayName ?? `Stage ${slot}`,
+          };
+        }),
+      ];
+      const recorder = new StageRecorder({
+        uploader: createRecordingUploader({ classId: room.id }),
+        roomKey: boardKeyRef.current.raw,
+        streams,
+        acknowledgedUserIds: allowed,
+        onProgress: setRecorderProgress,
+        onError: (message) => setError(message),
+      });
+      setRecorderState("starting");
+      await recorder.start();
+      recorderRef.current = recorder;
+      setRecorderState("recording");
+      setNotice("Recording. Everyone in the room can see that it is happening, and only people who acknowledged appear in it.");
+    } catch (caught) {
+      setRecorderState("off");
+      setError(caught instanceof Error ? caught.message : "The recording did not start.");
+    } finally {
+      setRecordingBusy(false);
+    }
+  }, [localStream, room.id, seats, slotStreams, viewerId, viewerName]);
+
+  /**
+   * Stop capturing and finish the file.
+   *
+   * The recorder uploads its last chunk before this resolves, and only then is the server told the file is complete —
+   * the reverse order would mark a recording ready while its final seconds were still in flight.
+   */
+  const finishRecording = useCallback(async () => {
+    setRecordingBusy(true);
+    setRecorderState("stopping");
+    try {
+      const outcome = await recorderRef.current?.stop();
+      recorderRef.current = null;
+      setRecorderState("off");
+      setNotice(
+        outcome && outcome.failedChunks > 0
+          ? `Recording finished, but ${outcome.failedChunks} part(s) never reached the server. The file has a gap and says so.`
+          : `Recording finished: ${outcome?.chunks ?? 0} parts, sealed before they left this browser.`,
+      );
+      setRoom((current) => ({
+        ...current,
+        recording: current.recording ? { ...current.recording, status: "sealing" } : null,
+      }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The recording could not be finished.");
+    } finally {
+      setRecordingBusy(false);
+    }
+  }, []);
+
+  /** Say that you were told. Until this, the recorder does not put you in the file. */
+  const acknowledge = useCallback(async () => {
+    setRecordingBusy(true);
+    try {
+      await acknowledgeRecording(room.id);
+      setAcknowledged(true);
+      setNotice("You are in the recording if you are on stage. Leave the class if you would rather not be.");
+    } catch (caught) {
+      setError(caught instanceof LiveApiError ? caught.message : "Could not record your acknowledgement.");
+    } finally {
+      setRecordingBusy(false);
+    }
+  }, [room.id]);
+
   // ── leaving and host controls ────────────────────────────────────────────────────────────────
 
   const hangUp = useCallback(
@@ -818,6 +943,28 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
                 Go live
               </Button>
             ) : null}
+            {isHost && room.status === "live" && recorderState === "off" ? (
+              <Button type="button" size="sm" variant="outline" onClick={() => void beginRecording()} disabled={recordingBusy}>
+                <Circle aria-hidden="true" className="size-4 fill-red-500 text-red-500" />
+                Record class
+              </Button>
+            ) : null}
+            {isHost && recorderState === "recording" ? (
+              <Button type="button" size="sm" variant="destructive" onClick={() => void finishRecording()} disabled={recordingBusy}>
+                <Square aria-hidden="true" className="size-4" />
+                Stop recording
+              </Button>
+            ) : null}
+            {isHost && recorderState === "starting" ? (
+              <Button type="button" size="sm" variant="outline" disabled>
+                Starting recording…
+              </Button>
+            ) : null}
+            {isHost && recorderState === "stopping" ? (
+              <Button type="button" size="sm" variant="outline" disabled>
+                Finishing recording…
+              </Button>
+            ) : null}
             {isHost && room.status !== "ended" ? (
               <Button type="button" size="sm" variant="outline" onClick={() => void endSession()}>
                 <Square aria-hidden="true" className="size-4" />
@@ -830,6 +977,48 @@ export function LiveRoom({ initial, viewerId, viewerName, linkKey }: Props) {
 
       {error ? <Alert tone="error" title="Something went wrong">{error}</Alert> : null}
       {notice ? <Alert tone="success">{notice}</Alert> : null}
+
+      {/* The recording notice. It cannot be dismissed while capture is running: a person who stays is a person who was
+          told, and a banner with a close button would make that untrue. */}
+      {recordingLive ? (
+        <div role="status" className="flex flex-wrap items-center gap-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+          <Circle aria-hidden="true" className="size-4 animate-pulse fill-red-600 text-red-600" />
+          <span className="font-semibold">This class is being recorded.</span>
+          <span>
+            The recording is sealed in the host&apos;s browser, so the server cannot watch it — but it is still a
+            recording of the class. Only people who acknowledge the notice appear in it.
+          </span>
+          {!acknowledged ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => void acknowledge()} disabled={recordingBusy}>
+              I understand
+            </Button>
+          ) : (
+            <Badge variant="outline">You acknowledged this</Badge>
+          )}
+        </div>
+      ) : null}
+
+      {isHost && recorderState === "recording" ? (
+        <p className="text-xs text-muted-foreground">
+          Recording in this tab — keep it open.{" "}
+          {recorderProgress
+            ? `${recorderProgress.chunks} part(s), ${Math.round(recorderProgress.bytes / 1024)} KB sealed${recorderProgress.failed > 0 ? `, ${recorderProgress.failed} failed` : ""}.`
+            : "Waiting for the first part."}
+          {consentIds.length === 0
+            ? " Nobody has acknowledged yet, so nobody is in the file."
+            : ` ${consentIds.length} participant(s) acknowledged and are in the file.`}
+        </p>
+      ) : null}
+
+      {room.recording && room.recording.status !== "recording" && recorderState === "off" ? (
+        <Alert tone="info">
+          This class has a recording.{" "}
+          <a className="underline underline-offset-4" href={`/live/${room.slug}/recording${classLinkFragment}`}>
+            Watch or save it
+          </a>{" "}
+          — it is kept until {new Date(room.recording.retainUntil).toLocaleDateString()} and then erased.
+        </Alert>
+      ) : null}
 
       {!joined && waiting ? (
         <Card>

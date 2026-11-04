@@ -202,7 +202,8 @@ Two defects surfaced only by running it, which is the argument for running it:
 
 | Asset | Where it lives | Who can read it | Residual risk |
 | --- | --- | --- | --- |
-| Audio and video | Never reaches the API; peer-to-peer under DTLS-SRTP | The participants only | A peer with a compromised browser can record what it displays. That is true of every video call; the control is that the *server* never holds a copy and there is no recording feature to misfile |
+| Audio and video | Sealed in the publisher's browser (AES-GCM), opened in each subscriber's; the forwarder copies ciphertext | The participants only | A participant who holds the key can always record what they can see. Recording is an explicit, announced feature rather than a side effect, and the server stores only what a room chose to record |
+| Class recordings | `blob` store on a shared volume, chunks sealed in the recorder's browser | Members of that class, who still need the room key | The consent filter lives in the recorder's client, which the server cannot audit; anyone with the room key can open a downloaded file. Erased on the retention date and on the host's request |
 | Whiteboard strokes | `virtual_class_board_events`, opaque ciphertext under a room key held by participants | Anyone seated in the class, who still needs the key | Key distribution is out of band (WebRTC data channel). A participant who shares the key shares the board; owner: API/web |
 | SDP and ICE candidates | `virtual_class_signals`, pruned after 10 minutes | Members of that class, or the sender's target | They disclose participants' IP addresses to each other. A relayed leg hides a participant's address from the forwarder but not from the relay, which is the same operator |
 | TURN credentials | Never stored; minted per request | The participant alone | Ephemeral and per-user, so a leaked credential expires and names its owner. The secret they are signed with stays in the environment |

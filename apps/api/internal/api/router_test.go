@@ -21,6 +21,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/api"
 	"github.com/teamthy/edumart/apps/api/internal/assessment"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
+	"github.com/teamthy/edumart/apps/api/internal/blob"
 	"github.com/teamthy/edumart/apps/api/internal/classroom"
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
 	"github.com/teamthy/edumart/apps/api/internal/consistency"
@@ -163,6 +164,19 @@ func newHarnessFull(t *testing.T, tweak func(*api.Config), chargeProvider wallet
 		ICEServers: []map[string]any{{"urls": []string{"stun:stun.example.test:19302"}}},
 		Relay:      relayService,
 	}).WithMedia(forwarder)
+	// Recordings are on in the harness: a media directory under the test's temp dir, so every test that uploads a
+	// chunk is exercising the real store rather than a stub that cannot fail.
+	recordingDir := t.TempDir()
+	blobs, blobErr := blob.Open(recordingDir)
+	if blobErr != nil {
+		t.Fatalf("blob store: %v", blobErr)
+	}
+	liveService.WithRecording(blobs, virtualclass.RecordingConfig{
+		Enabled:           true,
+		MaxSegmentBytes:   64 * 1024,
+		MaxRecordingBytes: 512 * 1024,
+		Retention:         30 * 24 * time.Hour,
+	})
 	router := api.NewRouter(api.Deps{
 		Store:    db,
 		Auth:     auth.New(db, auth.WithNotifier(courier), auth.WithLogger(logger)),

@@ -66,7 +66,9 @@ and a **fifty-seat room with a six-seat stage** all work and are covered by test
 an **embedded TURN relay** issues each participant an ephemeral credential so a symmetric NAT can still reach
 the forwarder, audio and video are **end-to-end encrypted in the browser's encoded pipeline** wherever the browser
 exposes one (falling back to hop-by-hop with a badge that says so, and no per-sender frame authentication yet), and
-the mobile app opens the invite rather than hosting the room. Free sessions are capped at 45 minutes on the server, and a sweep closes
+the mobile app opens the invite rather than hosting the room. A host can **record** a class: the recorder's browser composes the stage, seals it
+with the room key and uploads ciphertext the API cannot open, with a notice every participant must acknowledge before
+they appear in the file and a retention date fixed when recording starts. Free sessions are capped at 45 minutes on the server, and a sweep closes
 them on the clock. A host can now run a **waiting room**: an `approval` class queues every learner as a request
 (`202`, no seat, no charge), refuses the roster, board, stage and signalling with a `403` that says why, and
 charges only when the host accepts — under the same row lock as a direct join, so accepts cannot oversell the

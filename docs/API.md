@@ -215,6 +215,13 @@ the attempt is in progress. After finalisation, `result_released` follows the as
 | `GET`/`POST` | `/virtual-classes/{id}/discount-codes` | Host-issued codes that reduce the credit price |
 | `POST` | `/virtual-classes/{id}/media` | One negotiation per participant: the browser posts an SDP offer, the server's forwarder answers |
 | `POST` | `/virtual-classes/{id}/stage` | Host only. `{userId, role}` where `role` is `speaker` or `audience`; slots are assigned by the server from the lowest free one, and a host cannot be demoted |
+| `POST` | `/virtual-classes/{id}/recording` | Host only, class must be live. Starts capture; the class payload then carries `recording` everywhere |
+| `POST` | `/virtual-classes/{id}/recording/acknowledge` | "I was told." Only acknowledged participants are mixed into the file |
+| `POST` | `/virtual-classes/{id}/recording/segments` | One sealed chunk, `application/octet-stream`, `?seq=` and `?durationMs=` |
+| `POST` | `/virtual-classes/{id}/recording/complete` | Host only. Stops accepting chunks; `ready`, or `failed` with a reason when nothing arrived |
+| `GET` | `/virtual-classes/{id}/recording` | The newest recording: parts, gaps, who acknowledged, retention date |
+| `GET` | `/virtual-classes/{id}/recording/segments/{segmentId}` | One sealed chunk, byte-range capable, members only |
+| `DELETE` | `/virtual-classes/{id}/recording` | Host only. Erases the bytes and the rows immediately |
 
 A room holds **50 people**; the **six-seat stage** (host slot 0 plus five speaker slots) is what the media server
 forwards, so fifty people in a room never means fifty simultaneous video streams from one laptop. Audio and video

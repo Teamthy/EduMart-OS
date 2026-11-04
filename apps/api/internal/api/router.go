@@ -339,6 +339,21 @@ func NewRouter(d Deps) http.Handler {
 			g.Post("/virtual-classes/{id}/stage", wrap(liveHandlers.Stage))
 		})
 
+		// ── recordings ───────────────────────────────────────────────────
+		// A recording is a participant's browser composing what it can see and hear, sealing it with the room key,
+		// and uploading chunks the server cannot open. The upload path is the one endpoint in this API that accepts
+		// megabytes, so it gets its own budget rather than sharing the room's.
+		v1.Group(func(g chi.Router) {
+			g.Use(limiter.Limit("virtual-class-recording", 240, time.Minute))
+			g.Post("/virtual-classes/{id}/recording", wrap(liveHandlers.StartRecording))
+			g.Get("/virtual-classes/{id}/recording", wrap(liveHandlers.Recording))
+			g.Delete("/virtual-classes/{id}/recording", wrap(liveHandlers.DeleteRecording))
+			g.Post("/virtual-classes/{id}/recording/acknowledge", wrap(liveHandlers.AcknowledgeRecording))
+			g.Post("/virtual-classes/{id}/recording/segments", wrap(liveHandlers.AddRecordingSegment))
+			g.Post("/virtual-classes/{id}/recording/complete", wrap(liveHandlers.CompleteRecording))
+			g.Get("/virtual-classes/{id}/recording/segments/{segmentId}", wrap(liveHandlers.RecordingSegment))
+		})
+
 		// ── synchronised exams ───────────────────────────────────────────
 		// Any signed-in account can host a sitting. The invite link is anonymous for the same reason a
 		// class link is: a shared URL has to say what it is before it asks for an account.

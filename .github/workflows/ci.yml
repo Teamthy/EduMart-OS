@@ -288,6 +288,22 @@ jobs:
           done
           python3 scripts/session-lifecycle.py --base http://localhost:8082 --ttl 3
           kill "$(cat /tmp/session-api.pid)" 2>/dev/null || true
+      - name: Verify the class recording lifecycle (SQLite, real media directory)
+        # Recording is the one feature whose correctness spans the client and the server: the browser seals, the server
+        # stores bytes it cannot read, and a player downloads them. This boots the binary with a real media directory
+        # and a one-second retention, drives the whole lifecycle over HTTP, and then looks at the directory to
+        # distinguish "deleted" from "marked deleted". The retention step waits for the process's own sweep, because
+        # the claim is "erased on a clock", not "erased on a request".
+        run: |
+          EDUMART_DSN=/tmp/ci-recording.db PORT=8083 EDUMART_MEDIA_DIR=/tmp/ci-media \
+          EDUMART_RECORDING_RETENTION_DAYS=0 /tmp/edumart-api > /tmp/recording-api.log 2>&1 &
+          echo $! > /tmp/recording-api.pid
+          for attempt in $(seq 1 40); do
+            curl -fsS http://localhost:8083/readyz > /dev/null && break
+            sleep 1
+          done
+          python3 scripts/recording-lifecycle.py --base http://localhost:8083 --media-dir /tmp/ci-media --retention-seconds 1
+          kill "$(cat /tmp/recording-api.pid)" 2>/dev/null || true
       - name: Stop API
         if: always()
         run: kill "$(cat /tmp/api.pid)" || true

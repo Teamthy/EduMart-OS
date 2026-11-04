@@ -112,6 +112,14 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # Class recordings. A shared volume rather than an emptyDir, because an upload lands on one replica and
+            # the download almost certainly arrives at another: pod-local storage would make two thirds of downloads
+            # 404. See 15-media-pvc.yaml, which is ReadWriteMany for exactly this reason.
+            - name: media
+              mountPath: /var/lib/edumart/media
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: media
+          persistentVolumeClaim:
+            claimName: edumart-media

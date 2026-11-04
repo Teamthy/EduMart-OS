@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/pion/webrtc/v4"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
+	"github.com/teamthy/edumart/apps/api/internal/blob"
 	"github.com/teamthy/edumart/apps/api/internal/httpx"
 	"github.com/teamthy/edumart/apps/api/internal/media"
 	"github.com/teamthy/edumart/apps/api/internal/store"
@@ -62,6 +64,18 @@ type Class struct {
 	AdmissionStatus string  `json:"admissionStatus"`
 	CreatedAt       string  `json:"createdAt"`
 	EndedAt         *string `json:"endedAt"`
+	// Recording is the class's live or most recent recording, when there is one. It rides in the class payload every
+	// client already fetches, because "this class is being recorded" must not depend on a second request a client
+	// could forget to make. Nil means nothing has been recorded, which is different from a recording that failed.
+	Recording *RecordingNotice `json:"recording"`
+}
+
+// RecordingNotice is the part of a recording every client needs: whether it exists, whether it is still capturing,
+// and the day the bytes go.
+type RecordingNotice struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	RetainUntil string `json:"retainUntil"`
 }
 
 // Attendee is a roster row, including the avatar the room renders.
@@ -170,6 +184,26 @@ type Service struct {
 	db     *store.Store
 	config Config
 	now    func() time.Time
+	// blobs is where sealed recording chunks go. Nil means no media directory is mounted, which every recording
+	// endpoint reports as a 503 rather than as a missing feature.
+	blobs     *blob.Store
+	recording RecordingConfig
+	// logger is optional: a service built without one still works, and recording decisions are logged rather than
+	// silently taken, because "when did this class start being recorded" is a question somebody will ask later.
+	logger *slog.Logger
+}
+
+// WithLogger attaches a logger. Recording start, finish and deletion are the events worth having a record of.
+func (s *Service) WithLogger(logger *slog.Logger) *Service {
+	s.logger = logger
+	return s
+}
+
+func (s *Service) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // WithMedia attaches the forwarding unit. It is separate from New so that the media server can be built by the
@@ -369,6 +403,21 @@ func (s *Service) scanClass(scan func(...any) error) (*Class, error) {
 	return &class, nil
 }
 
+// attachRecording fills in the recording notice. It is best-effort by design: a failure to read the recording table
+// must not make a class unviewable, so the error is swallowed and the notice stays nil.
+func (s *Service) attachRecording(ctx context.Context, class *Class) {
+	if class == nil || s.blobs == nil {
+		return
+	}
+	var notice RecordingNotice
+	err := s.db.DB.QueryRowContext(ctx, `SELECT id, status, retain_until FROM class_recordings
+		WHERE class_id = ? AND status <> ? ORDER BY created_at DESC LIMIT 1`, class.ID, RecordingDeleted).
+		Scan(&notice.ID, &notice.Status, &notice.RetainUntil)
+	if err == nil {
+		class.Recording = &notice
+	}
+}
+
 // Get returns one class, with the caller's role in it.
 func (s *Service) Get(ctx context.Context, idOrSlug, viewerID string) (*Class, error) {
 	row := s.db.DB.QueryRowContext(ctx, `SELECT `+classColumns+`
@@ -383,6 +432,7 @@ func (s *Service) Get(ctx context.Context, idOrSlug, viewerID string) (*Class, e
 	}
 	class.Role = s.roleOf(ctx, class.ID, viewerID)
 	class.AdmissionStatus = s.admissionStatus(ctx, class.ID, viewerID, class.Role)
+	s.attachRecording(ctx, class)
 	return class, nil
 }
 
@@ -710,6 +760,9 @@ func (s *Service) Join(ctx context.Context, classID, userID string, in JoinInput
 		return nil, err
 	}
 	result.Class = class
+	// Someone joining a recorded room is told in the same response that seated them. Making that a second request
+	// would let a client be in a recorded class without the fact ever reaching the page.
+	s.attachRecording(ctx, class)
 	if result.Pending {
 		// There is no attendee to describe: a request is not a seat. Calling attendee() here would refuse
 		// for lack of membership, which is exactly what the request is still waiting for.

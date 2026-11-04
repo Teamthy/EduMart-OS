@@ -3245,6 +3245,244 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /v1/virtual-classes/{id}/recording:
+    post:
+      tags: [live]
+      summary: Start recording the class (host only)
+      description: |
+        Recording a live class, and the shape of it is forced by the encryption rather than chosen: audio and video are
+        sealed in the publisher's browser and opened in each subscriber's, so the process that forwards packets holds
+        ciphertext and never had plaintext to record. The recording is therefore composed in a participant's browser —
+        the stage it can already see and hear — sealed with the same room key, and uploaded as chunks this API stores
+        without ever opening.
+
+        Consequences worth knowing before calling this:
+
+        - **The class must be live.** A recording of an empty room is a file that says nothing happened.
+        - **Every participant is told.** While it is capturing, `recording` is set in the class payload (and in the join
+          response), and the room shows a notice that cannot be dismissed.
+        - **Acknowledgement gates inclusion.** `POST .../recording/acknowledge` records that a person was told; the
+          recorder is required to mix only acknowledged participants, and `acknowledgedUserIds` is what it filters on.
+          This is enforced by the recorder's client, not by the server, which cannot verify the contents of a
+          composited frame — stated here because the difference matters.
+        - **Starting twice is not an error.** A second call returns the recording already in progress.
+      operationId: startClassRecording
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "201":
+          description: Capturing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recording: { $ref: "#/components/schemas/ClassRecording" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The class is not live
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "503":
+          description: No media directory is mounted on this deployment (`SERVICE_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+    get:
+      tags: [live]
+      summary: The class's newest recording, with its parts
+      description: |
+        Readable by the host and by anybody who was in the room. Deliberately **not** readable by a stranger holding the
+        class's public slug: the share link is public, the recording behind it is not.
+
+        `missingSeqs` lists gaps in the recorder's sequence, so a file with a hole says so instead of playing as if it
+        were whole. `acknowledgedUserIds` is who was told.
+      operationId: getClassRecording
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: The recording
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recording: { $ref: "#/components/schemas/ClassRecording" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: The class was never recorded, or the recording was deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+    delete:
+      tags: [live]
+      summary: Erase the recording (host only)
+      description: |
+        Immediate, not deferred to a sweep: the bytes are removed from storage and the segments rows are deleted in the
+        same call. A "delete" that leaves the file on disk until something else gets to it is not a deletion anybody
+        asked for. Idempotent enough to retry, and the retention sweep erases what nobody deleted on the day
+        `retainUntil` names.
+      operationId: deleteClassRecording
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Erased
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  objectsRemoved: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/virtual-classes/{id}/recording/acknowledge:
+    post:
+      tags: [live]
+      summary: Acknowledge the recording notice
+      description: |
+        Records that this participant was told the class is being recorded, and when. The recorder mixes only people who
+        have done this, so it is the consent control and not a formality.
+
+        Idempotent, and a no-op when nothing is being captured: a client must not have to branch on a race between its
+        own page load and the host pressing record.
+      operationId: acknowledgeClassRecording
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged: { type: boolean }
+                  acknowledgedCount: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/virtual-classes/{id}/recording/segments:
+    post:
+      tags: [live]
+      summary: Upload one sealed part of the recording
+      description: |
+        The body is `application/octet-stream` and opaque: the bytes were sealed in the recorder's browser with the room
+        key, and this API stores them as they arrive without ever opening them. It is not JSON, because base64 would
+        inflate every byte by a third and buffer a whole chunk in memory to decode it on the one path that exists to
+        move megabytes.
+
+        - `seq` is 1-based and monotonic per recorder. A repeated `seq` is refused (`409`) rather than overwritten: a
+          chunk that changes under a download makes its digest meaningless.
+        - `durationMs` is how much class time this part covers.
+        - Over the deployment's per-chunk cap is `413 PAYLOAD_TOO_LARGE`; over the per-recording cap is `413` with a
+          message saying to start a new recording.
+        - Only while the recording is capturing. After `.../recording/complete` every upload is `409`.
+      operationId: uploadClassRecordingSegment
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+        - name: seq
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: durationMs
+          in: query
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  segment: { $ref: "#/components/schemas/RecordingSegment" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Nothing is being captured, the recording has closed, or this `seq` already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          description: The chunk or the recording is over the deployment's limit (`PAYLOAD_TOO_LARGE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/virtual-classes/{id}/recording/complete:
+    post:
+      tags: [live]
+      summary: Finish the recording (host only)
+      description: |
+        Stops accepting parts and marks the file `ready` — or `failed`, with a reason, when nothing ever arrived. A host
+        who pressed record and got nothing must be told, because the alternative is a class that believes it has a
+        recording and does not.
+      operationId: completeClassRecording
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+      responses:
+        "200":
+          description: Finished
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recording: { $ref: "#/components/schemas/ClassRecording" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/virtual-classes/{id}/recording/segments/{segmentId}:
+    get:
+      tags: [live]
+      summary: Download one sealed part
+      description: |
+        The bytes exactly as uploaded, still sealed. Members of the class only. Supports `Range`, which is what makes
+        seeking in a long class work: a player asks for bytes near the end rather than downloading the room's first
+        hour.
+
+        The response is `application/octet-stream`, `Cache-Control: no-store`, and has no server-side relationship to
+        the room key — a caller without the key gets ciphertext, which is the point.
+      operationId: downloadClassRecordingSegment
+      parameters:
+        - $ref: "#/components/parameters/VirtualClassId"
+        - name: segmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The chunk
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "206":
+          description: A byte range of the chunk
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/virtual-classes/{id}/stage:
     post:
       tags: [live]
@@ -3570,6 +3808,49 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    ClassRecording:
+      type: object
+      properties:
+        id: { type: string }
+        classId: { type: string }
+        status:
+          type: string
+          enum: [recording, sealing, ready, failed, deleted]
+        chunks: { type: integer }
+        bytes: { type: integer, format: int64 }
+        durationMs: { type: integer, format: int64 }
+        retainUntil: { type: string, description: Fixed when the recording started; the sweep erases on this date }
+        createdAt: { type: string }
+        completedAt: { type: string, nullable: true }
+        failureReason:
+          type: string
+          nullable: true
+          description: Why a recording did not complete, in words a host can read
+        segments:
+          type: array
+          items: { $ref: "#/components/schemas/RecordingSegment" }
+        acknowledgedUserIds:
+          type: array
+          items: { type: string }
+          description: Who was told the class is being recorded. The recorder mixes only these people
+        missingSeqs:
+          type: array
+          items: { type: integer }
+          description: Gaps in the recorder's sequence, so a file with a hole says so
+
+    RecordingSegment:
+      type: object
+      properties:
+        id: { type: string }
+        seq: { type: integer }
+        uploadedBy: { type: string }
+        bytes: { type: integer, format: int64 }
+        sha256:
+          type: string
+          description: Computed by the store from the bytes that landed, not from what the client claimed
+        durationMs: { type: integer, format: int64 }
+        createdAt: { type: string }
+
     TwoFactorChallenge:
       type: object
       required: [two_factor_required, token, expires_at]
