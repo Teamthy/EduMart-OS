@@ -106,8 +106,10 @@ clean score with none — and the report paints the tally rather than deciding f
 
 - **No proctoring of identity.** Integrity signals record attention, not who was sitting the paper: there is no
   webcam capture, no ID check and no keystroke biometrics, and a modified client can under-report.
-- **No A/V recording of a sitting.** The class media server forwards packets and writes nothing to disk; the
-  integrity record is data, not video.
+- **No A/V recording of a sitting.** Class recordings exist (a host can capture a live class, sealed in the browser),
+  but a sitting is not a room: there is no media session to capture, so the integrity record stays data — signals the
+  candidate's own browser reported — rather than video. Recording a candidate's camera would be a different feature
+  with a different consent problem, and it is not built.
 - **No partial credit** beyond the engine's scoring policy (correct / wrong / unanswered weights).
 - **No question authoring in the sitting flow.** A sitting draws from approved, published question versions, or
   names them by id; authoring and review stay with the content pipeline.

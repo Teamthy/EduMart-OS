@@ -56,7 +56,14 @@ const (
 	// CodeTwoFactorInvalid means a code was presented and refused — wrong digits, a step that has expired, or a code
 	// already used. Distinct from the above so a form can say "that code is not right" rather than "sign in again".
 	CodeTwoFactorInvalid ErrorCode = "TWO_FACTOR_INVALID"
-	CodeInternal         ErrorCode = "INTERNAL_ERROR"
+
+	// CodePayloadTooLarge is a body over the limit the endpoint accepts. It is its own code because the client's
+	// remedy is specific — split the upload — and not "try again", which is what a generic 400 would suggest.
+	CodePayloadTooLarge ErrorCode = "PAYLOAD_TOO_LARGE"
+	// CodeUnavailable means the deployment lacks a capability this endpoint needs (no media directory mounted for
+	// recordings, for instance). It is a 503 rather than a 404: the route exists, the server is not equipped.
+	CodeUnavailable ErrorCode = "SERVICE_UNAVAILABLE"
+	CodeInternal    ErrorCode = "INTERNAL_ERROR"
 )
 
 var statusFor = map[ErrorCode]int{
@@ -79,6 +86,8 @@ var statusFor = map[ErrorCode]int{
 	CodeJoinCodeExpired:  http.StatusGone,
 	CodeAccountSuspended: http.StatusForbidden,
 	CodeSessionReused:    http.StatusUnauthorized,
+	CodePayloadTooLarge:  http.StatusRequestEntityTooLarge,
+	CodeUnavailable:      http.StatusServiceUnavailable,
 	CodeInternal:         http.StatusInternalServerError,
 }
 
@@ -115,6 +124,9 @@ func NewError(code ErrorCode, message string, details ...any) *Error {
 }
 
 // Validation reports field-level problems.
+// AsSlice lets one field error be passed where a list is expected, which is what most call sites mean.
+func (f FieldError) AsSlice() []FieldError { return []FieldError{f} }
+
 func Validation(details []FieldError) *Error {
 	return NewError(CodeValidation, "Please fix the highlighted fields.", details)
 }

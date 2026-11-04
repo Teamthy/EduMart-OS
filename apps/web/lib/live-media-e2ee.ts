@@ -105,6 +105,66 @@ export function handRoomKey(worker: Worker, raw: Uint8Array): void {
   worker.postMessage({ type: "key", raw: copy.buffer }, [copy.buffer]);
 }
 
+/**
+ * A sealer for anything that is not a live RTP frame — the recorder's file chunks, today.
+ *
+ * It derives the *same* HKDF key the worker does, from the same room key, with the same salt and info. Reusing the
+ * derivation is deliberate: there is one media key per room, and a second one with a hand-typed label would be a second
+ * thing to get wrong. The nonce space stays safe because every seal generates a fresh 96-bit IV, and a recording
+ * produces a handful of chunks per second rather than the hundreds a stream does.
+ *
+ * The key is imported non-extractable, so even code on this page cannot read it back out of the CryptoKey.
+ */
+export async function mediaFrameCodec(roomKey: Uint8Array): Promise<{
+  seal: (plaintext: Uint8Array) => Promise<Uint8Array>;
+  open: (sealed: Uint8Array) => Promise<Uint8Array | null>;
+}> {
+  const subtle = globalThis.crypto.subtle;
+  const base = await subtle.importKey("raw", roomKey as unknown as BufferSource, "HKDF", false, ["deriveKey"]);
+  const key = await subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new TextEncoder().encode("edumart/media/v1"),
+      info: new TextEncoder().encode("rtp-frame"),
+    },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+
+  return {
+    async seal(plaintext) {
+      const iv = new Uint8Array(new ArrayBuffer(12));
+      globalThis.crypto.getRandomValues(iv);
+      const body = new Uint8Array(
+        await subtle.encrypt({ name: "AES-GCM", iv, tagLength: 128 }, key, plaintext as unknown as BufferSource),
+      );
+      // Same frame layout as the worker: [version][iv][ciphertext||tag]. One format, one parser, one thing to remember.
+      const out = new Uint8Array(new ArrayBuffer(1 + iv.byteLength + body.byteLength));
+      out[0] = 0x01;
+      out.set(iv, 1);
+      out.set(body, 1 + iv.byteLength);
+      return out;
+    },
+    async open(sealed) {
+      if (sealed.byteLength <= 13 || sealed[0] !== 0x01) return null;
+      try {
+        // Copies rather than views: a `Uint8Array<ArrayBufferLike>` subarray is not a `BufferSource` to this TypeScript
+        // version, and a 13-byte copy per chunk costs nothing against a decrypt.
+        const iv = new Uint8Array(sealed.subarray(1, 13));
+        const body = new Uint8Array(sealed.subarray(13));
+        const plaintext = await subtle.decrypt({ name: "AES-GCM", iv, tagLength: 128 }, key, body);
+        return new Uint8Array(plaintext);
+      } catch {
+        // A chunk from another room, a truncated download, or a tampered byte. All of them are "not ours".
+        return null;
+      }
+    },
+  };
+}
+
 /** Narrow structural types: the DOM lib in this TypeScript version does not declare every insertable-stream hook. */
 interface EncodedStreams {
   readable: ReadableStream;

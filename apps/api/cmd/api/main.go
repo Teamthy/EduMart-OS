@@ -24,6 +24,7 @@ import (
 	"github.com/teamthy/edumart/apps/api/internal/api"
 	"github.com/teamthy/edumart/apps/api/internal/assessment"
 	"github.com/teamthy/edumart/apps/api/internal/auth"
+	"github.com/teamthy/edumart/apps/api/internal/blob"
 	"github.com/teamthy/edumart/apps/api/internal/classroom"
 	"github.com/teamthy/edumart/apps/api/internal/commerce"
 	"github.com/teamthy/edumart/apps/api/internal/consistency"
@@ -227,7 +228,34 @@ func main() {
 		// working; the self-hosted relay is appended per participant when EDUMART_TURN_SECRET is set.
 		ICEServers: parseICEServers(env("EDUMART_ICE_SERVERS", "")),
 		Relay:      relayCredentialIssuer(relayService),
-	}).WithMedia(forwarder)
+	}).WithMedia(forwarder).WithLogger(logger)
+
+	// Recordings. A media directory is the switch: without one the endpoints answer 503 with the reason rather
+	// than accepting an upload and losing it. The chunks are ciphertext the browser sealed with the room key, so
+	// there is nothing here to encrypt at rest and nothing a bucket's server-side encryption would add.
+	if mediaDir := strings.TrimSpace(os.Getenv("EDUMART_MEDIA_DIR")); mediaDir != "" {
+		blobs, blobErr := blob.Open(mediaDir)
+		if blobErr != nil {
+			// Fail closed, like the relay: a deployment told to record that silently cannot is worse than one
+			// that refuses to start.
+			logger.Error("media directory unusable", "dir", mediaDir, "error", blobErr.Error())
+			os.Exit(1)
+		}
+		retention := time.Duration(number(env("EDUMART_RECORDING_RETENTION_DAYS", "30"))) * 24 * time.Hour
+		liveService.WithRecording(blobs, virtualclass.RecordingConfig{
+			Enabled:           true,
+			MaxSegmentBytes:   int64(number(env("EDUMART_RECORDING_SEGMENT_BYTES", "8388608"))),
+			MaxRecordingBytes: int64(number(env("EDUMART_RECORDING_MAX_BYTES", "2147483648"))),
+			Retention:         retention,
+		})
+		logger.Info("class recordings enabled", "dir", blobs.Root(), "retentionDays", retention.Hours()/24)
+		defer func() {
+			// Abandoned `.upload-*` files are the one artefact a crash leaves behind.
+			if swept, sweepErr := blobs.SweepTemporaries(time.Hour); sweepErr == nil && swept > 0 {
+				logger.Info("swept abandoned uploads", "count", swept)
+			}
+		}()
+	}
 
 	router := api.NewRouter(api.Deps{
 		Store:   db,
@@ -280,7 +308,7 @@ func main() {
 
 	// Free classes end on the clock, not on the next request. A host who starts a forty-five minute
 	// class and walks away would otherwise leave the room, the stage and the session row open forever.
-	stopRooms := startRoomSweepWorker(logger, liveService)
+	stopRooms := startRoomSweepWorker(logger, liveService, liveService)
 	defer stopRooms()
 
 	// The retry sweep: whatever failed to send is attempted again on its backoff schedule, across
@@ -420,7 +448,7 @@ func relayCredentialIssuer(service *relay.Service) virtualclass.CredentialIssuer
 // Same shape as the attempt sweep: the request path already refuses a late arrival, and this is what
 // makes the room actually close when nobody arrives at all. It runs on every replica; the closing
 // update is conditional, so concurrent sweeps converge instead of fighting.
-func startRoomSweepWorker(logger *slog.Logger, live *virtualclass.Service) func() {
+func startRoomSweepWorker(logger *slog.Logger, live *virtualclass.Service, recordings *virtualclass.Service) func() {
 	ticker := time.NewTicker(60 * time.Second)
 	done := make(chan struct{})
 	go func() {
@@ -429,12 +457,22 @@ func startRoomSweepWorker(logger *slog.Logger, live *virtualclass.Service) func(
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				count, err := live.CloseExpiredFree(ctx, 50)
-				cancel()
 				if err != nil {
 					logger.Error("room sweep failed", "error", err.Error())
 				} else if count > 0 {
 					logger.Info("free classes closed at their limit", "count", count)
 				}
+				// Retention is a promise made to the people in the room, so it is enforced on a clock rather than
+				// when somebody remembers to click delete. Same ticker: one goroutine, one failure to alert on.
+				if expired, expireErr := recordings.ExpireRecordings(ctx, 25); expireErr != nil {
+					logger.Error("recording retention sweep failed", "error", expireErr.Error())
+				} else if expired > 0 {
+					logger.Info("recordings erased past their retention window", "count", expired)
+				}
+				// Cancelled once, after both sweeps. Cancelling between them handed the second one a dead context, and
+				// the only symptom was a retention sweep that reported "context canceled" every minute and erased
+				// nothing — a promise quietly broken on a timer.
+				cancel()
 			case <-done:
 				ticker.Stop()
 				return

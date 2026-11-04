@@ -1,0 +1,30 @@
+# Where sealed class recordings live.
+#
+# ReadWriteMany, and that is not a preference. The API runs three replicas behind one Service, so an upload lands on
+# whichever pod the load balancer picked and the download arrives at any of the others: a ReadWriteOnce volume would
+# mean a recording that exists on one pod in three, which presents as "the recording is missing" roughly two thirds of
+# the time. If the cluster's default StorageClass cannot do RWX, set `storageClassName` to one that can (NFS, EFS,
+# Azure Files, CephFS) — a single-replica API is the wrong fix for an availability problem.
+#
+# The contents are ciphertext the API cannot read: the browser seals each chunk with the room key, which travels in the
+# join link's URL fragment and never reaches the server. There is nothing here for a volume-level encryption policy to
+# protect beyond the fact that a class happened.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: edumart-media
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: edumart-api
+    app.kubernetes.io/part-of: edumart
+  annotations:
+    # Kept when the release is removed: losing the volume is losing every recording a host chose to keep.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  # Left unset so the cluster's default class applies. Set it explicitly in a cluster whose default is ReadWriteOnce.
+  # storageClassName: nfs-client

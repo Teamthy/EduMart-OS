@@ -37,6 +37,19 @@ data:
   # Referral commission by level: direct referrer, their referrer, and one more. Depth is a configuration
   # decision because every extra level pays somebody with no relationship to the customer.
   EDUMART_REFERRAL_RATES: "10,3,1"
+  # Recordings of live classes. The directory is the switch: with it unset the recording endpoints answer 503 with the
+  # reason, which is honest, and with it set but unwritable the process refuses to start, which is safer than a host
+  # recording an hour of a class into a void. The bytes stored here are sealed in the browser, so this volume holds
+  # ciphertext the API cannot open.
+  EDUMART_MEDIA_DIR: "/var/lib/edumart/media"
+  # A recording is erased on this clock, counted from when it started, and the date is shown to the class before the
+  # first chunk is uploaded. Thirty days is long enough to revise from and short enough that a forgotten recording is
+  # not kept forever.
+  EDUMART_RECORDING_RETENTION_DAYS: "30"
+  # 8 MiB per chunk: a few seconds of 720p, small enough that a dropped upload costs seconds rather than a minute.
+  EDUMART_RECORDING_SEGMENT_BYTES: "8388608"
+  # 2 GiB per recording, so one class cannot fill the volume and take the next class down with it.
+  EDUMART_RECORDING_MAX_BYTES: "2147483648"
   # ICE servers for live classes, as the JSON a browser passes to RTCPeerConnection. STUN alone gets most home
   # networks connected; peers behind a symmetric NAT need a TURN relay, which is bandwidth an operator pays
   # for, so it is configured here rather than assumed. Credentials belong in 11-secrets.
