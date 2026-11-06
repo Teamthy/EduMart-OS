@@ -310,7 +310,9 @@ build ─► push ─► pull back BY DIGEST ─► docker run ─► GET /ready
 An upload that returns 201 proves the registry accepted bytes. Starting the image *from the registry*, by the
 digest a rollout would pin to, and waiting for its own readiness endpoint to answer, is the claim: **the bytes in
 the registry are a working API and a working web server.** A second job fails the run if `infra/k8s` references an
-image this workflow does not publish, so `ImagePullBackOff` on a Monday is caught on the Friday before.
+image in `infra/k8s/base` that this workflow does not publish, so `ImagePullBackOff` on a Monday is caught on
+the Friday before. (An overlay may name a fixture image — the rehearsal's PostgreSQL — because that is not a
+deployment of this product; it still has to pin a tag.)
 
 **The cluster.** `scripts/cluster-rehearsal.py` creates a `kind` cluster, builds both images, loads them, applies
 `infra/k8s/overlays/staging`, and then checks the things only a cluster can answer:
@@ -324,6 +326,21 @@ image this workflow does not publish, so `ImagePullBackOff` on a Monday is caugh
 | Port-forwards the API Service | `/readyz` answers with `checks: database, migrations` — through the Service, not around it |
 | Port-forwards the web Service and requests `/`, `/v1/subjects`, an unknown exam code | The web container serves pages and reaches the API **by Service name**; a proxied 404 is the API's 404 |
 | `rollout restart`, sampled every two seconds | The Service never drops to zero ready endpoints and the proxied request keeps answering |
+
+The first five runs of that job failed. Every one of those failures was worth having:
+
+| Failure | What it actually was |
+| --- | --- |
+| `kubectl apply -k` refused the overlay | Kustomize will not let an overlay list base *files* above its own root, and will not let a base *contain* its overlays. The layout is now `infra/k8s/base` beside `infra/k8s/overlays`, and both files say why |
+| All three API replicas NotReady | The API refuses to start when its media directory is unwritable; a `hostPath` volume is root-owned and kubelet does not apply `fsGroup` to it. The overlay mounts an `emptyDir` with `fsGroup: 10001` and says so |
+| NotReady again, with `/readyz` listing pending migrations | **A real defect, not a rehearsal artefact**: `-migrate-only` honoured `EDUMART_MIGRATE_ON_BOOT=false` — the setting a fleet uses — so the migration Job opened the database, declined to migrate, found its own work pending and exited 1. A migration job that cannot migrate. Fixed, with tests, in `apps/api/cmd/api/main.go` |
+| Two checks red on a healthy cluster | The checks were wrong: `== 3` ready replicas during a rolling update's surge, and a manifest rule that assumed every image under `infra/k8s` was ours |
+
+The second and fourth are the reason not to loosen a check until it is green. The third is the reason to run
+the manifests at all: no unit test, `--dry-run` or rendered YAML would have found it, because every object was
+valid and the failure was in what the objects did together. From `0a82d25` the whole job is green — 32 check
+runs across 18 checks on the pull request, including both publish jobs, the cluster rehearsal and the Vercel
+deployment.
 
 A fifth substitution is stated where it happens rather than here: the API Deployment mounts an `emptyDir` instead
 of the claim in the overlay, with `fsGroup: 10001`, because a `hostPath` cannot be made writable for a non-root
@@ -446,7 +463,8 @@ will be, and each step is either proven or marked.
   bytes work, so the bytes are what gets run. Still missing: image signing (cosign), an SBOM, a vulnerability
   scan, and a promotion policy. Today `main`, `sha-<short>`, `pr-<n>` and `v*` tags exist; only `v*` should ever
   reach production, and nothing enforces that yet.
-- **A cluster, rehearsed — with four named blind spots.** `infra/k8s` is applied on every pull request by
+- **A cluster, rehearsed — with four named blind spots.** `infra/k8s/overlays/staging` (built from
+  `infra/k8s/base`) is applied on every pull request by
   `scripts/cluster-rehearsal.py` into `infra/k8s/overlays/staging`: Pod Security `restricted` admits the pods,
   the migration Job completes, three API replicas pass `/readyz` (database **and** schema), two web replicas
   serve a page and proxy `/v1` by Service name, the media claim binds, and a restarted replica is replaced
