@@ -556,7 +556,14 @@ jobs:
         # is a real check and not a formality — kubectl parses and decodes with the Kubernetes schema, so a
         # field in the wrong place or a wrong type is caught here and not at 2am during a deploy.
         run: |
-          /tmp/kubectl create --dry-run=client --validate=false -o name -f infra/k8s/ 2>&1 | tee /tmp/kubectl.out
+          # Every object file, one at a time: `kustomization.yaml` is a build instruction, not an object, and
+          # `kubectl create -f <dir>` would try to create it.
+          for manifest in infra/k8s/base/*.yaml; do
+            case "$manifest" in
+              */kustomization.yaml) continue ;;
+            esac
+            /tmp/kubectl create --dry-run=client --validate=false -o name -f "$manifest" 2>&1 | tee -a /tmp/kubectl.out
+          done
           count=$(grep -c . /tmp/kubectl.out)
           echo "$count object(s) accepted"
           test "$count" -ge 14 || (echo "expected every document to be accepted; got $count" >&2; exit 1)

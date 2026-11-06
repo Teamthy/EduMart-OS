@@ -32,11 +32,12 @@ kind: Kustomization
 
 namespace: edumart
 
-# The base is a directory, not a list of files, and that distinction is load-bearing: kustomize refuses a *file*
-# above the kustomization root (its load restrictor), and accepts a base directory. Referencing `../..` is what an
-# overlay in a subdirectory is for.
+# `base/` is a sibling of `overlays/`, not their parent, and that is not a preference. A base kustomization that
+# *contains* its overlays makes kustomize refuse to render — "cycle detected: candidate root … contains visited
+# root" — and a base whose files are named individually from here trips the load restrictor ("file … is not in or
+# below …"). `base/` next to `overlays/` is the layout that satisfies both.
 resources:
-  - ../..
+  - ../../base
   - postgres.yaml
   - postgres-netpol.yaml
   - secrets-staging.yaml

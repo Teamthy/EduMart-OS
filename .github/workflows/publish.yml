@@ -179,7 +179,7 @@ jobs:
 
           published = {"edumart-api", "edumart-web"}
           references = set()
-          for path in Path("infra/k8s").glob("*.yaml"):
+          for path in Path("infra/k8s").rglob("*.yaml"):
               for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", path.read_text(), re.M):
                   references.add(match.group(1))
           problems = []

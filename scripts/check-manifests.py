@@ -39,7 +39,9 @@ import tempfile
 import yaml
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DIR = os.path.join(REPO, "infra", "k8s")
+DEFAULT_DIR = os.path.join(REPO, "infra", "k8s", "base")
+OVERLAY_ROOT = os.path.join(REPO, "infra", "k8s", "overlays")
+REPO_K8S = os.path.join(REPO, "infra", "k8s")
 API_DIR = os.path.join(REPO, "apps", "api")
 WEB_DIR = os.path.join(REPO, "apps", "web")
 
@@ -700,9 +702,11 @@ def self_test(directory: str) -> int:
     for description, transform in overlay_faults:
         tree = tempfile.mkdtemp(prefix="edumart-overlay-")
         try:
-            base = os.path.join(tree, "k8s")
-            shutil.copytree(directory, base)
-            overlay = os.path.join(base, "overlays", "staging")
+            # The real tree, copied whole, so the overlay's relative path to the base is the one under test.
+            root = os.path.join(tree, "k8s")
+            shutil.copytree(REPO_K8S, root)
+            base = os.path.join(root, "base")
+            overlay = os.path.join(root, "overlays", "staging")
             path = os.path.join(overlay, "kustomization.yaml")
             with open(path) as handle:
                 kustomization = yaml.safe_load(handle)
@@ -878,9 +882,35 @@ def check_overlay(base_dir: str, overlay_dir: str) -> Violations:
     return out
 
 
+def check_base_coverage(directory: str) -> Violations:
+    """Every object file in the base must be listed in its kustomization.
+
+    A file that sits in `base/` and is not listed is a manifest nobody applies: it looks like part of the
+    deployment, is reviewed as part of it, and has no effect. The example Secret is the one deliberate exception —
+    it is a description of a Secret to be created by hand, and listing it would apply `REPLACE_ME` placeholders.
+    """
+    out = Violations()
+    kustomization_path = os.path.join(directory, "kustomization.yaml")
+    if not os.path.exists(kustomization_path):
+        out.add("coverage", f"{directory} has no kustomization.yaml, so nothing can be patched or listed")
+        return out
+    with open(kustomization_path) as handle:
+        listed = set((yaml.safe_load(handle) or {}).get("resources", []) or [])
+    for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
+        name = os.path.basename(path)
+        if name in ("kustomization.yaml", "11-secrets.example.yaml"):
+            continue
+        if name not in listed:
+            out.add("coverage", f"{name} is in the base but not in its kustomization, so it is never applied")
+    for resource in sorted(listed):
+        if not os.path.exists(os.path.join(directory, resource)):
+            out.add("coverage", f"kustomization lists {resource}, which does not exist")
+    return out
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Check the deployment manifests against the application.")
-    parser.add_argument("--dir", default=DEFAULT_DIR)
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="The base manifests (default: infra/k8s/base).")
     parser.add_argument("--self-test", action="store_true", help="break the manifests and require each check to fire")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--overlay", action="append", default=[],
@@ -891,10 +921,11 @@ def main(argv: list[str]) -> int:
         return self_test(args.dir)
 
     violations, manifests = run_checks(args.dir)
+    for check_name, message in check_base_coverage(args.dir).items:
+        violations.add(check_name, message)
 
     overlays = args.overlay or [
-        os.path.dirname(path)
-        for path in sorted(glob.glob(os.path.join(args.dir, "overlays", "*", "kustomization.yaml")))
+        os.path.dirname(path) for path in sorted(glob.glob(os.path.join(OVERLAY_ROOT, "*", "kustomization.yaml")))
     ]
     for overlay in overlays:
         for check_name, message in check_overlay(args.dir, overlay).items:

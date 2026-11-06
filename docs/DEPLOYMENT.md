@@ -225,7 +225,7 @@ scanning.** See "What is still missing" at the end of this document for the full
 
 ## The deployment manifests
 
-`infra/k8s/` is the deployment described as objects rather than prose: a namespace with Pod Security
+`infra/k8s/base/` is the deployment described as objects rather than prose (`overlays/` is where an environment says what it changes): a namespace with Pod Security
 Admission set to `restricted`, a ConfigMap, a Secret *shape*, the migration Job, the API Deployment and
 Service, the web Deployment and Service, an Ingress with TLS, PodDisruptionBudgets, and a default-deny
 NetworkPolicy with three permitted flows.
@@ -364,7 +364,7 @@ points at. With that variable unset, the deployment still renders: public pages 
 "signed out" (`getCurrentUser` returns `null` for a transport failure, tested in
 `apps/web/tests/session.test.ts`) and every `/v1/*` call answers `503` with the proxy's own error envelope.
 Sign-in, signup, wallet, classes and exams all need a real API host — a VPS, Fly, Render, or the k8s
-manifests in `infra/k8s`.
+manifests in `infra/k8s/base`.
 
 ### What the first production deployment showed
 
