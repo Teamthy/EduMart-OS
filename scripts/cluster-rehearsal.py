@@ -257,8 +257,19 @@ def main() -> int:
             proxied = json.loads(body)
         except ValueError:
             proxied = {}
-        check(isinstance(proxied.get("subjects"), list) and len(proxied["subjects"]) > 0,
-              "the proxied response is the API's own (a real subject list)")
+        # The catalogue is empty and that is correct: the base configuration sets EDUMART_SEED=false, because a
+        # deployment that seeds demo content into a production database is a deployment that rewrites production
+        # data on every rollout. So the check is about *shape and identity* — the proxy returns the API's document,
+        # not an error page or the web app's HTML — and it is compared with what the API answers directly, by
+        # Service name, rather than with a fixture the database does not contain.
+        direct_status, direct_body = http_get("http://127.0.0.1:18080/v1/subjects")
+        try:
+            direct = json.loads(direct_body)
+        except ValueError:
+            direct = None
+        check(isinstance(proxied.get("subjects"), list) and direct_status == 200 and direct == proxied,
+              f"the proxied response is the API's own (a subject list, "
+              f"{len(proxied.get('subjects') or [])} item(s), identical to the API's direct answer)")
         status, _ = http_get("http://127.0.0.1:13000/v1/exams/link/AAAAAAAABBBBBBBB")
         check(status == 404, f"an unknown exam code is a 404 through the proxy too ({status})")
 
