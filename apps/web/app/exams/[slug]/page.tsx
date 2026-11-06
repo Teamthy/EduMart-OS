@@ -11,7 +11,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ServerApiError, serverFetch } from "@/lib/server-api";
 import { getCurrentUser } from "@/lib/session";
 import type { Exam } from "@/lib/live-api";
-import { ExamResults, ExamRoom } from "./room";
+import { ExamProctorDesk } from "./proctor";
+import { ExamRoom, ExamResults } from "./room";
 
 export const metadata: Metadata = { title: "Sitting" };
 export const dynamic = "force-dynamic";
@@ -83,7 +84,10 @@ export default async function ExamPage({ params }: { params: Promise<{ slug: str
 
       {mine ? (
         mine.role === "host" ? (
-          <ExamResults exam={mine} />
+          <>
+            <ExamProctorDesk exam={mine} />
+            <ExamResults exam={mine} />
+          </>
         ) : (
           <ExamRoom exam={mine} />
         )

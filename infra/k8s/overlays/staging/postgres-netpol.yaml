@@ -1,0 +1,35 @@
+# The rehearsal's database would be unreachable without this, and the failure would look like a broken API.
+#
+# `70-networkpolicy.yaml` opens with a default-deny that selects **every** pod in the namespace. The base's allow
+# rules cover the API (from the web proxy and from monitoring) and the web app (from the ingress controller), because
+# in production PostgreSQL is a managed service outside the cluster and needs no rule here. The rehearsal puts a
+# PostgreSQL *inside* the namespace, so it inherits the deny and nothing permits the API to reach it — on a CNI that
+# enforces policy, the migration Job fails to connect and every replica reports a database it cannot see.
+#
+# Found by reading the policies against the overlay rather than by running it: `kind`'s default CNI accepts network
+# policies and does not enforce them, which is one of the four blind spots the overlay names. That is exactly why it
+# is worth stating the rule even though the rehearsal cannot prove it works.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-api
+  namespace: edumart
+  labels:
+    edumart.ng/role: rehearsal-fixture
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-staging
+  policyTypes: ["Ingress"]
+  ingress:
+    # The API replicas and the migration Job: both run the API image, both hold the DSN.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: edumart-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: edumart-migrate
+      ports:
+        - protocol: TCP
+          port: 5432

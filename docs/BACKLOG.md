@@ -48,10 +48,12 @@ is a change, not a rewrite.
     no search inside the question bank — and the corpus is under 100 documents, so nothing is known about
     behaviour against a production syllabus.
 
-13. **A hosting target and a staging environment.** Deploy and rollback are rehearsed against real binaries
-    and a real PostgreSQL database, but nothing has ever been *deployed to a host*: no container image, no
-    DNS, TLS, load balancer, secrets management, or rolling restart with two replicas in flight. Replicas
-    also still migrate on boot, so `-migrate-only` gives the right order without removing the race.
+13. **A hosting target and a staging environment.** Images are published to `ghcr.io` and pulled back to prove
+    they run, and the manifests are applied to a real `kind` cluster on every pull request — so the deployment
+    objects are no longer unproven. What is still missing is a *hosted* environment: no DNS, TLS certificate,
+    ingress controller, load balancer, secrets manager, or autoscaling, and the `kind` rehearsal's CNI does not
+    enforce the NetworkPolicies nor its storage class real `ReadWriteMany`. Replicas also still migrate on boot,
+    so `-migrate-only` gives the right order without removing the race.
 
 ## P2 — growth and polish
 

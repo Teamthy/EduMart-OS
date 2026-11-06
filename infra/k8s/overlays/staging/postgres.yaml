@@ -1,0 +1,91 @@
+# The staging database.
+#
+# Production runs PostgreSQL as a managed service — that is a deployment decision, and a manifest for it here would
+# be a fiction about who operates it. The rehearsal needs a *real* PostgreSQL in the cluster, though, because half
+# of what is being proved (the migration Job, `/readyz`, the readiness gate) is only meaningful against one. So this
+# is a single replica with an emptyDir and no backup, labelled for what it is: a fixture, not a data store.
+#
+# It is placed on the cluster's internal network only: there is no Service type but ClusterIP, and the
+# default-deny policy in `70-networkpolicy.yaml` is what would keep anything else out on a CNI that enforces it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-staging
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: postgres-staging
+    app.kubernetes.io/part-of: edumart
+    edumart.ng/role: rehearsal-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-staging
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-staging
+        app.kubernetes.io/part-of: edumart
+    spec:
+      # `restricted` Pod Security is enforced on this namespace, so even the fixture has to be written properly:
+      # the PostgreSQL image already runs as uid 70, and it needs a writable data directory, so nothing here
+      # contradicts the profile.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: edumart
+            - name: POSTGRES_USER
+              value: edumart
+            # No password, and that is the point rather than an oversight: this fixture exists for one CI run, it
+            # is reachable only inside the rehearsal namespace, and nothing in it is worth protecting. A committed
+            # password would be one this repository's own secret scanner rejects — correctly — and a password
+            # injected from a real Secret would be a credential in a fixture that is deleted at the end of the job.
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "edumart", "-d", "edumart"]
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-staging
+  namespace: edumart
+  labels:
+    app.kubernetes.io/name: postgres-staging
+    app.kubernetes.io/part-of: edumart
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-staging
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

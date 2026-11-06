@@ -658,12 +658,6 @@ paths:
         Revoking the current session is allowed and ends it.
       operationId: revokeSession
       parameters:
-    ExamId:
-      name: id
-      in: path
-      required: true
-      description: The exam id or its 16-character code.
-      schema: { type: string }
         - name: id
           in: path
           required: true
@@ -1111,6 +1105,61 @@ paths:
         "400": { $ref: "#/components/responses/ValidationError" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/assessment-sessions/{id}/warnings:
+    get:
+      tags: [assessment]
+      summary: Warnings a proctor has sent to the caller's attempt
+      description: |
+        The runner polls this while the paper is open. `unread` counts warnings whose acknowledgement has not
+        arrived, which is how a proctor's console knows that a message was delivered to a tab somebody had
+        left. Only the attempt's own owner may read it: a `403` for anybody else, including the host.
+      operationId: sessionWarnings
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Warnings, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unread: { type: integer }
+                  warnings:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProctorWarning" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/assessment-sessions/{id}/warnings/{warningId}/acknowledge:
+    post:
+      tags: [assessment]
+      summary: Record that a warning was put in front of the candidate
+      description: |
+        Idempotent, and it never overwrites: the first acknowledgement is the fact and a second call returns the
+        same instant. This is the only thing that makes a warning more than a row — the proctor's console stops
+        showing it as unread, and a warning that stays unread is itself information about a tab that was away.
+      operationId: acknowledgeWarning
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: warningId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The acknowledged warning
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warning: { $ref: "#/components/schemas/ProctorWarning" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/organizations:
     get:
@@ -3713,6 +3762,174 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/exams/{id}/proctor:
+    get:
+      tags: [exams]
+      summary: The proctor's desk — every attempt in the sitting, while it is open
+      description: |
+        Host only. One row per attempt: who they are, how many questions they have answered, how long the server
+        would still accept an answer for, what their own browser has reported about attention, when the server
+        last heard from them, and whether the proctor has already spoken to them. Six queries regardless of how
+        many candidates are sitting, because a fifty-seat sitting that costs fifty queries per poll is a console
+        nobody can leave open.
+
+        What it is not: video proctoring, and not identity verification. A sitting has no media session, so
+        nothing here can say who is at the keyboard. It shows what the candidate's browser reported and what the
+        server recorded, side by side, and leaves the judgement to the person sitting in front of it.
+      operationId: proctorDesk
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      responses:
+        "200":
+          description: The sitting, its candidates, and the intervention log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sitting: { $ref: "#/components/schemas/ProctorSitting" }
+                  candidates:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProctorCandidate" }
+                  actions:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProctorAction" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/exams/{id}/proctor/warnings:
+    post:
+      tags: [exams]
+      summary: Send a proctor's warning to one or more candidates
+      description: |
+        The candidate sees it as a banner in the runner and acknowledges it, and the acknowledgement is what
+        moves it out of the console's unread count.
+
+        Three kinds exist, and two of them are composed by the server from what it already recorded:
+        `attention` cites the attempt's own signal count, `time` cites the server's remaining seconds, and
+        `notice` carries the host's words (3–250 characters). A warning cannot therefore assert a fact no table
+        supports, and it is issued to explicit session ids rather than broadcast — a list somebody had to build.
+
+        Refused: a kind outside the three (`400`), a notice without words (`400`), an attempt belonging to a
+        different sitting (`404`), and an attempt that is already closed (`409`) — a warning that arrives after
+        the paper has been handed in is not proctoring.
+      operationId: issueProctorWarnings
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionIds]
+              properties:
+                sessionIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items: { type: string }
+                kind: { type: string, enum: [attention, time, notice], default: notice }
+                note: { type: string, minLength: 3, maxLength: 250, description: Required for `notice`. }
+      responses:
+        "201":
+          description: Issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issued: { type: integer }
+                  warnings:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProctorWarning" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/exams/{id}/proctor/void:
+    post:
+      tags: [exams]
+      summary: Annul an attempt during the sitting
+      description: |
+        Sets the attempt's status to `voided` — a terminal state of its own, not `cancelled`: an annulled attempt
+        is a different fact from one the candidate walked away from, and the host's report keeps showing it.
+        Answers, integrity signals and submissions are refused afterwards by the assessment engine, not by
+        this endpoint's opinion.
+
+        A reason (3–250 characters) is required: an unexplained void is a decision nobody can review. The actor
+        and the reason are written to `exam_proctor_actions` and to the audit log.
+
+        Only an attempt still in progress can be annulled. A submitted paper already has a score, and erasing one
+        is a different operation this API does not offer (`409`).
+      operationId: voidExamAttempt
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, reason]
+              properties:
+                sessionId: { type: string }
+                reason: { type: string, minLength: 3, maxLength: 250 }
+      responses:
+        "200":
+          description: The annulled attempt as the desk now sees it
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidate: { $ref: "#/components/schemas/ProctorCandidate" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/exams/{id}/proctor/reopen:
+    post:
+      tags: [exams]
+      summary: Undo a void, while the sitting is still open
+      description: |
+        A proctor who annuls the wrong paper needs a way back that leaves a record, so reopening is a logged
+        intervention rather than a delete. Refused when the sitting has closed or the attempt's own deadline has
+        passed — reopening into a window that has shut would produce an attempt nobody can answer (`409`), and
+        the proctor should read the real reason. Un-submitting is not offered: only a voided attempt can reopen.
+      operationId: reopenExamAttempt
+      parameters:
+        - $ref: "#/components/parameters/ExamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: string }
+                reason: { type: string, maxLength: 250 }
+      responses:
+        "200":
+          description: The reopened attempt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidate: { $ref: "#/components/schemas/ProctorCandidate" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   # ── consistency ──────────────────────────────────────────────────────────────────────────────
   #
   # A streak is derived, never counted. It is computed from the activity the rest of the system already records
@@ -3754,6 +3971,12 @@ components:
       scheme: bearer
 
   parameters:
+    ExamId:
+      name: id
+      in: path
+      required: true
+      description: The exam id or its 16-character code.
+      schema: { type: string }
     VirtualClassId:
       name: id
       in: path
@@ -4255,7 +4478,7 @@ components:
         id: { type: string }
         slug:
           type: string
-          description: 16 characters from an alphabet without ambiguous letters. Rotating it is not supported on purpose: a link sent to forty learners must keep working.
+          description: "16 characters from an alphabet without ambiguous letters. Rotating it is not supported on purpose: a link sent to forty learners must keep working."
         title: { type: string }
         description: { type: string }
         subjectId: { type: [string, "null"] }
@@ -4317,7 +4540,7 @@ components:
           minimum: 15
           maximum: 480
           default: 45
-          description: A free class (`creditsCost: 0`) is capped at 45 minutes; longer sessions must be priced.
+          description: "A free class (`creditsCost: 0`) is capped at 45 minutes; longer sessions must be priced."
 
     Topup:
       type: object
@@ -4477,6 +4700,77 @@ components:
         scoreRaw: { type: integer, nullable: true }
         scoreMax: { type: integer, nullable: true }
         remainingSeconds: { type: integer }
+    ProctorWarning:
+      type: object
+      properties:
+        id: { type: string }
+        sessionId: { type: string }
+        kind: { type: string, enum: [attention, time, notice] }
+        note: { type: string, description: What the candidate reads. Composed by the server for attention/time. }
+        issuedAt: { type: string }
+        acknowledgedAt:
+          type: string
+          nullable: true
+          description: NULL until the candidate's browser reports it was shown.
+    ProctorCandidate:
+      type: object
+      properties:
+        sessionId: { type: string }
+        userId: { type: string }
+        displayName: { type: string }
+        status: { type: string, enum: [in_progress, submitted, expired, cancelled, voided] }
+        startedAt: { type: string }
+        deadlineAt: { type: string }
+        submittedAt: { type: string, nullable: true }
+        remainingSeconds: { type: integer }
+        answered: { type: integer }
+        questions: { type: integer }
+        integrity:
+          type: object
+          properties:
+            signals: { type: integer }
+            focusLost: { type: integer }
+            pasted: { type: integer }
+            copied: { type: integer }
+            lastAt: { type: string, nullable: true }
+        lastSeenAt:
+          type: string
+          nullable: true
+          description: The latest of the last saved answer, the last reported signal, and the start.
+        warnings: { type: integer }
+        unreadWarnings: { type: integer }
+        lastWarning:
+          allOf:
+            - $ref: "#/components/schemas/ProctorWarning"
+          nullable: true
+        voidReason: { type: string, nullable: true }
+        voidedBy: { type: string, nullable: true }
+    ProctorSitting:
+      type: object
+      properties:
+        examId: { type: string }
+        title: { type: string }
+        slug: { type: string }
+        open: { type: boolean }
+        startsAt: { type: string }
+        endsAt: { type: string }
+        secondsUntilClose: { type: integer }
+        serverTime: { type: string, description: So a console open for an hour shows the sitting's clock. }
+        candidates: { type: integer }
+        inProgress: { type: integer }
+        submitted: { type: integer }
+        voided: { type: integer }
+        flagged: { type: integer, description: Attempts with at least one signal. Evidence, not a verdict. }
+        unreadWarnings: { type: integer }
+    ProctorAction:
+      type: object
+      properties:
+        id: { type: string }
+        sessionId: { type: string }
+        action: { type: string, enum: [warn, void, reopen] }
+        reason: { type: string }
+        actorName: { type: string }
+        occurredAt: { type: string }
     Consistency:
       type: object
       properties:

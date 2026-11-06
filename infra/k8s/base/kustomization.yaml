@@ -1,0 +1,20 @@
+# The production base, as a kustomization rather than a directory of loose files.
+#
+# `kubectl apply -k infra/k8s/base/` is the production apply: everything except the Secret, which
+# `11-secrets.example.yaml` deliberately only describes. A real cluster gets its Secret out of band, as that file's
+# own header explains — which is why it sits in this directory but not in the list below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 15-media-pvc.yaml
+  - 20-migration-job.yaml
+  - 30-api-deployment.yaml
+  - 31-api-service.yaml
+  - 40-web-deployment.yaml
+  - 41-web-service.yaml
+  - 50-ingress.yaml
+  - 60-pdb.yaml
+  - 70-networkpolicy.yaml

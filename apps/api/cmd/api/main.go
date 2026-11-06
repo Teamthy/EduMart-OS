@@ -71,7 +71,7 @@ func main() {
 	// Migrations are a deployment step, not a startup side effect, once there is a fleet. Replicas set
 	// EDUMART_MIGRATE_ON_BOOT=false and a job runs `api -migrate-only` first; the capability stays on by
 	// default because a single-instance deployment (and every developer, and every test) wants one command.
-	migrateOnBoot := env("EDUMART_MIGRATE_ON_BOOT", "true") == "true"
+	migrateOnBoot := migrateOnBootFor(*migrateOnly)
 	db, err := store.OpenWith(driver, dsn, store.Options{MigrateOnBoot: &migrateOnBoot})
 	if err != nil {
 		logger.Error("database unavailable", "error", err.Error())
@@ -499,6 +499,24 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// migrateOnBootFor decides whether opening the database also applies pending migrations.
+//
+// `-migrate-only` forces it on, and that is not a convenience. A fleet deployment sets
+// EDUMART_MIGRATE_ON_BOOT=false so that replicas never race each other through a schema change, and then runs a
+// Job with `-migrate-only` to do the migrating. If the flag honoured the setting, the Job would open the database,
+// decline to migrate, find the migrations it was asked to apply still pending, and exit 1 — a migration job that
+// cannot migrate, failing a rollout with a message that reads like a missing step somewhere else.
+//
+// The rehearsal found this: three API replicas never became Ready because `/readyz` truthfully reported pending
+// migrations, and the Job that was supposed to clear them had "completed" only in the sense that Kubernetes had
+// recorded its failure.
+func migrateOnBootFor(migrateOnly bool) bool {
+	if migrateOnly {
+		return true
+	}
+	return env("EDUMART_MIGRATE_ON_BOOT", "true") == "true"
 }
 
 func env(key, fallback string) string {

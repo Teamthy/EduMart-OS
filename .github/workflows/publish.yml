@@ -1,0 +1,219 @@
+# Publish the two images to a registry, then run what was published.
+#
+# `infra/k8s` points at `ghcr.io/teamthy/edumart-api` and `ghcr.io/teamthy/edumart-web`. For a long time nothing
+# in this repository pushed there: the deployment referenced images that only existed once somebody built them on
+# their laptop. This workflow is what makes the reference real, and it takes the claim one step further than
+# pushing — **every published image is pulled back by digest and started**. A registry upload that succeeds is not
+# evidence that the bytes in it work; a container that reaches `/readyz` after being pulled *from the registry* is.
+#
+# Why GHCR and not a private registry: it needs no credential in this repository. `GITHUB_TOKEN` can write packages
+# for its own repository, so there is no long-lived push secret to leak, rotate or forget.
+#
+# Tags, and what each one is for:
+#
+#   * `v1.2.3`           — from `git tag v1.2.3`. Immutable, and the only tag a production rollout should use.
+#   * `main`             — the head of main. Convenient, mutable, never for production.
+#   * `sha-<7 chars>`    — the same commit, addressable forever. What a rollback pins to.
+#   * `pr-<n>`           — a pull request's build, so this pipeline is exercised before it is needed.
+name: Publish
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  # On every pull request too, which is what keeps this pipeline from being discovered after a merge. A pull
+  # request from this repository publishes `pr-<n>` tags and runs them back out of the registry; a pull request
+  # from a fork builds both images and stops there, because a fork's token cannot write to this repository's
+  # packages and it should not be able to.
+  pull_request:
+  # Also on demand, so a release can be republished after a registry outage without inventing a commit.
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: Publish and run ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            context: apps/api
+            dockerfile: apps/api/Dockerfile
+            port: 8080
+            # The probe is the container's own readiness endpoint. The API image migrates at boot on SQLite, so
+            # this needs a DSN and nothing else.
+            health: /readyz
+            run_env: >-
+              -e EDUMART_DSN=/tmp/published.db -e EDUMART_SEED=true -e EDUMART_ENV=production
+              -e EDUMART_NOTIFY=log -e EDUMART_ALLOWED_ORIGINS=http://localhost:3000
+          - image: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+            port: 3000
+            # A static file, not a page: the check is that this container serves, not that some other service it
+            # depends on happens to be up.
+            health: /manifest.webmanifest
+            run_env: >-
+              -e EDUMART_API_URL=http://127.0.0.1:9 -e NODE_ENV=production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        # `docker/build-push-action` otherwise uses the default docker driver, which cannot export a cache:
+        # "Cache export is not supported for the docker driver". The cache is what keeps a warm rebuild of both
+        # images under a minute, so it is worth the extra step.
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the registry path
+        id: ref
+        # GHCR paths are lower case: the registry rejects `ghcr.io/Teamthy/…`, and `docker/metadata-action` has
+        # already lower-cased the name it pushed to. Deriving the same string here is what makes the pull-back
+        # steps reference the image that was actually published rather than a 404.
+        run: |
+          echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGISTRY }}/$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/edumart-${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+
+      - name: Work out the tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ref.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Can this run publish?
+        # `GITHUB_TOKEN` can write packages for its own repository and cannot for a fork's pull request.
+        id: can-publish
+        run: echo "value=${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ steps.can-publish.outputs.value == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=sha-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+      - name: The image in the registry is not root
+        if: steps.can-publish.outputs.value == 'true'
+        run: |
+          reference="${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
+          docker pull "$reference"
+          user=$(docker image inspect "$reference" --format '{{.Config.User}}')
+          echo "user: ${user:-root}"
+          test -n "$user" && test "$user" != "root" && test "$user" != "0"
+
+      - name: Pull it back by digest and run it
+        if: steps.can-publish.outputs.value == 'true'
+        # This is the part that makes "published" a fact rather than an upload. The digest is what a rollout would
+        # pin to, so the digest is what is started — not a tag that might have moved in the meantime.
+        run: |
+          reference="${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
+          docker run -d --name published --network host ${{ matrix.run_env }} "$reference"
+          for attempt in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${{ matrix.port }}${{ matrix.health }}" > /tmp/health.out; then
+              echo "the published ${{ matrix.image }} image answers ${{ matrix.health }}"
+              head -c 400 /tmp/health.out; echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the published image never answered ${{ matrix.health }}:"
+          docker logs published || true
+          exit 1
+
+      - name: Report what was published
+        if: steps.can-publish.outputs.value == 'true'
+        run: |
+          {
+            echo "### edumart-${{ matrix.image }}"
+            echo
+            echo '```'
+            echo "${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A deployment is only pinned to something if the tag in the manifests is one this workflow produces. This job
+  # makes the failure visible at publish time rather than at 3am with `ImagePullBackOff`.
+  manifest-tag:
+    name: The manifests point at images this workflow publishes
+    runs-on: ubuntu-latest
+    needs: [images]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every image the production manifests name was published by this run
+        # `infra/k8s/base` is production and is held to the strict rule: every image there is one this workflow
+        # publishes, and every reference carries a tag, because a rollout must pin something immutable.
+        #
+        # `infra/k8s/overlays` is not. The staging overlay deliberately names a fixture image — a PostgreSQL that
+        # lives and dies with the rehearsal cluster — and holding it to "published by this workflow" would mean
+        # either lying in the check or not rehearsing against a real database. An overlay is still required to pin
+        # a tag.
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          published = {"edumart-api", "edumart-web"}
+          problems = []
+
+          def references(directory):
+              found = set()
+              for path in sorted(Path(directory).rglob("*.yaml")):
+                  for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", path.read_text(), re.M):
+                      found.add(match.group(1))
+              return found
+
+          production = references("infra/k8s/base")
+          for reference in sorted(production):
+              name = reference.rsplit(":", 1)[0].rsplit("/", 1)[-1]
+              if name not in published:
+                  problems.append(f"{reference} is in the production manifests but is not an image this workflow publishes")
+              if ":" not in reference.rsplit("/", 1)[-1]:
+                  problems.append(f"{reference} has no immutable tag; a rollout must pin one")
+
+          rehearsal = references("infra/k8s/overlays") - production
+          for reference in sorted(rehearsal):
+              if ":" not in reference.rsplit("/", 1)[-1]:
+                  problems.append(f"{reference} is an overlay image with no tag, so the rehearsal is not reproducible")
+
+          if problems:
+              raise SystemExit("\n".join(problems))
+          print(f"{len(production)} production image reference(s), all published by this workflow:")
+          for reference in sorted(production):
+              print("  ", reference)
+          if rehearsal:
+              print("overlay-only image(s), fixtures rather than deployments of this product:")
+              for reference in sorted(rehearsal):
+                  print("  ", reference)
+          PY

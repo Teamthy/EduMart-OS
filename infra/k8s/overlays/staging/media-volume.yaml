@@ -1,0 +1,25 @@
+# The volume the rehearsed PVC binds to.
+#
+# `hostPath`, on purpose and with the limitation stated: Kubernetes accepts the `ReadWriteMany` access mode on this
+# volume without enforcing it, and the cluster in the rehearsal is a single node, so every replica genuinely sees
+# the same directory. That is enough to prove the PVC binds and that a recording has somewhere to land — it is *not*
+# a demonstration of RWX semantics, which is a property of a storage class (NFS, EFS, Azure Files, CephFS) that this
+# environment does not have. `15-media-pvc.yaml` names the classes that do; the rehearsal says which claim it is not
+# making.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: edumart-media-staging
+  labels:
+    app.kubernetes.io/part-of: edumart
+    edumart.ng/role: rehearsal-fixture
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: staging-media
+  hostPath:
+    path: /var/lib/edumart-media-staging
+    type: DirectoryOrCreate
