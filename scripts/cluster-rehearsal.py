@@ -137,6 +137,9 @@ def diagnose() -> None:
                         "jsonpath={range .status.containerStatuses[*]}{.name}={.state}{'\n'}{end}",
                         check_status=False).stdout
         annotate(f"pod {pod.split('/')[-1]}", state, limit=4)
+    annotate("migration Job logs", kubectl(
+        "-n", "edumart", "logs", "job/edumart-migrate", "--all-containers=true", "--tail=30",
+        check_status=False).stdout, limit=15)
     logs = kubectl("-n", "edumart", "logs", "-l", "app.kubernetes.io/name=edumart-api", "--tail=12",
                    "--all-containers=true", check_status=False)
     annotate("edumart-api logs", logs.stdout + logs.stderr, limit=12)
@@ -188,11 +191,27 @@ def main() -> int:
             "-o", "jsonpath={.status.availableReplicas}", check_status=False).stdout.strip() == "1", 240),
             "the staging database is available")
 
+        # The database must accept a query, not just report a ready pod: `pg_isready` answers while the entrypoint
+        # is still creating roles, and a migration Job that arrives in that window fails once and — with
+        # `backoffLimit: 0` — stays failed.
+        accepts = wait_for("PostgreSQL to accept a query", lambda: kubectl(
+            "-n", "edumart", "exec", "deploy/postgres-staging", "--",
+            "psql", "-U", "edumart", "-d", "edumart", "-c", "select 1", check_status=False).returncode == 0, 240)
+        check(accepts, "the staging database accepts queries")
+
         kubectl("-n", "edumart", "delete", "job", "edumart-migrate", "--ignore-not-found")
         kubectl("apply", "-k", OVERLAY)
         job = kubectl("-n", "edumart", "wait", "--for=condition=complete", "job/edumart-migrate",
-                      "--timeout=240s", check_status=False)
+                      "--timeout=300s", check_status=False)
         check(job.returncode == 0, "the migration Job completed (schema matches the binary)")
+        if job.returncode != 0:
+            # The Job's own account of itself: which migration it died on is the whole answer, and it is not
+            # visible anywhere else.
+            annotate("migration Job logs", kubectl(
+                "-n", "edumart", "logs", "job/edumart-migrate", "--all-containers=true", "--tail=40",
+                check_status=False).stdout, limit=20)
+            annotate("migration Job state", kubectl(
+                "-n", "edumart", "describe", "job/edumart-migrate", check_status=False).stdout, limit=12)
 
         api = kubectl("-n", "edumart", "rollout", "status", "deployment/edumart-api", "--timeout=300s",
                       check_status=False)
