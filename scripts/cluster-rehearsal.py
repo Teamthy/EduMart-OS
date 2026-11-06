@@ -249,6 +249,10 @@ def main() -> int:
         print(f"{len(FAILURES)} check(s) failed:")
         for failure in FAILURES:
             print(f"  - {failure}")
+            # A workflow command, so each failed check arrives as an annotation on the pull request. The full
+            # cluster state is in the artifact this job uploads on failure; the annotation is what somebody
+            # actually reads.
+            print(f"::error title=Cluster rehearsal::{failure}")
         return 1
     print("cluster rehearsal verified")
     return 0

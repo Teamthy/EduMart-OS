@@ -55,7 +55,10 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            python3 scripts/ci-annotate.py /tmp/sqlite-test.log
+            # From the job's working directory (`apps/api`), the reporter lives one level up. This path was
+            # wrong for months, and the consequence was that every SQLite failure arrived as "exit code 2"
+            # with no annotation attached — the least useful kind of red check.
+            python3 ../scripts/ci-annotate.py /tmp/sqlite-test.log
             exit "$status"
           fi
       - name: Test (PostgreSQL — the production engine)
