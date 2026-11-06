@@ -59,7 +59,7 @@ def run(args: list[str], *, check_status: bool = True, timeout: int = 600) -> su
         detail = (result.stdout[-1500:] + result.stderr[-1500:]).strip()
         print(f"::error title=Cluster rehearsal::{' '.join(args)} exited {result.returncode}")
         for line in detail.splitlines()[-12:]:
-            print(f"::error title=Cluster rehearsal output::{line}")
+            print(f"::warning title=Cluster rehearsal output::{line}")
         raise SystemExit(f"command failed ({result.returncode}): {' '.join(args)}")
     return result
 
@@ -115,10 +115,14 @@ def annotate(title: str, text: str, limit: int = 8) -> None:
 
     The full output stays in the log; this is what a person opening the pull request actually sees, and the log of a
     failed job is not always obtainable — which is how the first three runs of this job were debugged.
+
+    These are warnings, not errors, and that is deliberate: a check run keeps only the first ten error annotations.
+    Marking several log lines as errors filled that budget once, and the annotation that named the failed check —
+    emitted at the end — was silently dropped. The one annotation that must never be crowded out is the reason.
     """
     lines = [line for line in text.splitlines() if line.strip()][-limit:]
     for line in lines:
-        print(f"::error title={title}::{line[:900]}")
+        print(f"::warning title={title}::{line[:900]}")
 
 
 def diagnose() -> None:
@@ -292,6 +296,15 @@ def main() -> int:
     finally:
         for forward in forwards:
             forward.terminate()
+        if FAILURES:
+            # First, because a check run keeps only the first ten annotations and the diagnosis below produces
+            # dozens of lines of log. A red check whose annotation is the fifteenth line of an API log is a red
+            # check nobody can act on.
+            print()
+            print(f"{len(FAILURES)} check(s) failed:")
+            for failure in FAILURES:
+                print(f"  - {failure}")
+                print(f"::error title=Cluster rehearsal::{failure}")
         if FAILURES or FATAL:
             print()
             print("the cluster state at the point of failure:")
@@ -299,15 +312,7 @@ def main() -> int:
         if not args.keep:
             run(["kind", "delete", "cluster", "--name", args.cluster_name], check_status=False, timeout=300)
 
-    print()
     if FAILURES:
-        print(f"{len(FAILURES)} check(s) failed:")
-        for failure in FAILURES:
-            print(f"  - {failure}")
-            # A workflow command, so each failed check arrives as an annotation on the pull request. The full
-            # cluster state is in the artifact this job uploads on failure; the annotation is what somebody
-            # actually reads.
-            print(f"::error title=Cluster rehearsal::{failure}")
         return 1
     print("cluster rehearsal verified")
     return 0
