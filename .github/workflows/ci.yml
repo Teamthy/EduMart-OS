@@ -741,3 +741,40 @@ jobs:
       - name: Both container logs on failure
         if: failure()
         run: docker logs edumart-web || true; docker logs edumart-api || true
+
+  cluster:
+    name: Cluster rehearsal (kind)
+    runs-on: ubuntu-latest
+    # The deployment manifests have been checked and never applied for long enough. This job applies them to a real
+    # cluster, waits for the migration Job, three API replicas and two web replicas, and then asks for a page and an
+    # API response through the Services. It is slow by design: the alternative is claiming a deployment works because
+    # a YAML file parses.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kind
+        # Pinned: a rehearsal that changes shape when somebody else releases is not a rehearsal.
+        run: |
+          curl -fsSLo /tmp/kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+          kind version
+          kubectl version --client
+      - name: Apply the manifests to a real cluster and serve through them
+        run: python3 scripts/cluster-rehearsal.py
+      - name: Upload the cluster's own account of a failure
+        if: failure()
+        run: |
+          kubectl -n edumart get pods -o wide > /tmp/pods.txt 2>&1 || true
+          kubectl -n edumart describe pods > /tmp/describe.txt 2>&1 || true
+          kubectl -n edumart logs -l app.kubernetes.io/name=edumart-api --tail=200 > /tmp/api.log 2>&1 || true
+          kubectl -n edumart logs -l app.kubernetes.io/name=edumart-web --tail=200 > /tmp/web.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cluster-rehearsal-logs
+          path: |
+            /tmp/pods.txt
+            /tmp/describe.txt
+            /tmp/api.log
+            /tmp/web.log

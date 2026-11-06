@@ -35,7 +35,7 @@ survive.
 | 1 | Product specification | Partial | PRD exists; no recorded sign-off, no owners |
 | 2 | Architecture and standards | Partial | Boundaries and ADR-style notes exist; no formal ADR index |
 | 3 | Repository and developer environment | Done | — |
-| 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; and **the API ships as a tested, non-root container image**. **No hosting target, no staging environment, no orchestrator, no web-app image** |
+| 4 | Infrastructure and CI/CD | Partial | CI is real; **deploy and rollback are rehearsed on every PR**; **six replicas start together in CI** with migrations applied exactly once; **a rolling rollout, its abort, and its failure modes are rehearsed under live traffic**; **the API and web ship as tested, non-root container images** that are **published to a registry and pulled back by digest to prove they run**; and **the manifests are applied to a real `kind` cluster on every PR** — migration Job, three API replicas ready, two web replicas proxying `/v1` by Service name. **No hosted environment, no ingress controller or TLS in the rehearsal, no autoscaling, no multi-region** |
 | 5 | Database and persistence | Partial | Restore, backup strategy and **point-in-time recovery all demonstrated in CI**; scheduled dumps, retention, off-site mirroring and **alerting on a failed or unverified backup** are implemented and templated. No cross-region copy, no drill against production-sized data |
 | 6 | API platform and contracts | Done | 134 routes, contract checked in CI (every router path must be documented or the gate fails, and the spec itself must parse) |
 | 7 | Identity and account lifecycle | Partial | Verification, suspension, Argon2id, **rotating refresh tokens that both clients actually use**: a scoped `Path=/v1/auth` refresh cookie, a web middleware that renews an expired session before the page renders, single-flight native rotation, and sign-out that kills the chain from either credential. **TOTP two-factor authentication** (authenticator app, ten single-use recovery codes, replay-guarded codes, a five-minute half-finished sign-in). **No WebAuthn/passkeys, no IP/geo risk signals, no per-role requirement** |
@@ -129,9 +129,9 @@ clean install on every push.
 | Concurrent boot | **New.** A session-level advisory lock (PostgreSQL) or an flock (SQLite) serialises migrations across processes; six replicas start together in CI and every migration is recorded exactly once. Before this, **three of four replicas exited with status 1** on a fresh database |
 | Rollback | **Rehearsed on every pull request.** Previous release built from git, migrated forward, then rolled back onto the newer schema and proved to read the newer release's data |
 | Rolling rollout | **New.** `scripts/rollout-rehearsal.py` replaces a four-replica fleet under continuous traffic (surge, no-surge), **aborts the rollout halfway and recovers under traffic**, and fails deterministically when a replica joins the rotation before it is ready or a stopped replica is left in it. Both faults are injected in CI to prove the gate still fails |
-| Container images | **Both, tested together.** `apps/api/Dockerfile` (cgo-capable Debian, non-root `10001`, CA bundle, build-stamped version) and `apps/web/Dockerfile` (Next standalone, non-root `10002`, static-asset healthcheck). CI builds both, asserts neither runs as root, and runs them **as one stack** on a Docker network: a page renders, `/v1` is proxied by name, a 401 and a `Set-Cookie` survive the hop. No registry, no signing, no SBOM |
-| Deployment manifests | **New.** `infra/k8s` — `restricted` Pod Security, migration Job, API and web Deployments (`maxSurge 1`/`maxUnavailable 0`, `runAsNonRoot`, read-only root filesystem, graceful shutdown), Services, TLS Ingress, PDBs, default-deny NetworkPolicies. `scripts/check-manifests.py` enforces ten invariants against the application's own environment surface and **proves each check can fail with fourteen injected faults**; `kubectl --dry-run=client` parses them in CI. **Never applied to a cluster** |
-| Environments | Development and CI are real. **Staging and production are still not provisioned**: there are manifests and images, but no cluster, no registry push, no secrets manager and no TLS issuance. The rollout rehearsal performs the swap against processes, not a controller performing it against pods |
+| Container images | **Both, tested together, and published.** `apps/api/Dockerfile` (cgo-capable Debian, non-root `10001`, CA bundle, build-stamped version) and `apps/web/Dockerfile` (Next standalone, non-root `10002`, static-asset healthcheck). CI builds both, asserts neither runs as root, and runs them **as one stack** on a Docker network: a page renders, `/v1` is proxied by name, a 401 and a `Set-Cookie` survive the hop. `Publish` then pushes both to `ghcr.io` and **pulls each back by digest to start it**, so "published" means running bytes rather than an accepted upload. No signing, no SBOM, no scanning |
+| Deployment manifests | `infra/k8s` — `restricted` Pod Security, migration Job, API and web Deployments (`maxSurge 1`/`maxUnavailable 0`, `runAsNonRoot`, read-only root filesystem, graceful shutdown), Services, TLS Ingress, PDBs, default-deny NetworkPolicies. `scripts/check-manifests.py` enforces eleven invariants against the application's own environment surface, renders the staging overlay, and **proves each check can fail with nineteen injected faults**; `kubectl --dry-run=client` parses them in CI. **Applied to a real `kind` cluster on every pull request** (`scripts/cluster-rehearsal.py`): migration Job completes, three API replicas pass `/readyz`, two web replicas serve and proxy, the media claim binds, a rolled replica is replaced with no zero-endpoint window |
+| Environments | Development and CI are real; the rehearsal environment is a `kind` cluster that is created and destroyed per pull request, and images live in `ghcr.io`. **Staging and production are still not provisioned**: no hosted cluster, no secrets manager, no TLS issuance, no DNS, no autoscaling. The `kind` rehearsal is performed by a controller against real pods; what it lacks is a CNI that enforces the NetworkPolicies and a storage class that does real RWX |
 
 **A second thing Phase 4 was hiding: a fleet could not start.** Six replicas launched within 20 ms of each
 other against an empty database left **three of them dead**, each with
@@ -174,8 +174,19 @@ Two things it found immediately, which is the point of running something rather 
 - **`sqlite` is `sqlite3` to database/sql.** The first run on the SQLite path died with
   `unknown driver "sqlite"` — a reminder that a rehearsal with one engine misses what the other one catches.
 
-What is still missing, and not claimed: **no hosting target, no staging environment, no container image, no
-automated rollback trigger, and no data rollback** (reverting a schema change loses what the newer code wrote
+Two more things stopped being prose. **There is a registry now**: `Publish` pushes both images to `ghcr.io` on
+every merge and then pulls each one back **by digest** and waits for its own health endpoint — an upload is not
+evidence that the bytes work, so the bytes are what gets run. And **the manifests have been applied to a real
+cluster**: `scripts/cluster-rehearsal.py` creates a `kind` cluster on every pull request, applies
+`infra/k8s/overlays/staging`, waits for the migration Job and for three API replicas to pass `/readyz` (database
+*and* schema), serves a page and an API response through the Services, binds the media claim, and restarts a
+replica without the Service ever reaching zero endpoints. The overlay admits that four things it cannot prove —
+NetworkPolicy enforcement, real ReadWriteMany semantics, the Ingress, a managed database — and those stay on the
+missing list rather than being inferred from a green tick.
+
+What is still missing, and not claimed: **no hosted environment** (the rehearsal is not staging), **no ingress
+controller, TLS certificate or DNS**, **no automated rollback trigger**, **no supply-chain work** (signing, SBOM,
+scanning, a promotion policy) and **no data rollback** (reverting a schema change loses what the newer code wrote
 into it).
 
 ### Phase 5 — Database and persistence foundation · restore, backup and PITR all demonstrated

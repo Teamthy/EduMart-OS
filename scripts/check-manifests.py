@@ -665,11 +665,192 @@ def self_test(directory: str) -> int:
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
+    # The overlay checks are in the same spirit: each fault below is a kustomization that `kubectl apply -k` would
+    # refuse, or would accept while doing nothing, and each one must be caught without a cluster to run it on.
+    def _ops(kustomization: dict) -> list[dict]:
+        return yaml.safe_load(kustomization["patches"][0]["patch"])
+
+    def _set_ops(kustomization: dict, operations: list[dict]) -> None:
+        kustomization["patches"][0]["patch"] = yaml.safe_dump(operations, sort_keys=False)
+
+    def rename_patched_key(kustomization: dict) -> None:
+        operations = _ops(kustomization)
+        operations[0]["path"] = "/data/EDUMART_ENVIRONMENT"
+        _set_ops(kustomization, operations)
+
+    def rename_unknown_image(kustomization: dict) -> None:
+        kustomization["images"].append({"name": "ghcr.io/teamthy/edumart-mobile", "newTag": "rehearsal"})
+
+    def smtp_without_a_password(kustomization: dict) -> None:
+        operations = _ops(kustomization)
+        for operation in operations:
+            if operation.get("path") == "/data/EDUMART_NOTIFY":
+                operation["value"] = "smtp"
+        _set_ops(kustomization, operations)
+
+    overlay_faults = [
+        ("an overlay patches a ConfigMap key that does not exist", rename_patched_key),
+        ("an overlay renames an image no workload uses", rename_unknown_image),
+        ("an overlay asks for SMTP and supplies no password", smtp_without_a_password),
+    ]
+    for description, transform in overlay_faults:
+        tree = tempfile.mkdtemp(prefix="edumart-overlay-")
+        try:
+            base = os.path.join(tree, "k8s")
+            shutil.copytree(directory, base)
+            overlay = os.path.join(base, "overlays", "staging")
+            path = os.path.join(overlay, "kustomization.yaml")
+            with open(path) as handle:
+                kustomization = yaml.safe_load(handle)
+            transform(kustomization)
+            with open(path, "w") as handle:
+                yaml.safe_dump(kustomization, handle, sort_keys=False)
+            violations = check_overlay(base, overlay)
+            if "overlay" in violations.checks():
+                print(f"  caught  {description}  →  overlay")
+            else:
+                failures += 1
+                print(f"  MISSED  {description}  →  expected 'overlay', saw {sorted(violations.checks())}")
+        finally:
+            shutil.rmtree(tree, ignore_errors=True)
+
+    total = len(faults) + len(overlay_faults)
     if failures:
-        print(f"\nself-test FAILED: {failures} fault(s) went unnoticed", file=sys.stderr)
+        print(f"\nself-test FAILED: {failures} of {total} fault(s) went unnoticed", file=sys.stderr)
         return 1
-    print(f"\nself-test passed: all {len(faults)} faults were caught")
+    print(f"\nself-test passed: all {total} faults were caught")
     return 0
+
+
+# ── overlays: a kustomization is only as good as the keys it patches ─────────────────────────────────────────
+
+
+def _json_patch(document: dict, patch: list[dict], where: str, out: Violations) -> None:
+    """Apply the subset of RFC 6902 these overlays use, and complain about a path that is not there.
+
+    `kubectl apply -k` fails on a `replace` whose path does not exist, and on an `add` whose parent does not. That
+    is a real failure — but it is a failure you find when a cluster is available, which for most edits of this
+    file is never. Rendering the patches here means a mistyped `/data/EDUMART_ENV` is caught by a check that runs
+    on every pull request.
+    """
+    for operation in patch:
+        path = operation.get("path", "")
+        parts = [part.replace("~1", "/").replace("~0", "~") for part in path.split("/") if part]
+        cursor = document
+        for part in parts[:-1]:
+            if isinstance(cursor, dict):
+                if part not in cursor:
+                    out.add("overlay", f"{where}: patch path {path} walks through a missing key {part!r}")
+                    break
+                cursor = cursor[part]
+            elif isinstance(cursor, list):
+                try:
+                    cursor = cursor[int(part)]
+                except (ValueError, IndexError):
+                    out.add("overlay", f"{where}: patch path {path} is not a list index that exists")
+                    break
+            else:
+                out.add("overlay", f"{where}: patch path {path} walks into a scalar")
+                break
+        else:
+            if not parts:
+                continue
+            last = parts[-1]
+            exists = (last in cursor) if isinstance(cursor, dict) else (
+                isinstance(cursor, list) and 0 <= int(last) < len(cursor))
+            kind = operation.get("op")
+            if kind == "replace" and not exists:
+                out.add("overlay", f"{where}: replace on {path}, which does not exist")
+            elif kind == "add" and exists:
+                out.add("overlay", f"{where}: add on {path}, which already exists (a replace is what you want)")
+            elif kind == "remove" and not exists:
+                out.add("overlay", f"{where}: remove on {path}, which does not exist")
+            if kind in ("add", "replace") and isinstance(cursor, dict):
+                cursor[last] = operation.get("value")
+
+
+def check_overlay(base_dir: str, overlay_dir: str) -> Violations:
+    """Render an overlay against its base and check what only a render can tell you.
+
+    The checks that matter here are the ones a YAML lint cannot make: does every `resources:` entry exist, does
+    every patched object exist, is every patched key present, is every image the overlay renames one the base
+    actually uses — and does the overlay's ConfigMap still have a Secret behind every setting that needs one.
+    """
+    out = Violations()
+    kustomization_path = os.path.join(overlay_dir, "kustomization.yaml")
+    if not os.path.exists(kustomization_path):
+        out.add("overlay", f"{overlay_dir} has no kustomization.yaml")
+        return out
+    with open(kustomization_path) as handle:
+        kustomization = yaml.safe_load(handle) or {}
+
+    documents: list[tuple[str, dict]] = []
+    for resource in kustomization.get("resources", []) or []:
+        path = os.path.normpath(os.path.join(overlay_dir, resource))
+        if not os.path.exists(path):
+            out.add("overlay", f"resource {resource} does not exist")
+            continue
+        with open(path) as handle:
+            for document in yaml.safe_load_all(handle):
+                if isinstance(document, dict) and document:
+                    documents.append((resource, document))
+
+    def find(kind: str, name: str) -> dict | None:
+        for _, document in documents:
+            if document.get("kind") == kind and document.get("metadata", {}).get("name") == name:
+                return document
+        return None
+
+    # Images: renaming an image the base never uses is a silent no-op, and the workload keeps pulling a tag
+    # nobody published.
+    for entry in kustomization.get("images", []) or []:
+        name = entry.get("name")
+        used = any(
+            container.get("image", "").rsplit(":", 1)[0] == name
+            for _, document in documents
+            for container in (document.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or [])
+        )
+        if not used:
+            out.add("overlay", f"images: {name} is renamed but no workload in the base uses it")
+        if not entry.get("newTag") and not entry.get("newName"):
+            out.add("overlay", f"images: {name} has neither a new name nor a new tag")
+
+    for patch in kustomization.get("patches", []) or []:
+        target = patch.get("target", {})
+        document = find(target.get("kind"), target.get("name"))
+        if document is None:
+            out.add("overlay", f"patch target {target.get('kind')}/{target.get('name')} is not in the base")
+            continue
+        body = patch.get("patch")
+        if isinstance(body, str):
+            try:
+                body = yaml.safe_load(body)
+            except yaml.YAMLError as failure:
+                out.add("overlay", f"patch for {target.get('name')} is not parseable: {failure}")
+                continue
+        _json_patch(document, body or [], f"patch on {target.get('kind')}/{target.get('name')}", out)
+
+    # A setting that needs a credential, in an environment whose Secret does not have one, is the failure that
+    # looks like a working deployment until the first payment or the first email.
+    config: dict[str, str] = {}
+    secret_keys: set[str] = set()
+    for _, document in documents:
+        if document.get("kind") == "ConfigMap":
+            config.update({key: str(value) for key, value in (document.get("data") or {}).items()})
+        if document.get("kind") == "Secret":
+            secret_keys |= set((document.get("stringData") or {}).keys())
+            secret_keys |= set((document.get("data") or {}).keys())
+
+    if config.get("EDUMART_NOTIFY", "").startswith("smtp") and "EDUMART_SMTP_PASSWORD" not in secret_keys:
+        out.add("overlay", "EDUMART_NOTIFY is smtp but the overlay's Secret has no EDUMART_SMTP_PASSWORD")
+    if config.get("EDUMART_PAYMENT_PROVIDER") == "paystack" and "EDUMART_PAYSTACK_SECRET_KEY" not in secret_keys:
+        out.add("overlay", "EDUMART_PAYMENT_PROVIDER is paystack but the Secret has no EDUMART_PAYSTACK_SECRET_KEY")
+    if "EDUMART_DSN" not in secret_keys:
+        out.add("overlay", "the overlay's Secret has no EDUMART_DSN, so the API has no database")
+    if config.get("EDUMART_SEED", "false") == "true" and config.get("EDUMART_ENV") == "production":
+        out.add("overlay", "an overlay that seeds fixtures is pointed at production")
+
+    return out
 
 
 def main(argv: list[str]) -> int:
@@ -677,12 +858,22 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dir", default=DEFAULT_DIR)
     parser.add_argument("--self-test", action="store_true", help="break the manifests and require each check to fire")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--overlay", action="append", default=[],
+                        help="Also render an overlay (default: every directory under infra/k8s/overlays).")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return self_test(args.dir)
 
     violations, manifests = run_checks(args.dir)
+
+    overlays = args.overlay or [
+        os.path.dirname(path)
+        for path in sorted(glob.glob(os.path.join(args.dir, "overlays", "*", "kustomization.yaml")))
+    ]
+    for overlay in overlays:
+        for check_name, message in check_overlay(args.dir, overlay).items:
+            violations.add(check_name, f"{os.path.relpath(overlay, REPO)}: {message}")
     if args.verbose:
         kinds: dict[str, int] = {}
         for _, doc in manifests.docs:
@@ -695,7 +886,8 @@ def main(argv: list[str]) -> int:
         print(f"\n{len(violations)} manifest violation(s)", file=sys.stderr)
         return 1
 
-    print(f"manifests pass: {len(manifests.files)} files, {len(CHECKS)} checks, no violations")
+    rendered = f", {len(overlays)} overlay(s) rendered" if overlays else ""
+    print(f"manifests pass: {len(manifests.files)} files, {len(CHECKS)} checks{rendered}, no violations")
     return 0
 
 

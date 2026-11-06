@@ -45,6 +45,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** The first recorded call, asserted rather than indexed: `noUncheckedIndexedAccess` is on in this workspace. */
+function first(calls: Call[]): Call {
+  const call = calls[0];
+  if (!call) throw new Error("no request was made");
+  return call;
+}
+
 describe("the proctor's desk", () => {
   it("reads the sitting from the exam's own proctor route", async () => {
     const calls = stubFetch({
@@ -57,10 +64,10 @@ describe("the proctor's desk", () => {
 
     const desk = await proctorDesk("exam_1");
 
-    expect(calls[0].url).toBe("/v1/exams/exam_1/proctor");
-    expect(calls[0].method).toBe("GET");
+    expect(first(calls).url).toBe("/v1/exams/exam_1/proctor");
+    expect(first(calls).method).toBe("GET");
     expect(desk.sitting.inProgress).toBe(2);
-    expect(desk.candidates[0].answered).toBe(3);
+    expect(desk.candidates[0]?.answered).toBe(3);
   });
 
   it("addresses a warning to explicit session ids, never to the sitting", async () => {
@@ -68,10 +75,10 @@ describe("the proctor's desk", () => {
 
     await sendProctorWarning("exam_1", { sessionIds: ["sesn_1", "sesn_2"], kind: "attention" });
 
-    expect(calls[0].url).toBe("/v1/exams/exam_1/proctor/warnings");
-    expect(calls[0].method).toBe("POST");
+    expect(first(calls).url).toBe("/v1/exams/exam_1/proctor/warnings");
+    expect(first(calls).method).toBe("POST");
     // The plural is the contract: `sessionId` would be silently ignored by the server and warn nobody.
-    expect(calls[0].body).toMatchObject({ sessionIds: ["sesn_1", "sesn_2"], kind: "attention" });
+    expect(first(calls).body).toMatchObject({ sessionIds: ["sesn_1", "sesn_2"], kind: "attention" });
   });
 
   it("sends the host's own words only for a notice", async () => {
@@ -82,8 +89,8 @@ describe("the proctor's desk", () => {
 
     // A note attached to a server-composed kind would be dropped by the server anyway; not sending it keeps the
     // client honest about where the words came from.
-    expect(calls[0].body).not.toHaveProperty("note");
-    expect(calls[1].body).toMatchObject({ kind: "notice", note: "Stay on this tab." });
+    expect(first(calls).body).not.toHaveProperty("note");
+    expect(first(calls.slice(1)).body).toMatchObject({ kind: "notice", note: "Stay on this tab." });
   });
 
   it("carries a void's reason, and an error's message back to the console", async () => {
@@ -98,7 +105,7 @@ describe("the proctor's desk", () => {
       status: 409,
       message: "Only an attempt that is still in progress can be annulled.",
     });
-    expect(calls[0].body).toMatchObject({ sessionId: "sesn_1", reason: "Photographing the paper" });
+    expect(first(calls).body).toMatchObject({ sessionId: "sesn_1", reason: "Photographing the paper" });
   });
 
   it("reopens through its own route, so the log records an intervention rather than a delete", async () => {
@@ -106,8 +113,8 @@ describe("the proctor's desk", () => {
 
     const { candidate } = await reopenAttempt("exam_1", "sesn_1", "annulled the wrong attempt");
 
-    expect(calls[0].url).toBe("/v1/exams/exam_1/proctor/reopen");
-    expect(calls[0].body).toMatchObject({ sessionId: "sesn_1", reason: "annulled the wrong attempt" });
+    expect(first(calls).url).toBe("/v1/exams/exam_1/proctor/reopen");
+    expect(first(calls).body).toMatchObject({ sessionId: "sesn_1", reason: "annulled the wrong attempt" });
     expect(candidate.status).toBe("in_progress");
   });
 });
@@ -132,9 +139,9 @@ describe("a warning reaching the candidate", () => {
 
     const { unread, warnings } = await sessionWarnings("sesn_1");
 
-    expect(calls[0].url).toBe("/v1/assessment-sessions/sesn_1/warnings");
+    expect(first(calls).url).toBe("/v1/assessment-sessions/sesn_1/warnings");
     expect(unread).toBe(1);
-    expect(warnings[0].acknowledgedAt).toBeNull();
+    expect(warnings[0]?.acknowledgedAt).toBeNull();
   });
 
   it("acknowledges one warning by id, and reports a refusal as the server worded it", async () => {
@@ -144,8 +151,8 @@ describe("a warning reaching the candidate", () => {
 
     const { warning } = await acknowledgeWarning("sesn_1", "warn_1");
 
-    expect(calls[0].url).toBe("/v1/assessment-sessions/sesn_1/warnings/warn_1/acknowledge");
-    expect(calls[0].method).toBe("POST");
+    expect(first(calls).url).toBe("/v1/assessment-sessions/sesn_1/warnings/warn_1/acknowledge");
+    expect(first(calls).method).toBe("POST");
     expect(warning.acknowledgedAt).toBe("2026-11-04T10:00:09Z");
 
     stubFetch({ ok: false, status: 403, json: { error: { code: "FORBIDDEN", message: "This attempt belongs to another learner." } } });

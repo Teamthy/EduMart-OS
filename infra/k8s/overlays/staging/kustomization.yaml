@@ -1,0 +1,100 @@
+# A staging environment that a real cluster runs — `kind`, on a CI runner, on every pull request.
+#
+# The base in `infra/k8s` describes production: three replicas, a managed PostgreSQL, SMTP through a provider,
+# a live payment provider, and a ReadWriteMany volume class that a real cluster provides. None of that can be
+# brought up on a laptop or a CI runner as-is, and the honest response for a long time was to say "the manifests
+# have never been applied". That is what this overlay is for: the *same* base manifests, with only the values
+# that make it a rehearsal changed, applied into a real cluster by `scripts/cluster-rehearsal.py`.
+#
+# What the rehearsal proves, because it either happens or the step fails:
+#
+#   * the manifests are admitted under Pod Security `restricted` (non-root, no privilege escalation, dropped
+#     capabilities, seccomp) rather than merely written to satisfy it;
+#   * the migration Job runs first and completes exactly once, against a real PostgreSQL;
+#   * three API replicas reach `/readyz`, which means the database answers *and* the schema matches the binary;
+#   * two web replicas serve a page and proxy `/v1` to the API Service by name;
+#   * the media PVC binds, so a recording has somewhere to land;
+#   * a pod that is rolled is replaced without the Service losing a ready endpoint.
+#
+# What it does **not** prove, and the docs say so rather than letting a green check imply otherwise:
+#
+#   * **NetworkPolicy enforcement.** `kind`'s default CNI accepts the policies and does not enforce them. The
+#     policies are real Kubernetes objects, and their enforcement is a property of the CNI this rehearsal does
+#     not install.
+#   * **ReadWriteMany semantics.** The PVC is bound here by a `hostPath` volume, which accepts the access mode
+#     without enforcing it. On a single-node cluster that is indistinguishable from real RWX; on the cluster
+#     that actually serves recordings it is not, and `15-media-pvc.yaml` says which classes do it properly.
+#   * **The Ingress.** The object is created; there is no ingress controller and no certificate in the
+#     rehearsal, so requests enter through a port-forward instead.
+#   * Anything about a managed database, a real SMTP provider, or a live payment provider.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: edumart
+
+resources:
+  - ../../00-namespace.yaml
+  - ../../10-config.yaml
+  - ../../15-media-pvc.yaml
+  - ../../20-migration-job.yaml
+  - ../../30-api-deployment.yaml
+  - ../../31-api-service.yaml
+  - ../../40-web-deployment.yaml
+  - ../../41-web-service.yaml
+  - ../../50-ingress.yaml
+  - ../../60-pdb.yaml
+  - ../../70-networkpolicy.yaml
+  - postgres.yaml
+  - secrets-staging.yaml
+  - media-volume.yaml
+
+# The images are built on the runner and loaded into the cluster by name. Both workloads and the migration Job
+# are transformed, which is what keeps "the job runs the same image as the replicas" true here as well as in CI.
+images:
+  - name: ghcr.io/teamthy/edumart-api
+    newName: edumart-api
+    newTag: rehearsal
+  - name: ghcr.io/teamthy/edumart-web
+    newName: edumart-web
+    newTag: rehearsal
+
+patches:
+  # The values that make this a rehearsal. Everything else — retention, chunk caps, rate-limit policy, referral
+  # depth, probe timings, replica counts — is the production configuration, unchanged, because a rehearsal of a
+  # different system proves nothing about this one.
+  - target:
+      kind: ConfigMap
+      name: edumart-config
+    patch: |-
+      - op: replace
+        path: /data/EDUMART_ENV
+        value: staging
+      - op: replace
+        path: /data/EDUMART_WEB_URL
+        value: http://localhost:3000
+      - op: replace
+        path: /data/EDUMART_ALLOWED_ORIGINS
+        value: http://localhost:3000
+      # A log adapter, not SMTP: the rehearsal has no mail provider, and a failed notification must not be what
+      # makes the environment look broken.
+      - op: replace
+        path: /data/EDUMART_NOTIFY
+        value: log
+      # Sandbox payments, with the sandbox path explicitly allowed. This is the only place in the repository where
+      # EDUMART_ALLOW_SANDBOX_PAYMENTS is true, it is a staging overlay, and paying through it moves no money.
+      - op: replace
+        path: /data/EDUMART_PAYMENT_PROVIDER
+        value: sandbox
+      - op: replace
+        path: /data/EDUMART_ALLOW_SANDBOX_PAYMENTS
+        value: "true"
+  - target:
+      kind: PersistentVolumeClaim
+      name: edumart-media
+    patch: |-
+      - op: add
+        path: /spec/volumeName
+        value: edumart-media-staging
+      - op: add
+        path: /spec/storageClassName
+        value: staging-media

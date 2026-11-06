@@ -1,8 +1,13 @@
 # Deployment and rollback
 
-Phase 4 said CI is real but **staging does not exist, so deploy and rollback are unproven**. That is still
-half true. What changed is the half that can be proved without a hosting account: the *procedure* is now
-executed on every pull request, against a real PostgreSQL database and two real binaries.
+Phase 4 said CI is real but **staging does not exist, so deploy and rollback are unproven**. Two of those three
+things are now facts rather than gaps: the images are pushed to a registry and started **from** that registry, and
+the manifests are applied to a **real cluster** (`kind`) on every pull request, where the migration Job runs first
+and three API replicas and two web replicas then answer through their Services. What is still not staged is a
+*hosted* environment with DNS, TLS and an ingress controller — that is a hosting account, not a repository.
+
+The *procedure* is executed on every pull request as well, against a real PostgreSQL database and two real
+binaries.
 
 ```bash
 python3 scripts/deploy-rehearsal.py --check-only        # refuse unsafe migrations (no database needed)
@@ -214,8 +219,9 @@ docker run --rm -p 8080:8080 -e EDUMART_DRIVER=postgres -e EDUMART_DSN='postgres
 | `HEALTHCHECK` on `/healthz` | Liveness must not depend on the database. If it did, a database blip would restart every healthy process and turn one outage into two |
 | `-X main.version` build stamp | `/healthz` and `/readyz` report the release, so "is the rollout finished?" is answered by asking a replica — see `TestTheProbesReportWhichBuildIsRunning` |
 
-The image is larger than it needs to be because a distroless runtime has not been attempted: **no registry, no
-image signing, no SBOM.** See "What is still missing" at the end of this document for the full list.
+The image is larger than it needs to be because a distroless runtime has not been attempted. It is published to
+`ghcr.io` on every merge and pulled back by digest to prove it runs; **no image signing, no SBOM and no
+scanning.** See "What is still missing" at the end of this document for the full list.
 
 ## The deployment manifests
 
@@ -239,16 +245,19 @@ Kubernetes does not enforce for you:
 | `topology` | a Deployment nothing selects, a missing PodDisruptionBudget, an Ingress without TLS or pointing at a Service that does not exist |
 | `proxy` | `EDUMART_API_URL` naming a Service and port that are not in the directory |
 | `network` | no default-deny policy, which would make the other two decoration |
+| `overlay` | a kustomization that patches a key, an object or an image that is not in the base — and an environment that asks for SMTP or Paystack without the Secret to back it. Rendered in Python on every pull request, so it does not need a cluster to catch |
 
 ```bash
 python3 scripts/check-manifests.py --verbose      # check
 python3 scripts/check-manifests.py --self-test    # break it on purpose
 ```
 
-`--self-test` applies fourteen real faults — readiness moved to `/healthz`, `maxUnavailable: 1`, one replica,
+`--self-test` applies nineteen real faults — readiness moved to `/healthz`, `maxUnavailable: 1`, one replica,
 `EDUMART_MIGRATE_ON_BOOT=true`, a Job on a different image, `:latest`, a secret in the ConfigMap, a renamed
 settings key, a proxy pointed at a missing Service, a writable root filesystem, a deleted PDB, a five-second
-grace period, no default-deny — and requires the corresponding check to fire. The renamed key is there
+grace period, no default-deny, an overlay patching a missing ConfigMap key, an overlay renaming an image no
+workload uses, an overlay asking for SMTP with no password behind it — and requires the corresponding check to
+fire. The renamed key is there
 because the first version of the checker **missed it**: the ConfigMap was never inspected, only the inline
 `env:` blocks, so a typo in the file everything reads from passed every check.
 
@@ -279,6 +288,53 @@ not `/healthz`.
 The CI job `Container images` builds both images, starts them on one Docker network so the web container
 reaches the API **by name** (what a Service does in-cluster), and then: renders a page, proxies `/v1`,
 expects a 401 through the proxy, and requires the session cookie to survive the hop.
+
+## A registry, and a cluster that has run
+
+Two sentences used to end this document's honesty section: *nothing is pushed to a registry*, and *the manifests
+have never been applied to a cluster*. Both are now false, and each is false in a way that can be checked rather
+than believed.
+
+**The registry.** `.github/workflows/publish.yml` builds both images and pushes them to
+`ghcr.io/teamthy/edumart-{api,web}` on every merge to `main`, on `v*` tags, and on every pull request (tagged
+`pr-<n>`; a fork's pull request builds and stops, because its token cannot write to this repository's packages).
+Authentication is `GITHUB_TOKEN` — no long-lived push secret exists to leak.
+
+Then it does the part that matters:
+
+```
+build ─► push ─► pull back BY DIGEST ─► docker run ─► GET /readyz                    (API)
+                                              └──────► GET /manifest.webmanifest    (web)
+```
+
+An upload that returns 201 proves the registry accepted bytes. Starting the image *from the registry*, by the
+digest a rollout would pin to, and waiting for its own readiness endpoint to answer, is the claim: **the bytes in
+the registry are a working API and a working web server.** A second job fails the run if `infra/k8s` references an
+image this workflow does not publish, so `ImagePullBackOff` on a Monday is caught on the Friday before.
+
+**The cluster.** `scripts/cluster-rehearsal.py` creates a `kind` cluster, builds both images, loads them, applies
+`infra/k8s/overlays/staging`, and then checks the things only a cluster can answer:
+
+| What it does | What it proves |
+| --- | --- |
+| `kubectl apply -k` into a namespace labelled Pod Security `restricted` | The workloads are *admitted* under the profile, not merely written to satisfy it |
+| Waits for PostgreSQL, then (re)creates the migration Job | The deploy order — migration before replicas — is executable; the Job completes against a real database |
+| `rollout status` on both Deployments | Three API replicas reach `/readyz` (database **and** schema) and two web replicas reach their static readiness file |
+| Reads the PVC's phase | The media claim binds, so a recording has somewhere to land |
+| Port-forwards the API Service | `/readyz` answers with `checks: database, migrations` — through the Service, not around it |
+| Port-forwards the web Service and requests `/`, `/v1/subjects`, an unknown exam code | The web container serves pages and reaches the API **by Service name**; a proxied 404 is the API's 404 |
+| `rollout restart`, sampled every two seconds | The Service never drops to zero ready endpoints and the proxied request keeps answering |
+
+Four things that rehearsal does **not** cover are written into
+`infra/k8s/overlays/staging/kustomization.yaml` rather than left to be inferred from a green check: NetworkPolicy
+enforcement (kind's default CNI accepts the objects and does not enforce them), real `ReadWriteMany` semantics (the
+claim binds to a `hostPath` volume, which accepts the access mode without enforcing it), the Ingress (no
+controller, no certificate), and anything about a managed database, a mail provider or a live payment provider.
+
+The overlay itself is checked without a cluster, on every pull request: `scripts/check-manifests.py` now renders
+each kustomization against its base and fails on a patch path that does not exist, an `add` that would collide, a
+renamed image no workload uses, or an environment that asks for SMTP or Paystack without the Secret to back it.
+Three injected overlay faults prove those checks fire.
 
 ## Vercel: the web app only
 
@@ -364,29 +420,37 @@ will be, and each step is either proven or marked.
    a job that does two things, and the second is not safe against production.
 4. **Watch the signals** for ten minutes: error rate, p95 latency, reconciliation contradictions, webhook
    failures. `docs/OBSERVABILITY.md` names the alert for each.
-5. **Apply the manifests.** `kubectl apply -f infra/k8s/` (or the GitOps equivalent). The migration Job must
-   complete before the Deployment is updated — the Job, not the replicas, owns the schema. The manifests are
-   checked in CI, but **they have never been applied to a cluster from this repository**, so the first apply
-   is a real step performed by a human who watches it.
+5. **Apply the manifests.** `kubectl apply -k infra/k8s/overlays/<environment>` (or the GitOps equivalent). The
+   migration Job must complete before the Deployment is updated — the Job, not the replicas, owns the schema.
+   This exact apply now runs in CI against a real cluster (`scripts/cluster-rehearsal.py`), so the step that
+   remains a human one is choosing the environment's values, not finding out whether the objects are accepted.
+   Point the image tag at a digest this repository published — see "A registry, and a cluster that has run".
 6. **If it goes wrong, roll back the binary** — do not roll back the schema. The schema stays ahead; that is
    what the rehearsal proves is survivable. Deploying an older migration set is a data-loss operation
    dressed as a rollback.
 
 ## What is still missing, and is not claimed
 
-- **No staging environment, and only the web app is hosted.** `apps/web` runs on Vercel (above); **the Go
-  API does not run anywhere yet**, so the hosted site has no backend until `EDUMART_API_URL` names a real
-  host. Nothing has exercised a deployment of the API. The rehearsal proves the *schema and binary*
-  transition; it proves nothing about DNS, TLS, a real load balancer, secrets management, or an orchestrator
-  performing the rolling restart it rehearses.
-- **Images, but no registry.** Both `apps/api/Dockerfile` and `apps/web/Dockerfile` build and run as
-  non-root in CI, together, against PostgreSQL. Nothing is pushed to a registry, nothing is signed, there is
-  no SBOM and no image scanning step; the mobile app is not containerised at all.
-- **Manifests, but no cluster.** `infra/k8s` is checked by `scripts/check-manifests.py` (ten checks, fourteen
-  injected faults) and parsed by `kubectl --dry-run=client` in CI — **it has never been applied to a real
-  cluster.** No TLS certificate is issued, no ingress controller is configured beyond annotations, no
-  external-secrets operator or vault is wired to the placeholder Secret, and there is **no autoscaling, no
-  multi-region, and no cluster upgrade story.**
+- **A hosted environment, not a rehearsed one.** `apps/web` runs on Vercel (above) and **the Go API does not run
+  anywhere with a public address**, so the hosted site still has no backend until `EDUMART_API_URL` names a real
+  host. What exists now is a cluster rehearsal (`kind`) that applies the real manifests, runs the migration Job,
+  waits for the replicas and serves a page and an API response through the Services. What it does not cover:
+  DNS, a real load balancer, certificate issuance, an ingress controller, external secrets, or a managed
+  database. Those are hosting decisions, and a rehearsal is not a substitute for one.
+- **A registry, without supply-chain work.** `Publish` pushes both images to `ghcr.io` on every merge, and then
+  **pulls each one back by digest and starts it** — a registry upload that succeeds is not evidence that the
+  bytes work, so the bytes are what gets run. Still missing: image signing (cosign), an SBOM, a vulnerability
+  scan, and a promotion policy. Today `main`, `sha-<short>`, `pr-<n>` and `v*` tags exist; only `v*` should ever
+  reach production, and nothing enforces that yet.
+- **A cluster, rehearsed — with four named blind spots.** `infra/k8s` is applied on every pull request by
+  `scripts/cluster-rehearsal.py` into `infra/k8s/overlays/staging`: Pod Security `restricted` admits the pods,
+  the migration Job completes, three API replicas pass `/readyz` (database **and** schema), two web replicas
+  serve a page and proxy `/v1` by Service name, the media claim binds, and a restarted replica is replaced
+  without the Service ever reaching zero endpoints. **Not proved there, and stated in the overlay itself:**
+  NetworkPolicy enforcement (kind's default CNI accepts the objects and does not enforce them), real
+  `ReadWriteMany` semantics (the claim binds to a `hostPath` volume, which accepts the mode without enforcing
+  it), the Ingress (no controller and no certificate), and anything about a managed database. There is still
+  **no autoscaling, no multi-region, and no cluster upgrade story.**
 - **No automated rollback trigger.** Deciding to roll back is a human judgement on the signals above.
 - **No data rollback.** Reverting a schema change loses whatever the newer code wrote into it. The rehearsal
   proves the *old code* can read the *old columns*; it says nothing about a column added and populated by the
