@@ -83,11 +83,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve the registry path
+        id: ref
+        # GHCR paths are lower case: the registry rejects `ghcr.io/Teamthy/…`, and `docker/metadata-action` has
+        # already lower-cased the name it pushed to. Deriving the same string here is what makes the pull-back
+        # steps reference the image that was actually published rather than a 404.
+        run: |
+          echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGISTRY }}/$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/edumart-${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+
       - name: Work out the tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/edumart-${{ matrix.image }}
+          images: ${{ steps.ref.outputs.image }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -117,7 +126,7 @@ jobs:
       - name: The image in the registry is not root
         if: steps.can-publish.outputs.value == 'true'
         run: |
-          reference="${{ env.REGISTRY }}/${{ github.repository_owner }}/edumart-${{ matrix.image }}@${{ steps.push.outputs.digest }}"
+          reference="${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
           docker pull "$reference"
           user=$(docker image inspect "$reference" --format '{{.Config.User}}')
           echo "user: ${user:-root}"
@@ -128,7 +137,7 @@ jobs:
         # This is the part that makes "published" a fact rather than an upload. The digest is what a rollout would
         # pin to, so the digest is what is started — not a tag that might have moved in the meantime.
         run: |
-          reference="${{ env.REGISTRY }}/${{ github.repository_owner }}/edumart-${{ matrix.image }}@${{ steps.push.outputs.digest }}"
+          reference="${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
           docker run -d --name published --network host ${{ matrix.run_env }} "$reference"
           for attempt in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${{ matrix.port }}${{ matrix.health }}" > /tmp/health.out; then
@@ -149,7 +158,7 @@ jobs:
             echo "### edumart-${{ matrix.image }}"
             echo
             echo '```'
-            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/edumart-${{ matrix.image }}@${{ steps.push.outputs.digest }}"
+            echo "${{ steps.ref.outputs.image }}@${{ steps.push.outputs.digest }}"
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

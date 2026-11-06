@@ -45,6 +45,7 @@ resources:
   - ../../60-pdb.yaml
   - ../../70-networkpolicy.yaml
   - postgres.yaml
+  - postgres-netpol.yaml
   - secrets-staging.yaml
   - media-volume.yaml
 

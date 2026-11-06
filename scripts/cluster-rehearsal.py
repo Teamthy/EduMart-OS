@@ -35,6 +35,7 @@ import urllib.request
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVERLAY = os.path.join("infra", "k8s", "overlays", "staging")
 FAILURES: list[str] = []
+FATAL = False
 
 
 def check(condition: bool, message: str) -> None:
@@ -51,6 +52,14 @@ def run(args: list[str], *, check_status: bool = True, timeout: int = 600) -> su
     if check_status and result.returncode != 0:
         print(result.stdout[-4000:])
         print(result.stderr[-4000:])
+        # A command that died is the failure, and the workflow's log is not always obtainable — so the command,
+        # its exit code and the end of its output go out as an annotation as well.
+        global FATAL
+        FATAL = True
+        detail = (result.stdout[-1500:] + result.stderr[-1500:]).strip()
+        print(f"::error title=Cluster rehearsal::{' '.join(args)} exited {result.returncode}")
+        for line in detail.splitlines()[-12:]:
+            print(f"::error title=Cluster rehearsal output::{line}")
         raise SystemExit(f"command failed ({result.returncode}): {' '.join(args)}")
     return result
 
@@ -237,7 +246,7 @@ def main() -> int:
     finally:
         for forward in forwards:
             forward.terminate()
-        if FAILURES:
+        if FAILURES or FATAL:
             print()
             print("the cluster state at the point of failure:")
             diagnose()
