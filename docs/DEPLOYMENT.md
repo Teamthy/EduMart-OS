@@ -320,10 +320,14 @@ image this workflow does not publish, so `ImagePullBackOff` on a Monday is caugh
 | `kubectl apply -k` into a namespace labelled Pod Security `restricted` | The workloads are *admitted* under the profile, not merely written to satisfy it |
 | Waits for PostgreSQL, then (re)creates the migration Job | The deploy order — migration before replicas — is executable; the Job completes against a real database |
 | `rollout status` on both Deployments | Three API replicas reach `/readyz` (database **and** schema) and two web replicas reach their static readiness file |
-| Reads the PVC's phase | The media claim binds, so a recording has somewhere to land |
+| Reads the PVC's phase | The media claim binds — the deployment's storage wiring is real, even though the rehearsal then mounts an `emptyDir` in its place: a `hostPath` volume is root-owned, kubelet does not apply `fsGroup` to it, and the API refuses to start when its media directory is unwritable |
 | Port-forwards the API Service | `/readyz` answers with `checks: database, migrations` — through the Service, not around it |
 | Port-forwards the web Service and requests `/`, `/v1/subjects`, an unknown exam code | The web container serves pages and reaches the API **by Service name**; a proxied 404 is the API's 404 |
 | `rollout restart`, sampled every two seconds | The Service never drops to zero ready endpoints and the proxied request keeps answering |
+
+A fifth substitution is stated where it happens rather than here: the API Deployment mounts an `emptyDir` instead
+of the claim in the overlay, with `fsGroup: 10001`, because a `hostPath` cannot be made writable for a non-root
+pod. The claim is still created and still checked for binding; what is swapped is the storage underneath.
 
 Four things that rehearsal does **not** cover are written into
 `infra/k8s/overlays/staging/kustomization.yaml` rather than left to be inferred from a green check: NetworkPolicy

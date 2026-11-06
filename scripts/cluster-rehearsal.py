@@ -110,8 +110,19 @@ def start_port_forward(service: str, local: int, remote: int) -> subprocess.Pope
     return process
 
 
+def annotate(title: str, text: str, limit: int = 8) -> None:
+    """Emit the end of something as workflow-command annotations.
+
+    The full output stays in the log; this is what a person opening the pull request actually sees, and the log of a
+    failed job is not always obtainable — which is how the first three runs of this job were debugged.
+    """
+    lines = [line for line in text.splitlines() if line.strip()][-limit:]
+    for line in lines:
+        print(f"::error title={title}::{line[:900]}")
+
+
 def diagnose() -> None:
-    """Print what a person would need to see. A red check with no pods listed is a useless red check."""
+    """Print what a person would need to see, and annotate the part that explains the failure."""
     for args in (
         ("-n", "edumart", "get", "pods", "-o", "wide"),
         ("-n", "edumart", "get", "pvc,jobs,deployments,services"),
@@ -119,6 +130,19 @@ def diagnose() -> None:
     ):
         result = kubectl(*args, check_status=False)
         print(result.stdout[-6000:] or result.stderr[-2000:])
+
+    # Why a pod is not Ready, in the two forms that answer it: what the container is doing, and what it said.
+    for pod in kubectl("-n", "edumart", "get", "pods", "-o", "name", check_status=False).stdout.split():
+        state = kubectl("-n", "edumart", "get", pod, "-o",
+                        "jsonpath={range .status.containerStatuses[*]}{.name}={.state}{'\n'}{end}",
+                        check_status=False).stdout
+        annotate(f"pod {pod.split('/')[-1]}", state, limit=4)
+    logs = kubectl("-n", "edumart", "logs", "-l", "app.kubernetes.io/name=edumart-api", "--tail=12",
+                   "--all-containers=true", check_status=False)
+    annotate("edumart-api logs", logs.stdout + logs.stderr, limit=12)
+    described = kubectl("-n", "edumart", "describe", "pods", "-l", "app.kubernetes.io/name=edumart-api",
+                        check_status=False)
+    annotate("edumart-api describe", described.stdout, limit=12)
 
 
 def main() -> int:

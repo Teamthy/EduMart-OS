@@ -83,6 +83,30 @@ patches:
       - op: replace
         path: /data/EDUMART_ALLOW_SANDBOX_PAYMENTS
         value: "true"
+  # The API's media directory, made writable.
+  #
+  # In production the claim is a real ReadWriteMany volume whose ownership the storage class grants. Here the claim
+  # binds a `hostPath` volume, and a `hostPath` belongs to root with mode 0755 — kubelet does not apply `fsGroup` to
+  # it, and the container runs as uid 10001, which cannot write. The API treats an unwritable media directory as a
+  # startup failure (an hour of recording into a void is worse than refusing to boot), so every replica would
+  # CrashLoop.
+  #
+  # `emptyDir` accepts `fsGroup` because kubelet creates and chowns it. That keeps the path and the code exactly as
+  # production has them, and swaps only the storage underneath — which is the part the rehearsal already cannot
+  # prove (RWX semantics are on the blind-spot list). The claim is still created and still checked for binding:
+  # what is being rehearsed is the deployment, not the storage class.
+  - target:
+      kind: Deployment
+      name: edumart-api
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/fsGroup
+        value: 10001
+      - op: replace
+        path: /spec/template/spec/volumes/1
+        value:
+          name: media
+          emptyDir: {}
   - target:
       kind: PersistentVolumeClaim
       name: edumart-media
