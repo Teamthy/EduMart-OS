@@ -178,6 +178,10 @@ def check_structure(manifests: Manifests, out: Violations) -> None:
         out.add("structure", f"{failure}")
     seen: set[tuple[str, str]] = set()
     for name, doc in manifests.docs:
+        # A kustomization is a build instruction, not an object: it has no metadata, and asking it for one would
+        # be asking it to be something it is not.
+        if doc.get("kind") == "Kustomization":
+            continue
         for field in ("apiVersion", "kind"):
             if not doc.get(field):
                 out.add("structure", f"{name}: document without {field}")
@@ -785,15 +789,36 @@ def check_overlay(base_dir: str, overlay_dir: str) -> Violations:
         kustomization = yaml.safe_load(handle) or {}
 
     documents: list[tuple[str, dict]] = []
-    for resource in kustomization.get("resources", []) or []:
-        path = os.path.normpath(os.path.join(overlay_dir, resource))
+    def load(path: str, label: str, depth: int = 0) -> None:
+        """Read a resource, following one level of base kustomization.
+
+        An overlay's `resources:` may name a base *directory* — which is the layout here, and the only layout
+        kustomize's load restrictor allows for an overlay in a subdirectory. Following it means the checks below
+        see the base's documents, not just the overlay's own.
+        """
+        if os.path.isdir(path):
+            nested = os.path.join(path, "kustomization.yaml")
+            if not os.path.exists(nested):
+                out.add("overlay", f"{label} is a directory with no kustomization.yaml")
+                return
+            if depth > 2:
+                out.add("overlay", f"{label} nests kustomizations too deeply to render")
+                return
+            with open(nested) as handle:
+                child = yaml.safe_load(handle) or {}
+            for resource in child.get("resources", []) or []:
+                load(os.path.normpath(os.path.join(path, resource)), resource, depth + 1)
+            return
         if not os.path.exists(path):
-            out.add("overlay", f"resource {resource} does not exist")
-            continue
+            out.add("overlay", f"resource {label} does not exist")
+            return
         with open(path) as handle:
             for document in yaml.safe_load_all(handle):
                 if isinstance(document, dict) and document:
-                    documents.append((resource, document))
+                    documents.append((label, document))
+
+    for resource in kustomization.get("resources", []) or []:
+        load(os.path.normpath(os.path.join(overlay_dir, resource)), resource)
 
     def find(kind: str, name: str) -> dict | None:
         for _, document in documents:

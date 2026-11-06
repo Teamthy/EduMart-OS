@@ -1,0 +1,24 @@
+# The production base, as a kustomization rather than a directory of loose files.
+#
+# `kubectl apply -f infra/k8s/` reads every YAML here and works, but it cannot be patched, and it cannot be
+# inspected as one object graph. Listing the files here makes this directory a *base* — something an overlay can
+# point at — which is what `overlays/staging` needs.
+#
+# `kubectl apply -k infra/k8s/` is the production apply: everything except the Secret, which
+# `11-secrets.example.yaml` deliberately only describes. A real cluster gets its Secret out of band, as that
+# file's own header explains.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 15-media-pvc.yaml
+  - 20-migration-job.yaml
+  - 30-api-deployment.yaml
+  - 31-api-service.yaml
+  - 40-web-deployment.yaml
+  - 41-web-service.yaml
+  - 50-ingress.yaml
+  - 60-pdb.yaml
+  - 70-networkpolicy.yaml

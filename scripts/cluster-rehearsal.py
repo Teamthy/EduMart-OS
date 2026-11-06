@@ -151,6 +151,9 @@ def main() -> int:
             check(True, "both images are in the cluster's image store")
 
         print("3. the manifests, applied to it")
+        base = kubectl("kustomize", OVERLAY, check_status=False)
+        check(base.returncode == 0 and "kind: Deployment" in base.stdout,
+              "kustomize renders the overlay (kubectl apply -k would refuse it otherwise)")
         # First pass also creates the namespace and the PostgreSQL fixture. The migration Job will usually start
         # before PostgreSQL can accept a connection and fail once — which is why the Job is recreated below, after
         # the database is up. That is the deploy order a real release uses too (`-migrate-only` runs when the

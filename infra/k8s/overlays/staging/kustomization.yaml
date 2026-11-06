@@ -32,18 +32,11 @@ kind: Kustomization
 
 namespace: edumart
 
+# The base is a directory, not a list of files, and that distinction is load-bearing: kustomize refuses a *file*
+# above the kustomization root (its load restrictor), and accepts a base directory. Referencing `../..` is what an
+# overlay in a subdirectory is for.
 resources:
-  - ../../00-namespace.yaml
-  - ../../10-config.yaml
-  - ../../15-media-pvc.yaml
-  - ../../20-migration-job.yaml
-  - ../../30-api-deployment.yaml
-  - ../../31-api-service.yaml
-  - ../../40-web-deployment.yaml
-  - ../../41-web-service.yaml
-  - ../../50-ingress.yaml
-  - ../../60-pdb.yaml
-  - ../../70-networkpolicy.yaml
+  - ../..
   - postgres.yaml
   - postgres-netpol.yaml
   - secrets-staging.yaml
