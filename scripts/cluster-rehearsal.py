@@ -302,8 +302,16 @@ def main() -> int:
         ready_after = kubectl("-n", "edumart", "get", "pods", "-l", "app.kubernetes.io/name=edumart-api",
                               "-o", "jsonpath={.items[*].status.containerStatuses[0].ready}",
                               check_status=False).stdout
-        check(len([value for value in ready_after.split() if value == "true"]) == 3,
+        # `>= 3`, not `== 3`: a rolling update surges one extra pod before the old one goes, so four Ready pods is
+        # the *correct* state mid-roll. Asserting exactly three failed on a healthy restart.
+        ready_count = len([value for value in ready_after.split() if value == "true"])
+        check(ready_count >= 3,
               f"three ready replicas after the restart ({ready_after.strip()!r})")
+        replicas = kubectl("-n", "edumart", "get", "deployment", "edumart-api",
+                           "-o", "jsonpath={.spec.replicas}/{.status.readyReplicas}", check_status=False).stdout
+        spec_replicas, _, ready_replicas = replicas.partition("/")
+        check(spec_replicas == ready_replicas == "3",
+              f"and the Deployment reports its three replicas ready ({replicas})")
     finally:
         for forward in forwards:
             forward.terminate()

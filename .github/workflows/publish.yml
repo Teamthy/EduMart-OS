@@ -171,27 +171,49 @@ jobs:
     needs: [images]
     steps:
       - uses: actions/checkout@v4
-      - name: Every image reference in infra/k8s was published by this run
+      - name: Every image the production manifests name was published by this run
+        # `infra/k8s/base` is production and is held to the strict rule: every image there is one this workflow
+        # publishes, and every reference carries a tag, because a rollout must pin something immutable.
+        #
+        # `infra/k8s/overlays` is not. The staging overlay deliberately names a fixture image — a PostgreSQL that
+        # lives and dies with the rehearsal cluster — and holding it to "published by this workflow" would mean
+        # either lying in the check or not rehearsing against a real database. An overlay is still required to pin
+        # a tag.
         run: |
           python3 - <<'PY'
           import re
           from pathlib import Path
 
           published = {"edumart-api", "edumart-web"}
-          references = set()
-          for path in Path("infra/k8s").rglob("*.yaml"):
-              for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", path.read_text(), re.M):
-                  references.add(match.group(1))
           problems = []
-          for reference in sorted(references):
+
+          def references(directory):
+              found = set()
+              for path in sorted(Path(directory).rglob("*.yaml")):
+                  for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", path.read_text(), re.M):
+                      found.add(match.group(1))
+              return found
+
+          production = references("infra/k8s/base")
+          for reference in sorted(production):
               name = reference.rsplit(":", 1)[0].rsplit("/", 1)[-1]
               if name not in published:
-                  problems.append(f"{reference} is not an image this workflow publishes")
-              if reference.startswith("ghcr.io/") and ":" not in reference.rsplit("/", 1)[-1]:
+                  problems.append(f"{reference} is in the production manifests but is not an image this workflow publishes")
+              if ":" not in reference.rsplit("/", 1)[-1]:
                   problems.append(f"{reference} has no immutable tag; a rollout must pin one")
+
+          rehearsal = references("infra/k8s/overlays") - production
+          for reference in sorted(rehearsal):
+              if ":" not in reference.rsplit("/", 1)[-1]:
+                  problems.append(f"{reference} is an overlay image with no tag, so the rehearsal is not reproducible")
+
           if problems:
               raise SystemExit("\n".join(problems))
-          print(f"{len(references)} image reference(s), all published by this workflow:")
-          for reference in sorted(references):
-              print(" ", reference)
+          print(f"{len(production)} production image reference(s), all published by this workflow:")
+          for reference in sorted(production):
+              print("  ", reference)
+          if rehearsal:
+              print("overlay-only image(s), fixtures rather than deployments of this product:")
+              for reference in sorted(rehearsal):
+                  print("  ", reference)
           PY
